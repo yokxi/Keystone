@@ -12,7 +12,14 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { Logger } from './core/context.js';
 import { ClientError, type Orchestrator } from './core/orchestrator.js';
 
-const LOOPBACK_HOST = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
+export class PortInUseError extends Error {
+  constructor(readonly port: number) {
+    super(`la porta ${port} è già in uso (forse è già attivo un altro orchestratore Keystone o un altro programma): chiudilo, oppure scegli un'altra porta con --port <n> o la variabile KEYSTONE_PORT`);
+    this.name = 'PortInUseError';
+  }
+}
+
+const LOOPBACK_HOST =/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
 
 /** Motivo per rifiutare la connessione, oppure undefined per accettarla. */
 export function refuseReason(req: Pick<IncomingMessage, 'headers'>): string | undefined {
@@ -64,9 +71,16 @@ export class OrchestratorServer {
 
   async listen(): Promise<number> {
     await new Promise<void>((resolve, reject) => {
-      this.http.once('error', reject);
+      const onError = (e: NodeJS.ErrnoException) => {
+        if (e.code === 'EADDRINUSE') {
+          reject(new PortInUseError(this.opts.port));
+        } else if (e.code === 'EACCES') {
+          reject(new Error(`la porta ${this.opts.port} non è utilizzabile (permesso negato): scegline un'altra con --port <n> o KEYSTONE_PORT`));
+        } else reject(e);
+      };
+      this.http.once('error', onError);
       this.http.listen(this.opts.port, '127.0.0.1', () => {
-        this.http.off('error', reject);
+        this.http.off('error', onError);
         resolve();
       });
     });
