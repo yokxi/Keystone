@@ -72,6 +72,13 @@ describe('Store', () => {
     expect(s.data.feed[0]?.text).toBe('20');
   });
 
+  it('la prima riga di log di un agente compare una volta sola nella coda', () => {
+    const s = new Store(tmpDir());
+    s.appendLog('bruno', [{ ts: 1, kind: 'text', text: 'prima' }]);
+    s.appendLog('bruno', [{ ts: 2, kind: 'text', text: 'seconda' }]);
+    expect(s.logTail('bruno').map((e) => e.text)).toEqual(['prima', 'seconda']);
+  });
+
   it('salva i log in JSONL e ne ricostruisce la coda dopo un riavvio, saltando righe troncate', () => {
     const dir = tmpDir();
     const a = new Store(dir);

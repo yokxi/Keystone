@@ -241,6 +241,8 @@ export class Store {
 
   appendLog(agentId: string, entries: LogEntry[]): void {
     if (!entries.length) return;
+    // la coda va caricata da disco PRIMA di scrivere, altrimenti conterrebbe già le nuove righe
+    const tail = this.logTail(agentId);
     const file = this.logFile(agentId);
     try {
       if (fs.existsSync(file) && fs.statSync(file).size > LOG_MAX_BYTES) fs.renameSync(file, file.replace(/\.jsonl$/, '.1.jsonl'));
@@ -248,7 +250,6 @@ export class Store {
       /* rotazione al prossimo giro */
     }
     fs.appendFileSync(file, entries.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
-    const tail = this.logTail(agentId);
     tail.push(...entries);
     if (tail.length > LOG_TAIL) tail.splice(0, tail.length - LOG_TAIL);
   }
