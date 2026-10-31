@@ -1,40 +1,82 @@
-// Repository e worktree.
+// Repository, worktree, merge approvati, test.
 //
-// Ogni task lavora in un proprio worktree su `Keystone/<agente>/<task>-<slug>`, sotto
-// `<home>/worktrees/<repo>/<agente>-<task>`. Il checkout dell'utente non viene mai toccato da qui:
-// si leggono solo il suo branch e se ha modifiche. Le operazioni che cambiano i worktree di un repo
-// sono serializzate (una alla volta per repo).
+// Ogni task lavora in un proprio worktree su `Keystone/<agente>/<task>-<slug>`, nella cartella
+// `<home>/worktrees/<repo>/ks-<agente>-<task>`. Il checkout dell'utente viene toccato SOLO da un
+// merge approvato. Le operazioni che cambiano worktree e branch di un repo sono serializzate.
 //
-// Fase 2: registrazione dei repo, creazione/rimozione dei worktree, diff, commit dei lavori
-// lasciati a metà. Merge su approvazione, conflitti e blocco del push arrivano in Fase 3.
+// MERGE APPROVATO (merge()):
+//   1. il lavoro rimasto non committato nel worktree viene committato sul branch dell'agente
+//   2. controlli: il checkout che ha la base estratta non deve avere modifiche tracciate; il merge
+//      non deve avere conflitti (`git merge-tree`)
+//   3. il commit di merge viene costruito FUORI dal working tree (`merge-tree --write-tree` +
+//      `commit-tree`), con l'identità dell'utente e firmato se la sua configurazione firma
+//   4. applicazione:
+//      - se la base è estratta in un checkout (di solito il tuo): controllo preliminare a secco
+//        (`read-tree -n -m -u`: nessun file non tracciato verrebbe sovrascritto), poi
+//        `git merge --ff-only <commit>`: il nuovo commit ha come primo genitore la tua HEAD, quindi
+//        è un fast-forward: git aggiorna indice e file cambiati e poi sposta il branch. Alla fine
+//        HEAD è il commit di merge e `git status` è pulito (verificato). Se qualcosa fallisce, il
+//        checkout viene riportato esattamente al commit di partenza.
+//      - se la base non è estratta da nessuna parte: `git update-ref <base> <nuovo> <vecchio>`,
+//        che è atomico e fallisce se nel frattempo la base è cambiata.
+//   5. il worktree viene chiuso, il branch dell'agente resta.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { DiffFile, Repo, Worktree } from '@keystone/shared';
+import type { Decision, DiffFile, Repo, Worktree } from '@keystone/shared';
+import { MERGE_OPTIONS } from '@keystone/shared';
 import { ensureDir, samePath } from '../util/fsx.js';
 import { git, gitOut, identityEnv } from '../util/git.js';
-import { slugify } from '../util/text.js';
+import { runShell } from '../util/proc.js';
+import { lastLines, slugify } from '../util/text.js';
 import type { Ctx } from './context.js';
 import { parseUnifiedDiff } from './diff.js';
+import { guardActive, installGuard, WORKTREE_PREFIX } from './gitsafety.js';
 
 export const BRANCH_PREFIX = 'Keystone';
+
+export type RepoErrorCode = 'not_found' | 'not_git' | 'not_root' | 'no_commits' | 'refused' | 'conflict' | 'dirty' | 'empty' | 'unsafe' | 'failed';
 
 export class RepoError extends Error {
   constructor(
     message: string,
-    readonly code: 'not_found' | 'not_git' | 'not_root' | 'no_commits' | 'duplicate' | 'refused' | 'failed' = 'failed',
+    readonly code: RepoErrorCode = 'failed',
+    /** code "conflict": i file in conflitto */
+    readonly files: string[] = [],
   ) {
     super(message);
     this.name = 'RepoError';
   }
 }
 
+export interface MergeResult {
+  sha: string;
+  base: string;
+  branch: string;
+  files: number;
+}
+
+export interface TestResult {
+  command: string;
+  pass: boolean;
+  code: number | null;
+  timedOut: boolean;
+  /** coda dell'output */
+  output: string;
+  durationMs: number;
+}
+
 export interface RepoManagerOptions {
   worktreesDir: string;
-  /** tentativi di rimozione di una cartella occupata (Windows) */
+  /** file di regole incluso dal guardiano git (core/gitsafety.ts) */
+  guardFile: string;
+  /** firma i commit di merge se la configurazione git dell'utente firma (default true) */
+  signMerges?: boolean;
   removeAttempts?: number;
   removeDelayMs?: number;
+  /** solo test: punti in cui simulare un guasto durante il merge */
+  faults?: { afterApply?: () => void | Promise<void>; beforeApply?: () => void | Promise<void> };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -92,7 +134,7 @@ export class RepoManager {
     return next;
   }
 
-  /** Registra un repository. Il percorso deve essere la radice del repo, non una sottocartella. */
+  /** Registra un repository (la radice, con almeno un commit) e vi installa il guardiano git. */
   async add(p: string): Promise<Repo> {
     const abs = path.resolve(p);
     if (!fs.existsSync(abs)) throw new RepoError(`${abs} non esiste`, 'not_found');
@@ -105,12 +147,14 @@ export class RepoManager {
     if ((await git(abs, ['rev-parse', '--verify', '--quiet', 'HEAD'], { allowFail: true })).code !== 0) {
       throw new RepoError(`${abs} non ha ancora commit: crea almeno un commit`, 'no_commits');
     }
+    await installGuard(abs, this.opts.guardFile);
     const existing = this.repos.find((r) => samePath(r.path, abs));
     if (existing) return this.refresh(existing.id);
     let id = slugify(path.basename(abs), 40);
     for (let i = 2; this.get(id); i++) id = `${slugify(path.basename(abs), 36)}-${i}`;
     const repo: Repo = { id, name: path.basename(abs), path: abs, branch: await this.currentBranch(abs), dirty: false, ci: 'unknown', worktrees: [] };
     this.repos.push(repo);
+    this.ctx.log.info(`guardiano git installato in ${abs} (push bloccato nei worktree degli agenti)`);
     return this.refresh(id);
   }
 
@@ -144,13 +188,21 @@ export class RepoManager {
     return r;
   }
 
+  setCi(repoId: string, ci: Repo['ci']): void {
+    const r = this.get(repoId);
+    if (!r || r.ci === ci) return;
+    r.ci = ci;
+    this.changed(r);
+  }
+
   branchName(agentId: string, taskId: string, title: string): string {
     return `${BRANCH_PREFIX}/${agentId}/${taskId}-${slugify(title, 30)}`;
   }
 
   /**
-   * Crea il worktree di un task, a partire dal branch dell'utente (o da `startPoint`). Se il branch
-   * esiste già (task ripreso), il worktree lo riusa.
+   * Crea il worktree di un task a partire dal branch dell'utente (o da `startPoint`). Se il branch
+   * esiste già (task ripreso), il worktree lo riusa. Prima di consegnarlo verifica che il
+   * guardiano git sia attivo: altrimenti si rifiuta (meglio fermi che senza protezione).
    */
   createWorktree(repoId: string, agentId: string, task: { id: string; title: string }, startPoint?: string): Promise<Worktree> {
     return this.serial(repoId, async () => {
@@ -160,8 +212,9 @@ export class RepoManager {
       if (existing && fs.existsSync(existing.path)) return existing;
       const base = await this.currentBranch(r.path);
       if (base === 'HEAD') throw new RepoError(`il checkout di ${r.name} non è su un branch (HEAD staccato)`, 'refused');
+      await installGuard(r.path, this.opts.guardFile);
       const branch = this.branchName(agentId, task.id, task.title);
-      const dir = path.join(this.opts.worktreesDir, r.id, id);
+      const dir = path.join(this.opts.worktreesDir, r.id, `${WORKTREE_PREFIX}${id}`);
       if (fs.existsSync(dir)) {
         // residuo di un tentativo precedente: va tolto prima di ricrearlo
         await git(r.path, ['worktree', 'remove', '--force', dir], { allowFail: true });
@@ -170,8 +223,11 @@ export class RepoManager {
       }
       ensureDir(path.dirname(dir));
       const exists = (await git(r.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFail: true })).code === 0;
-      const args = exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', '-b', branch, dir, startPoint ?? base];
-      await git(r.path, args);
+      await git(r.path, exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', '-b', branch, dir, startPoint ?? base]);
+      if (!(await guardActive(dir))) {
+        await git(r.path, ['worktree', 'remove', '--force', dir], { allowFail: true });
+        throw new RepoError(`il guardiano git non risulta attivo in ${dir}: worktree non consegnato all'agente`, 'unsafe');
+      }
       const w: Worktree = { id, repoId: r.id, agentId, taskId: task.id, branch, base, path: dir, status: 'active', files: 0, additions: 0, deletions: 0 };
       r.worktrees = [...r.worktrees.filter((x) => x.id !== id), w];
       this.changed(r);
@@ -200,22 +256,36 @@ export class RepoManager {
   async diff(repoId: string, worktreeId: string): Promise<DiffFile[]> {
     const w = this.requireWorktree(repoId, worktreeId);
     if (w.status !== 'active' || !fs.existsSync(w.path)) {
-      // worktree chiuso: diff tra la base e il branch conservato
+      // worktree chiuso: diff tra il punto di partenza e il branch conservato
       const r = this.require(repoId);
-      const fork = (await git(r.path, ['merge-base', w.base, w.branch], { allowFail: true })).stdout.trim();
+      const meta = this.ctx.store.data.worktreeMeta?.[`${repoId}/${w.id}`];
+      const fork = meta?.forkSha ?? (await git(r.path, ['merge-base', w.base, w.branch], { allowFail: true })).stdout.trim();
       if (!fork) return [];
       return parseUnifiedDiff(await gitOut(r.path, ['-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '-M', fork, w.branch]));
     }
     return this.diffWorktree(w);
   }
 
+  /** Il .git del worktree punta ancora a questo repository? (un agente potrebbe averlo riscritto) */
+  private async worktreeIntact(r: Repo, w: Worktree): Promise<boolean> {
+    const top = await git(w.path, ['rev-parse', '--show-toplevel', '--git-common-dir'], { allowFail: true });
+    if (top.code !== 0) return false;
+    const [toplevel, common] = top.stdout.trim().split('\n');
+    const repoCommon = path.resolve(r.path, await gitOut(r.path, ['rev-parse', '--git-common-dir']));
+    return !!toplevel && !!common && samePath(toplevel, w.path) && samePath(path.resolve(w.path, common), repoCommon);
+  }
+
   /**
-   * Committa sul branch del worktree il lavoro rimasto non committato (es. prima di abbandonarlo),
-   * con l'identità indicata. Restituisce true se ha creato un commit.
+   * Committa sul branch del worktree il lavoro rimasto non committato, con l'identità indicata
+   * (quella dell'agente). Restituisce true se ha creato un commit.
    */
   async commitAll(repoId: string, worktreeId: string, message: string, identity: { name: string; email: string }): Promise<boolean> {
+    const r = this.require(repoId);
     const w = this.requireWorktree(repoId, worktreeId);
     if (!fs.existsSync(w.path)) return false;
+    if (!(await this.worktreeIntact(r, w))) throw new RepoError(`il collegamento .git di ${w.id} non punta più a ${r.name}: non committo nulla`, 'unsafe');
+    const branch = await this.currentBranch(w.path);
+    if (branch !== w.branch) throw new RepoError(`${w.id} è su ${branch}, non sul branch dell'agente ${w.branch}`, 'unsafe');
     const status = await gitOut(w.path, ['status', '--porcelain']);
     if (!status) return false;
     const env = { ...process.env, ...identityEnv(identity.name, identity.email) };
@@ -234,6 +304,7 @@ export class RepoManager {
         await this.commitAll(repoId, worktreeId, message, identity);
       } catch (e) {
         this.ctx.log.warn(`commit prima di abbandonare ${w.id}: ${(e as Error).message}`);
+        if (e instanceof RepoError && e.code === 'unsafe') return; // lasciato com'è, da controllare a mano
       }
       w.status = 'abandoned';
       await this.removeWorktree(r, w);
@@ -241,12 +312,176 @@ export class RepoManager {
     });
   }
 
+  // ---- merge --------------------------------------------------------------------------------
+
+  /** La cartella in cui `branch` è estratto (il checkout dell'utente o un altro worktree), se c'è. */
+  async checkoutOf(r: Repo, branch: string): Promise<string | undefined> {
+    const out = await gitOut(r.path, ['worktree', 'list', '--porcelain']);
+    let current: string | undefined;
+    for (const line of out.split('\n')) {
+      if (line.startsWith('worktree ')) current = line.slice(9).trim();
+      else if (line.trim() === `branch refs/heads/${branch}` && current) return path.resolve(current);
+    }
+    return undefined;
+  }
+
+  /** Il merge si può fare? (senza cambiare nulla) */
+  async canMerge(repoId: string, worktreeId: string): Promise<{ ok: true; tree: string } | { ok: false; error: RepoError }> {
+    const r = this.require(repoId);
+    const w = this.requireWorktree(repoId, worktreeId);
+    if (w.status !== 'active') return { ok: false, error: new RepoError(`il worktree ${w.id} è ${w.status}`, 'refused') };
+    const target = await this.checkoutOf(r, w.base);
+    if (target && (await this.isDirty(target))) {
+      return { ok: false, error: new RepoError(`il checkout ${target} (${w.base}) ha modifiche non committate: committale o mettile da parte, poi approva di nuovo`, 'dirty') };
+    }
+    const mt = await git(r.path, ['merge-tree', '--write-tree', '--name-only', '--no-messages', `refs/heads/${w.base}`, `refs/heads/${w.branch}`], { allowFail: true });
+    if (mt.code === 1) {
+      const files = mt.stdout.trim().split('\n').slice(1).filter(Boolean);
+      return { ok: false, error: new RepoError(`il merge andrebbe in conflitto in: ${files.join(', ') || '(file sconosciuti)'}`, 'conflict', files) };
+    }
+    if (mt.code !== 0) return { ok: false, error: new RepoError(`merge-tree non riuscito: ${mt.stderr.trim()}`, 'failed') };
+    return { ok: true, tree: mt.stdout.split('\n')[0]!.trim() };
+  }
+
+  /**
+   * Unisce il branch di un worktree nella sua base. SOLO con una decisione di merge risolta con
+   * "Merge" che riguarda proprio questo worktree. Atomico: se fallisce, la base resta com'era.
+   */
+  merge(decision: Decision, opts: { commitMessage: string; agentIdentity: { name: string; email: string } }): Promise<MergeResult> {
+    return this.serial(decision.repoId ?? '?', () => this.doMerge(decision, opts));
+  }
+
+  private async doMerge(d: Decision, opts: { commitMessage: string; agentIdentity: { name: string; email: string } }): Promise<MergeResult> {
+    if (d.kind !== 'merge') throw new RepoError('serve una decisione di merge', 'refused');
+    if (d.status !== 'answered' || d.answer?.option !== MERGE_OPTIONS[0]) throw new RepoError(`la decisione ${d.id} non approva il merge`, 'refused');
+    if (!d.repoId || !d.worktree) throw new RepoError(`la decisione ${d.id} non indica repository e worktree`, 'refused');
+    const r = this.require(d.repoId);
+    const w = this.requireWorktree(r.id, d.worktree);
+    if (w.status !== 'active') throw new RepoError(`il worktree ${w.id} è ${w.status}`, 'refused');
+
+    // 1. il lavoro dell'agente è tutto committato sul suo branch
+    await this.commitAll(r.id, w.id, opts.commitMessage, opts.agentIdentity);
+    const baseSha = await gitOut(r.path, ['rev-parse', `refs/heads/${w.base}`]);
+    const branchSha = await gitOut(r.path, ['rev-parse', `refs/heads/${w.branch}`]);
+    if (Number(await gitOut(r.path, ['rev-list', '--count', `${baseSha}..${branchSha}`])) === 0) throw new RepoError(`${w.branch} non ha modifiche da unire`, 'empty');
+
+    // 2. controlli: checkout pulito, nessun conflitto
+    const check = await this.canMerge(r.id, w.id);
+    if (!check.ok) throw check.error;
+
+    // 3. commit di merge costruito fuori dal working tree, con l'identità dell'utente
+    const sign = this.opts.signMerges !== false && (await git(r.path, ['config', '--type=bool', '--get', 'commit.gpgsign'], { allowFail: true })).stdout.trim() === 'true';
+    const msg = `Merge ${w.branch} in ${w.base}\n\n${opts.commitMessage}\n\nApprovato in Keystone (decisione ${d.id}${w.taskId ? `, task ${w.taskId}` : ''}).`;
+    const ct = await git(r.path, ['commit-tree', ...(sign ? ['-S'] : []), check.tree, '-p', baseSha, '-p', branchSha, '-m', msg], { allowFail: true, timeoutMs: 120_000 });
+    if (ct.code !== 0) {
+      const why = (ct.stderr || ct.stdout).trim().split('\n').slice(-2).join(' ');
+      throw new RepoError(sign ? `la firma del commit di merge non è riuscita (commit.gpgsign=true): ${why}` : `impossibile creare il commit di merge: ${why}`, 'failed');
+    }
+    const mergeSha = ct.stdout.trim();
+
+    // 4. applicazione atomica
+    await this.opts.faults?.beforeApply?.();
+    const target = await this.checkoutOf(r, w.base);
+    if (target) await this.applyToCheckout(target, w.base, baseSha, mergeSha);
+    else {
+      const up = await git(r.path, ['update-ref', '-m', `keystone: merge ${w.branch}`, `refs/heads/${w.base}`, mergeSha, baseSha], { allowFail: true });
+      if (up.code !== 0) throw new RepoError(`${w.base} è cambiato durante il merge: riprova (${up.stderr.trim()})`, 'refused');
+      try {
+        await this.opts.faults?.afterApply?.();
+      } catch (e) {
+        await git(r.path, ['update-ref', `refs/heads/${w.base}`, baseSha, mergeSha], { allowFail: true });
+        throw new RepoError(`merge annullato: ${(e as Error).message}`, 'failed');
+      }
+    }
+
+    // 5. chiusura: il branch resta, il worktree si chiude, il diff unito resta consultabile
+    const files = (await gitOut(r.path, ['diff', '--name-only', baseSha, mergeSha])).split('\n').filter(Boolean).length;
+    const meta = (this.ctx.store.data.worktreeMeta ??= {});
+    meta[`${r.id}/${w.id}`] = { forkSha: await gitOut(r.path, ['merge-base', baseSha, branchSha]), mergedSha: mergeSha };
+    w.status = 'merged';
+    await this.removeWorktree(r, w);
+    await this.refresh(r.id);
+    return { sha: mergeSha.slice(0, 7), base: w.base, branch: w.branch, files };
+  }
+
+  /**
+   * Porta il checkout dell'utente da `baseSha` a `mergeSha` (fast-forward). Se un passo fallisce,
+   * il checkout torna esattamente a `baseSha`.
+   */
+  private async applyToCheckout(target: string, base: string, baseSha: string, mergeSha: string): Promise<void> {
+    const head = await gitOut(target, ['rev-parse', 'HEAD']);
+    if (head !== baseSha) throw new RepoError(`${base} è cambiato durante il merge: riprova`, 'refused');
+    // a secco: nessun file non tracciato verrebbe sovrascritto, l'indice è coerente
+    const dry = await git(target, ['read-tree', '-n', '-m', '-u', baseSha, mergeSha], { allowFail: true });
+    if (dry.code !== 0) throw new RepoError(`il merge toccherebbe file non tracciati o modificati in ${target}: ${lastLines(dry.stderr.trim(), 3)}`, 'dirty');
+    try {
+      const ff = await git(target, ['merge', '--ff-only', '-q', mergeSha], { allowFail: true });
+      if (ff.code !== 0) throw new Error(lastLines((ff.stderr || ff.stdout).trim(), 3));
+      await this.opts.faults?.afterApply?.();
+      const now = await gitOut(target, ['rev-parse', 'HEAD']);
+      if (now !== mergeSha) throw new Error(`HEAD è ${now.slice(0, 7)} invece di ${mergeSha.slice(0, 7)}`);
+      if (await this.isDirty(target)) throw new Error('il working tree non è pulito dopo il merge');
+    } catch (e) {
+      await this.rollbackCheckout(target, base, baseSha, mergeSha);
+      throw new RepoError(`merge non applicato, ${base} è rimasto com'era: ${(e as Error).message}`, 'failed');
+    }
+  }
+
+  private async rollbackCheckout(target: string, base: string, baseSha: string, mergeSha: string): Promise<void> {
+    // il checkout era pulito prima del merge (verificato): tornare a baseSha non perde lavoro
+    await git(target, ['reset', '-q', '--hard', baseSha], { allowFail: true });
+    const added = (await gitOut(target, ['diff', '--name-only', '--diff-filter=A', baseSha, mergeSha])).split('\n').filter(Boolean);
+    for (const f of added) {
+      const tracked = (await git(target, ['ls-files', '--error-unmatch', f], { allowFail: true })).code === 0;
+      if (!tracked) fs.rmSync(path.join(target, f), { force: true });
+    }
+    const branchNow = await gitOut(target, ['rev-parse', `refs/heads/${base}`]);
+    if (branchNow !== baseSha) await git(target, ['update-ref', `refs/heads/${base}`, baseSha], { allowFail: true });
+    this.ctx.log.warn(`merge annullato: ${target} riportato a ${baseSha.slice(0, 7)}`);
+  }
+
+  // ---- pulizia ------------------------------------------------------------------------------
+
+  /**
+   * Rimuove i worktree orfani: cartelle in <home>/worktrees/<repo>/ che non corrispondono a un
+   * worktree attivo, registrazioni di git senza cartella (`git worktree prune`), worktree attivi
+   * la cui cartella non esiste più. Restituisce cosa ha fatto.
+   */
+  async pruneOrphans(): Promise<string[]> {
+    const report: string[] = [];
+    for (const r of this.repos) {
+      await this.serial(r.id, async () => {
+        const active = new Set(r.worktrees.filter((w) => w.status === 'active').map((w) => path.resolve(w.path).toLowerCase()));
+        const dir = path.join(this.opts.worktreesDir, r.id);
+        if (fs.existsSync(dir)) {
+          for (const name of fs.readdirSync(dir)) {
+            const p = path.join(dir, name);
+            if (active.has(path.resolve(p).toLowerCase())) continue;
+            await git(r.path, ['worktree', 'remove', '--force', p], { allowFail: true });
+            const ok = await this.removeDir(p);
+            report.push(`${ok ? 'rimosso' : 'NON rimosso (occupato)'}: ${p}`);
+          }
+        }
+        for (const w of r.worktrees) {
+          if (w.status === 'active' && !fs.existsSync(w.path)) {
+            w.status = 'abandoned';
+            report.push(`worktree ${w.id} senza cartella: segnato come abbandonato`);
+          }
+        }
+        const pr = await git(r.path, ['worktree', 'prune', '-v'], { allowFail: true });
+        for (const line of (pr.stdout + pr.stderr).split('\n').filter(Boolean)) report.push(`git worktree prune (${r.name}): ${line.trim()}`);
+        this.changed(r);
+      });
+    }
+    return report;
+  }
+
   /** Rimuove la cartella di un worktree con retry (Windows) e poi `git worktree prune`. */
   async removeWorktree(r: Repo, w: Worktree): Promise<boolean> {
     await git(r.path, ['worktree', 'remove', '--force', w.path], { allowFail: true });
     const ok = await this.removeDir(w.path);
     await git(r.path, ['worktree', 'prune'], { allowFail: true });
-    if (!ok) this.ctx.log.warn(`la cartella ${w.path} è ancora occupata: verrà rimossa più tardi`);
+    if (!ok) this.ctx.log.warn(`la cartella ${w.path} è ancora occupata: verrà rimossa con la pulizia dei worktree orfani`);
     return ok;
   }
 
@@ -262,6 +497,35 @@ export class RepoManager {
       await sleep((this.opts.removeDelayMs ?? 250) * (i + 1));
     }
     return !fs.existsSync(dir);
+  }
+
+  // ---- test del repository target -----------------------------------------------------------
+
+  /** Il comando di test del repository, se riconoscibile. */
+  detectTestCommand(dir: string): string | undefined {
+    const pkg = path.join(dir, 'package.json');
+    if (fs.existsSync(pkg)) {
+      try {
+        const test = (JSON.parse(fs.readFileSync(pkg, 'utf8')) as { scripts?: Record<string, string> }).scripts?.test;
+        if (test && !/no test specified/.test(test)) return 'npm test';
+      } catch {
+        /* package.json non valido */
+      }
+    }
+    if (fs.existsSync(path.join(dir, 'Cargo.toml'))) return 'cargo test';
+    if (fs.existsSync(path.join(dir, 'go.mod'))) return 'go test ./...';
+    if (['pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini'].some((f) => fs.existsSync(path.join(dir, f)))) return 'python -m pytest';
+    return undefined;
+  }
+
+  /** Esegue i test nel worktree, con l'ambiente indicato (quello sicuro degli agenti). */
+  async runTests(repoId: string, worktreeId: string, opts: { command?: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<TestResult | undefined> {
+    const w = this.requireWorktree(repoId, worktreeId);
+    const command = opts.command ?? this.detectTestCommand(w.path);
+    if (!command) return undefined;
+    const res = await runShell(command, { cwd: w.path, env: opts.env, timeoutMs: opts.timeoutMs });
+    const output = lastLines(res.output.trim(), 40) + (res.timedOut ? `\n(tempo scaduto dopo ${Math.round(opts.timeoutMs / 1000)} s: processi terminati)` : '');
+    return { command, pass: res.code === 0 && !res.timedOut, code: res.code, timedOut: res.timedOut, output, durationMs: res.durationMs };
   }
 
   private changed(r: Repo): void {

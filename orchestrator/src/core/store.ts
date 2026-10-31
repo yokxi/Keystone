@@ -45,6 +45,14 @@ export interface TeamState {
   inflight: Record<string, InflightJob>;
   /** solleciti già inviati per task (worker che finisce il turno senza update_task) */
   nudges: Record<string, number>;
+  /** volte in cui un task è tornato al worker per test falliti */
+  ciFixes: Record<string, number>;
+}
+
+/** Dati di un worktree unito, per mostrarne ancora il diff. Chiave: `<repo>/<worktree>`. */
+export interface WorktreeMeta {
+  forkSha?: string;
+  mergedSha?: string;
 }
 
 export interface StateData {
@@ -63,6 +71,7 @@ export interface StateData {
   /** agentId -> chiavi di regola "consenti sempre" */
   permissionRules: Record<string, string[]>;
   team: TeamState;
+  worktreeMeta: Record<string, WorktreeMeta>;
 }
 
 export const FEED_LIMIT = 300;
@@ -86,7 +95,8 @@ export function emptyState(now: number): StateData {
     counters: {},
     sessions: {},
     permissionRules: {},
-    team: { inflight: {}, nudges: {} },
+    team: { inflight: {}, nudges: {}, ciFixes: {} },
+    worktreeMeta: {},
   };
 }
 

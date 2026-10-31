@@ -9,7 +9,7 @@ import { demoRepo, testCtx, tmpDir } from './helpers.js';
 function manager() {
   const dir = tmpDir();
   const ctx = testCtx(path.join(dir, 'state'));
-  return { repos: new RepoManager(ctx, { worktreesDir: path.join(dir, 'worktrees'), removeDelayMs: 20 }), dir, ctx };
+  return { repos: new RepoManager(ctx, { worktreesDir: path.join(dir, 'worktrees'), guardFile: path.join(dir, 'git', 'agent-guard.gitconfig'), removeDelayMs: 20 }), dir, ctx };
 }
 
 describe('RepoManager', () => {
@@ -90,7 +90,7 @@ describe('RepoManager', () => {
     const { repos, dir } = manager();
     const repo = await demoRepo(dir);
     await repos.add(repo);
-    const stale = path.join(dir, 'worktrees', 'repo', 'elena-t4');
+    const stale = path.join(dir, 'worktrees', 'repo', 'ks-elena-t4');
     fs.mkdirSync(stale, { recursive: true });
     fs.writeFileSync(path.join(stale, 'residuo.txt'), 'x');
     const wt = await repos.createWorktree('repo', 'elena', { id: 't4', title: 'residuo' });
