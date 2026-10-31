@@ -1,4 +1,5 @@
 // Costruisce orchestratore e server a partire dalla configurazione (usato da main.ts e dai test).
+import path from 'node:path';
 import type { EngineId } from '@keystone/shared';
 import { dataDir, type OrchestratorConfig } from './config.js';
 import type { Logger } from './core/context.js';
@@ -18,7 +19,16 @@ export interface BuildOptions {
 }
 
 export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = {}): Orchestrator {
-  const engines = opts.engines ?? createEngines(cfg.agents.map((a) => a.engine), opts.engineOptions ?? { sim: { stepDelayMs: cfg.sim.stepDelayMs } });
+  const engines =
+    opts.engines ??
+    createEngines(
+      cfg.agents.map((a) => a.engine),
+      opts.engineOptions ?? {
+        sim: { stepDelayMs: cfg.sim.stepDelayMs },
+        // configurazione isolata di Claude Code, in ~/.keystone (mai ~/.claude dell'utente)
+        claude: { ...cfg.claude, configDir: path.join(cfg.home, 'claude-config') },
+      },
+    );
   const members: TeamMember[] = cfg.agents.map((a) => {
     const engine = engines.get(a.engine);
     if (!engine) throw new Error(`motore ${a.engine} non disponibile per ${a.id}`);
@@ -35,6 +45,7 @@ export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = 
       ciTimeoutMs: cfg.ciTimeoutMs,
     },
     ...(cfg.userName ? { userName: cfg.userName } : {}),
+    defaultBudgetUsd: cfg.budgetUsdPerGoal,
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(opts.repoFaults ? { repoFaults: opts.repoFaults } : {}),
     ...(opts.storeDebounceMs !== undefined ? { storeDebounceMs: opts.storeDebounceMs } : {}),

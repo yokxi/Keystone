@@ -30,6 +30,20 @@ export interface OrchestratorConfig {
   ciTimeoutMs: number;
   userName?: string;
   sim: { stepDelayMs: number };
+  /** tetto di spesa predefinito per obiettivo in dollari (0 = nessun tetto) */
+  budgetUsdPerGoal: number;
+  claude: {
+    leadModel?: string;
+    workerModel?: string;
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    leadEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    maxTurnsLead?: number;
+    maxTurnsWorker?: number;
+    /** login personale di Claude Code (solo uso personale): disattivato di default */
+    useClaudeLogin: boolean;
+    /** registra le trascrizioni dei turni in questa cartella (per i test di replay) */
+    recordDir?: string;
+  };
 }
 
 export const DEFAULT_PORT = 7931;
@@ -66,6 +80,9 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): Orchestrato
     leadReview: true,
     ciTimeoutMs: 10 * 60_000,
     sim: { stepDelayMs: 400 },
+    budgetUsdPerGoal: Number(env.KEYSTONE_BUDGET_USD ?? 5) || 0,
+    // Opus 5.5 ha effort predefinito 'medium': lo si dichiara esplicitamente
+    claude: { useClaudeLogin: false, effort: 'medium', leadEffort: 'high' },
   };
 }
 

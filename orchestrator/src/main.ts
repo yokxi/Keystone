@@ -30,6 +30,13 @@ const HELP = `Keystone orchestratore ${VERSION}
   --sim-delay <ms>     pausa tra i passi del motore sim (default 400)
   --reset              cancella lo stato del profilo prima di partire
   --ci "<comando>"     comando dei test del repository (default: rilevato, es. npm test)
+  --engine sim|claude  motore degli agenti (default sim, senza API)
+  --lead-model <id>    modello del lead (claude: default claude-opus-5-5)
+  --worker-model <id>  modello dei worker (claude: default claude-sonnet-5-5)
+  --effort <livello>   low | medium | high | xhigh | max
+  --budget <dollari>   tetto di spesa per obiettivo (default 5, 0 = nessun tetto; o KEYSTONE_BUDGET_USD)
+  --use-claude-login   usa il login personale di Claude Code invece della chiave API (solo uso personale)
+  --record <cartella>  registra le trascrizioni dei turni Claude (per i test di replay)
 
 manutenzione (non avviano l'orchestratore):
   --prune-worktrees    chiude i worktree di task finiti e rimuove quelli orfani del profilo
@@ -66,6 +73,13 @@ async function main(): Promise<void> {
       'prune-worktrees': { type: 'boolean' },
       'remove-git-guard': { type: 'string' },
       'confirm-guard': { type: 'boolean' },
+      engine: { type: 'string' },
+      'lead-model': { type: 'string' },
+      'worker-model': { type: 'string' },
+      effort: { type: 'string' },
+      budget: { type: 'string' },
+      'use-claude-login': { type: 'boolean' },
+      record: { type: 'string' },
       help: { type: 'boolean' },
     },
   });
@@ -78,7 +92,23 @@ async function main(): Promise<void> {
   if (values.home) cfg.home = path.resolve(values.home);
   cfg.profile = values.profile ?? (values.demo ? 'demo' : 'default');
   if (values.port) cfg.port = Number(values.port);
-  if (values.workers) cfg.agents = defaultAgents('sim', Number(values.workers));
+  const engine = (values.engine ?? 'sim') as 'sim' | 'claude';
+  if (engine !== 'sim' && engine !== 'claude') throw new Error(`motore non valido: ${values.engine} (sim o claude; codex arriva in Fase 6)`);
+  cfg.agents = defaultAgents(engine, values.workers ? Number(values.workers) : 3);
+  if (values['lead-model']) cfg.claude.leadModel = values['lead-model'];
+  if (values['worker-model']) cfg.claude.workerModel = values['worker-model'];
+  if (values.effort) {
+    if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(values.effort)) throw new Error(`effort non valido: ${values.effort}`);
+    cfg.claude.effort = values.effort as 'low';
+    cfg.claude.leadEffort = values.effort as 'low';
+  }
+  if (values.budget !== undefined) {
+    const b = Number(values.budget);
+    if (!Number.isFinite(b) || b < 0) throw new Error(`tetto di spesa non valido: ${values.budget}`);
+    cfg.budgetUsdPerGoal = b;
+  }
+  if (values['use-claude-login']) cfg.claude.useClaudeLogin = true;
+  if (values.record) cfg.claude.recordDir = path.resolve(values.record);
   if (values['sim-delay']) cfg.sim.stepDelayMs = Number(values['sim-delay']);
   if (values.ci) cfg.ciCommand = values.ci;
   if (values.port !== undefined && (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535)) throw new Error(`porta non valida: ${values.port}`);
