@@ -9,7 +9,7 @@ interface Props {
   openMerge: (d: Decision) => void;
 }
 
-const KIND_LABEL = { question: 'Domanda', permission: 'Permesso', merge: 'Merge' } as const;
+const KIND_LABEL = { question: 'Domanda', permission: 'Permesso', merge: 'Merge', budget: 'Tetto di spesa' } as const;
 
 function DecisionCard({ d, state, answer, openMerge }: { d: Decision } & Props) {
   const agent = state.agents.find((a) => a.id === d.agentId);
@@ -29,7 +29,7 @@ function DecisionCard({ d, state, answer, openMerge }: { d: Decision } & Props) 
       <div className="decision-head">
         {agent && <Avatar agent={agent} agents={state.agents} size={20} />}
         <b style={{ color: 'var(--text)' }}>{agent?.name ?? d.agentId}</b>
-        <span className={`badge ${d.kind === 'merge' ? 'ok' : d.kind === 'permission' ? 'warn' : 'info'}`}>{KIND_LABEL[d.kind]}</span>
+        <span className={`badge ${d.kind === 'merge' ? 'ok' : d.kind === 'permission' || d.kind === 'budget' ? 'warn' : 'info'}`}>{KIND_LABEL[d.kind]}</span>
         {d.taskId && <span className="badge">{d.taskId}</span>}
         <span className="mono faint">{d.id}</span>
         <span style={{ marginLeft: 'auto' }} className="faint">
@@ -92,6 +92,19 @@ function DecisionCard({ d, state, answer, openMerge }: { d: Decision } & Props) 
             Nega
           </button>
           <input className="input grow" style={{ width: 'auto' }} placeholder="Motivo del rifiuto (facoltativo)" value={text} onChange={(e) => setText(e.target.value)} />
+        </div>
+      )}
+
+      {d.kind === 'budget' && (
+        <div className="decision-actions">
+          <span className="muted">Nuovo tetto $</span>
+          <input className="input" style={{ width: 110 }} inputMode="decimal" placeholder="es. 10" value={text} onChange={(e) => setText(e.target.value)} aria-label="Nuovo tetto in dollari" />
+          <button className="btn primary" disabled={busy} onClick={() => void act(d.options[0], text.trim() || undefined)}>
+            {d.options[0]}
+          </button>
+          <button className="btn" disabled={busy} onClick={() => void act(d.options[1])}>
+            {d.options[1]}
+          </button>
         </div>
       )}
 

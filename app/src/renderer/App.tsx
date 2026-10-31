@@ -257,7 +257,8 @@ function StatusBar({ state, theme, setTheme, decisions }: { state: ViewState; th
         {state.connected ? (s?.message ?? 'connesso') : 'non connesso'}
       </span>
       <div className="status-items">
-        {decisions > 0 && <span className="badge bad">{decisions} decisioni</span>}
+        {decisions > 0 && <span className="badge bad">{decisions} {decisions === 1 ? 'decisione' : 'decisioni'}</span>}
+        <GoalSpend state={state} />
         <span title="Costo totale (i motori che riportano solo token non contribuiscono)">
           costo <b style={{ color: 'var(--text)' }}>{money(s?.costUsd ?? 0)}</b>
         </span>
@@ -271,6 +272,21 @@ function StatusBar({ state, theme, setTheme, decisions }: { state: ViewState; th
         </button>
       </div>
     </header>
+  );
+}
+
+/** Spesa dell'obiettivo corrente rispetto al suo tetto. */
+function GoalSpend({ state }: { state: ViewState }) {
+  const goal = [...state.goals].reverse().find((g) => g.status === 'planning' || g.status === 'active' || g.status === 'paused') ?? state.goals[state.goals.length - 1];
+  if (!goal) return null;
+  const ratio = goal.budgetUsd ? goal.costUsd / goal.budgetUsd : 0;
+  const cls = goal.status === 'paused' || ratio >= 1 ? 'bad' : ratio >= 0.8 ? 'warn' : '';
+  return (
+    <span className={`badge ${cls}`} title={`Spesa dell'obiettivo ${goal.id}${goal.budgetUsd ? ' rispetto al tetto' : ' (nessun tetto)'}`} data-testid="goal-spend">
+      obiettivo {money(goal.costUsd)}
+      {goal.budgetUsd ? ` / ${money(goal.budgetUsd)}` : ' · senza tetto'}
+      {goal.status === 'paused' ? ' · in pausa' : ''}
+    </span>
   );
 }
 

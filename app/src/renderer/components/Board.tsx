@@ -86,7 +86,7 @@ function TaskCard({ t, state, send, openReview }: { t: Task } & Props) {
 export function Board(props: Props) {
   const { state } = props;
   const [showCancelled, setShowCancelled] = useState(false);
-  const goal = [...state.goals].reverse().find((g) => g.status === 'planning' || g.status === 'active') ?? state.goals[state.goals.length - 1];
+  const goal = [...state.goals].reverse().find((g) => g.status === 'planning' || g.status === 'active' || g.status === 'paused') ?? state.goals[state.goals.length - 1];
   const tasks = state.tasks.filter((t) => !goal || t.goalId === goal.id || !t.goalId);
   const cols: TaskStatus[] = showCancelled ? [...COLUMNS, 'cancelled'] : COLUMNS;
   return (
@@ -102,7 +102,7 @@ export function Board(props: Props) {
       </div>
       {goal ? (
         <div className="card goal-bar">
-          <span className={`badge ${goal.status === 'done' ? 'ok' : goal.status === 'failed' ? 'bad' : goal.status === 'planning' ? 'info' : 'accent'}`}>{goal.status === 'planning' ? 'pianificazione' : goal.status === 'active' ? 'in corso' : goal.status === 'done' ? 'completato' : goal.status === 'failed' ? 'fallito' : 'chiuso'}</span>
+          <span className={`badge ${goal.status === 'done' ? 'ok' : goal.status === 'failed' ? 'bad' : goal.status === 'planning' ? 'info' : goal.status === 'paused' ? 'warn' : 'accent'}`}>{goal.status === 'planning' ? 'pianificazione' : goal.status === 'active' ? 'in corso' : goal.status === 'paused' ? 'in pausa: tetto raggiunto' : goal.status === 'done' ? 'completato' : goal.status === 'failed' ? 'fallito' : 'chiuso'}</span>
           <span className="goal-text grow ellipsis" title={goal.text}>
             {goal.text}
           </span>
@@ -110,6 +110,7 @@ export function Board(props: Props) {
             <div style={{ width: `${Math.round(goal.progress * 100)}%` }} />
           </div>
           <span className="muted mono">{Math.round(goal.progress * 100)}%</span>
+          <BudgetEditor goalId={goal.id} budget={goal.budgetUsd} send={props.send} />
         </div>
       ) : (
         <div className="card goal-bar muted">Nessun obiettivo: scrivilo nella console qui sotto.</div>
@@ -131,5 +132,35 @@ export function Board(props: Props) {
         })}
       </div>
     </div>
+  );
+}
+
+function BudgetEditor({ goalId, budget, send }: { goalId: string; budget: number | undefined; send: Props['send'] }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(budget ? String(budget) : '');
+  if (!editing)
+    return (
+      <button className="btn small ghost" onClick={() => setEditing(true)} title="Cambia il tetto di spesa dell'obiettivo">
+        tetto {budget ? `$${budget.toFixed(2)}` : 'nessuno'}
+      </button>
+    );
+  const n = Number(value.replace(',', '.'));
+  return (
+    <span className="row">
+      <input className="input" style={{ width: 90 }} inputMode="decimal" value={value} onChange={(e) => setValue(e.target.value)} aria-label="Tetto in dollari" autoFocus />
+      <button
+        className="btn small primary"
+        disabled={!(n > 0)}
+        onClick={() => {
+          setEditing(false);
+          void send({ type: 'goal.budget', goalId, budgetUsd: n });
+        }}
+      >
+        Salva
+      </button>
+      <button className="btn small" onClick={() => setEditing(false)}>
+        Annulla
+      </button>
+    </span>
   );
 }
