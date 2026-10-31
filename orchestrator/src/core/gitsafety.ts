@@ -31,9 +31,14 @@ export const WORKTREE_PREFIX = 'ks-';
 
 /** Le regole, valide sia come configurazione d'ambiente sia nel file incluso. */
 export const GUARD_RULES: ReadonlyArray<readonly [string, string]> = [
+  // livello "trasporto": nessun protocollo, ogni URL di push verso un indirizzo inesistente
   ['protocol.allow', 'never'],
   [`url.${PUSH_BLOCK_URL}.pushInsteadOf`, ''],
+  // livello "credenziali": nessun helper (il valore vuoto azzera quelli configurati prima),
+  // nessun programma per chiedere password, ssh che fallisce sempre
   ['credential.helper', ''],
+  ['credential.interactive', 'never'],
+  ['core.askPass', NO_PROGRAM],
   ['core.sshCommand', NO_PROGRAM],
   ['commit.gpgSign', 'false'],
   ['tag.gpgSign', 'false'],
@@ -46,7 +51,35 @@ export const GUARD_RULES: ReadonlyArray<readonly [string, string]> = [
 export const GIT_REDIRECT_VARS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_CONFIG'];
 
 /** Credenziali e canali di autenticazione che un agente non deve ereditare. */
-export const CREDENTIAL_VARS = ['SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITLAB_TOKEN', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_CONFIG_PARAMETERS'];
+export const CREDENTIAL_VARS = [
+  'SSH_AUTH_SOCK',
+  'SSH_AGENT_PID',
+  'SSH_ASKPASS',
+  'SSH_ASKPASS_REQUIRE',
+  'GIT_ASKPASS',
+  'GIT_SSH',
+  'GIT_SSH_COMMAND',
+  'GIT_SSH_VARIANT',
+  'GIT_CONFIG_PARAMETERS',
+  'GH_TOKEN',
+  'GITHUB_TOKEN',
+  'GH_ENTERPRISE_TOKEN',
+  'GITHUB_ENTERPRISE_TOKEN',
+  'GITLAB_TOKEN',
+  'GITLAB_PRIVATE_TOKEN',
+  'BITBUCKET_TOKEN',
+  'AZURE_DEVOPS_EXT_PAT',
+  'SYSTEM_ACCESSTOKEN',
+  'GCM_CREDENTIAL_STORE',
+  'GCM_PROVIDER',
+  'GIT_HTTP_EXTRA_HEADER',
+];
+
+/** Variabili il cui nome indica un'agent SSH o un token di accesso a un servizio git. */
+export function isCredentialVar(name: string): boolean {
+  const n = name.toUpperCase();
+  return CREDENTIAL_VARS.includes(n) || /(^|_)(GH|GITHUB|GITLAB|GITEA|BITBUCKET|GIT)(_[A-Z0-9]+)*_(TOKEN|PAT)$/.test(n) || n.startsWith('SSH_AUTH') || n.startsWith('GCM_');
+}
 
 /** Variabili della sicurezza git: la policy chiede approvazione per ogni comando che le tocca. */
 export const GIT_SAFETY_VARS = ['GIT_ALLOW_PROTOCOL', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_', 'GIT_CONFIG_PARAMETERS', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM', 'GIT_CEILING_DIRECTORIES', 'GIT_PROTOCOL_FROM_USER', 'GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_EXEC_PATH', ...GIT_REDIRECT_VARS];
@@ -60,7 +93,7 @@ export function gitSafeEnv(base: NodeJS.ProcessEnv, extra: Record<string, string
   const env: Record<string, string | undefined> = {};
   for (const [k, v] of Object.entries(base)) {
     const K = k.toUpperCase();
-    if (drop.has(K) || K.startsWith('GIT_CONFIG_KEY_') || K.startsWith('GIT_CONFIG_VALUE_')) continue;
+    if (drop.has(K) || isCredentialVar(K) || K.startsWith('GIT_CONFIG_KEY_') || K.startsWith('GIT_CONFIG_VALUE_')) continue;
     env[k] = v;
   }
   env.GIT_ALLOW_PROTOCOL = 'keystone-none';
@@ -114,19 +147,52 @@ export async function guardKey(repoPath: string): Promise<string> {
   return `includeIf.gitdir/i:${slash(common)}/worktrees/${WORKTREE_PREFIX}*.path`;
 }
 
-/** Installa il guardiano nel .git/config del repository (idempotente). */
-export async function installGuard(repoPath: string, guardFile: string): Promise<void> {
-  writeGuardFile(guardFile);
-  const key = await guardKey(repoPath);
-  const current = (await git(repoPath, ['config', '--local', '--get-all', key], { allowFail: true })).stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-  if (current.includes(slash(guardFile))) return;
-  await git(repoPath, ['config', '--local', '--add', key, slash(guardFile)]);
+export interface GuardPreview {
+  /** il file che verrebbe modificato: il .git/config del repository */
+  configFile: string;
+  /** le righe che verrebbero aggiunte in fondo al file */
+  lines: string[];
+  /** il file di regole di Keystone che la riga include */
+  guardFile: string;
+  /** il guardiano è già installato (nessuna modifica necessaria) */
+  installed: boolean;
 }
 
-/** Rimuove il guardiano dal .git/config del repository. */
+/** Cosa farebbe installGuard(), senza farlo: da mostrare all'utente prima di chiedere conferma. */
+export async function previewGuard(repoPath: string, guardFile: string): Promise<GuardPreview> {
+  const common = path.resolve(repoPath, await gitOut(repoPath, ['rev-parse', '--git-common-dir']));
+  const key = await guardKey(repoPath);
+  const sub = key.slice('includeIf.'.length, -'.path'.length);
+  return {
+    configFile: path.join(common, 'config'),
+    lines: [`[includeIf "${sub}"]`, `\tpath = ${slash(guardFile)}`],
+    guardFile: slash(guardFile),
+    installed: await guardInstalled(repoPath, guardFile),
+  };
+}
+
+export async function guardInstalled(repoPath: string, guardFile: string): Promise<boolean> {
+  const key = await guardKey(repoPath);
+  const current = (await git(repoPath, ['config', '--local', '--get-all', key], { allowFail: true })).stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+  return current.includes(slash(guardFile));
+}
+
+/**
+ * Installa il guardiano nel .git/config del repository (idempotente). Va chiamato solo dopo che
+ * l'utente ha visto l'anteprima e confermato. La riga viene aggiunta in fondo al file, così le
+ * sue regole (credential.helper vuoto, ...) vengono dopo quelle già presenti.
+ */
+export async function installGuard(repoPath: string, guardFile: string): Promise<void> {
+  writeGuardFile(guardFile);
+  if (await guardInstalled(repoPath, guardFile)) return;
+  await git(repoPath, ['config', '--local', '--add', await guardKey(repoPath), slash(guardFile)]);
+}
+
+/** Rimuove il guardiano dal .git/config del repository (la riga e la sezione che la contiene). */
 export async function removeGuard(repoPath: string): Promise<void> {
   const key = await guardKey(repoPath);
   await git(repoPath, ['config', '--local', '--unset-all', key], { allowFail: true });
+  await git(repoPath, ['config', '--local', '--remove-section', key.slice(0, -'.path'.length)], { allowFail: true });
 }
 
 /** Il guardiano è attivo in questo worktree? (verificato prima di affidarlo a un agente) */
