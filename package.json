@@ -17,7 +17,9 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "npm run typecheck && npm test",
-    "orchestrator": "npm run start -w orchestrator --"
+    "orchestrator": "npm run start -w orchestrator --",
+    "app": "npm run dev -w app",
+    "app:build": "npm run build -w app"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
