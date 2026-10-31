@@ -16,10 +16,11 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run typecheck && npm test && npm run test:ui",
     "orchestrator": "npm run start -w orchestrator --",
     "app": "npm run dev -w app",
-    "app:build": "npm run build -w app"
+    "app:build": "npm run build -w app",
+    "test:ui": "vitest run --config vitest.e2e.config.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

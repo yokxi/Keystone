@@ -205,6 +205,16 @@ export function App() {
             else setRegister({ ...(r.arg ? { path: r.arg } : {}) });
             return true;
           }
+          // un merge parte solo dal pulsante nella schermata di review, dopo aver visto il diff
+          if (r.cmd.type === 'decision.answer') {
+            const cmd = r.cmd;
+            const target = state.decisions.find((d) => d.id === cmd.decisionId);
+            if (target?.kind === 'merge') {
+              addFeed(`${target.id} è una decisione di merge: rispondi dalla schermata di review, dopo aver visto il diff.`, 'f-err');
+              openMerge(target);
+              return false;
+            }
+          }
           addFeed(r.echo, 'f-me');
           const err = await send(r.cmd);
           return !err;
