@@ -218,21 +218,13 @@ copre "Always", poi **attende** la risposta dell'utente prima di rispondere all'
 
 ## 6. Come sono astratti i motori
 
-```ts
-interface Engine {
-  id: 'claude' | 'codex'; label: string;
-  model(role): string;
-  checkAuth(): Promise<{ok:true, account} | {ok:false, message}>;
-  runTurn(spec: TurnSpec): Promise<TurnStats>;   // UN turno = un processo
-  authFailedMessage(detail): string;
-}
-TurnSpec = { agentId, role, cwd, prompt, instructions, resume?, env, writableRoots?,
-             abort: AbortController, turn: TurnHandle,
-             permission: PermissionGate,            // (toolName, input, signal) → allow/deny
-             tools: AgentTool[],                    // tool del team, definiti con zod
-             onProcess(child), onSession(id), onModel?(m) }
-TurnStats = { sessionId?, resultText?, subtype?, isError, costUsd?, numTurns?, tokens?, authFailed?, errors[] }
-```
+In sintesi (descrizione, non codice):
+
+| Elemento | Cosa contiene |
+|---|---|
+| **Engine** | Un identificativo (`claude` o `codex`) e un nome visualizzato. Sa dire quale modello usa per ruolo, verificare l'autenticazione, eseguire **un turno** (un processo per turno) e formulare il messaggio da mostrare se l'autenticazione fallisce. |
+| **Input di un turno** | Agente e ruolo, cartella di lavoro, prompt, istruzioni di sistema aggiuntive, eventuale sessione da riprendere, ambiente (sicurezza git + identità), cartelle scrivibili extra, un abort controller, il "gate" dei permessi (tool + input → consenti/nega), i tool del team, e callback per pid del processo, id di sessione e modello effettivo. |
+| **Esito del turno** | Id di sessione, testo finale, sottotipo di esito, flag di errore, costo in dollari o token, numero di turni del modello, eventuale fallimento di autenticazione, lista degli errori. |
 
 - **Il modello è "a turni", non a sessione persistente.** Ogni job (plan, work, review, followup)
   corrisponde a una chiamata `runTurn`. La continuità viene da `resume: sessionId`, salvato per
