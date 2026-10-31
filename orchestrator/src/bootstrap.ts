@@ -2,7 +2,8 @@
 import type { EngineId } from '@keystone/shared';
 import { dataDir, type OrchestratorConfig } from './config.js';
 import type { Logger } from './core/context.js';
-import { Orchestrator, type Merger } from './core/orchestrator.js';
+import { Orchestrator } from './core/orchestrator.js';
+import type { RepoManagerOptions } from './core/repos.js';
 import type { TeamMember } from './core/team.js';
 import { createEngines, type EngineFactoryOptions } from './engines/registry.js';
 import type { EngineAdapter } from './engines/types.js';
@@ -12,7 +13,7 @@ export interface BuildOptions {
   /** motori già pronti (test), al posto di quelli creati dalla configurazione */
   engines?: Map<EngineId, EngineAdapter>;
   engineOptions?: EngineFactoryOptions;
-  merger?: Merger;
+  repoFaults?: RepoManagerOptions['faults'];
   storeDebounceMs?: number;
 }
 
@@ -26,10 +27,16 @@ export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = 
   return new Orchestrator({
     dataDir: dataDir(cfg),
     members,
-    team: { maxConcurrent: cfg.maxConcurrent, turnTimeoutMs: cfg.turnTimeoutMs, leadReview: cfg.leadReview },
+    team: {
+      maxConcurrent: cfg.maxConcurrent,
+      turnTimeoutMs: cfg.turnTimeoutMs,
+      leadReview: cfg.leadReview,
+      ...(cfg.ciCommand ? { ciCommand: cfg.ciCommand } : {}),
+      ciTimeoutMs: cfg.ciTimeoutMs,
+    },
     ...(cfg.userName ? { userName: cfg.userName } : {}),
     ...(opts.logger ? { logger: opts.logger } : {}),
-    ...(opts.merger ? { merger: opts.merger } : {}),
+    ...(opts.repoFaults ? { repoFaults: opts.repoFaults } : {}),
     ...(opts.storeDebounceMs !== undefined ? { storeDebounceMs: opts.storeDebounceMs } : {}),
   });
 }

@@ -9,7 +9,7 @@ import { MessageBus } from './bus.js';
 import { consoleLogger, type Ctx, type Logger } from './context.js';
 import { DecisionError, DecisionQueue, type NewDecision } from './decisions.js';
 import { Memory, MemoryError } from './memory.js';
-import { RepoError, RepoManager } from './repos.js';
+import { RepoError, RepoManager, type RepoManagerOptions } from './repos.js';
 import { Store } from './store.js';
 import { TaskError, TaskGraph } from './taskgraph.js';
 import { Team, type TeamMember, type TeamOptions } from './team.js';
@@ -24,19 +24,6 @@ export class ClientError extends Error {
   }
 }
 
-/**
- * Applica un merge approvato. In Fase 2 non esiste ancora: il merge su approvazione, il controllo
- * delle modifiche non committate e i conflitti arrivano in Fase 3.
- */
-export interface Merger {
-  merge(d: Decision, task: Task | undefined): Promise<{ sha: string; files: number }>;
-}
-
-export const notYetMerger: Merger = {
-  async merge() {
-    throw new RepoError('il merge su approvazione non è ancora disponibile (Fase 3): la decisione resta aperta', 'refused');
-  },
-};
 
 export interface OrchestratorOptions {
   /** cartella dello stato (profilo) */
@@ -46,7 +33,8 @@ export interface OrchestratorOptions {
   userName?: string;
   logger?: Logger;
   now?: () => number;
-  merger?: Merger;
+  /** solo test: guasti simulati durante il merge */
+  repoFaults?: RepoManagerOptions['faults'];
   storeDebounceMs?: number;
 }
 
@@ -65,20 +53,22 @@ export class Orchestrator {
   readonly now: () => number;
   status: OrchestratorStatus;
   private listeners = new Set<Listener>();
-  private merger: Merger;
 
   constructor(opts: OrchestratorOptions) {
     this.log = opts.logger ?? consoleLogger();
     this.now = opts.now ?? Date.now;
     this.userName = opts.userName ?? (os.userInfo().username || 'utente');
-    this.merger = opts.merger ?? notYetMerger;
     this.store = new Store(opts.dataDir, { now: this.now, onWarn: (m) => this.log.warn(m), ...(opts.storeDebounceMs !== undefined ? { debounceMs: opts.storeDebounceMs } : {}) });
     const ctx: Ctx = { store: this.store, now: this.now, emit: (m) => this.emit(m), log: this.log };
     this.tasks = new TaskGraph(ctx);
     this.decisions = new DecisionQueue(ctx);
     this.bus = new MessageBus(ctx);
     this.memory = new Memory(ctx, path.join(opts.dataDir, 'memory'));
-    this.repos = new RepoManager(ctx, { worktreesDir: path.join(opts.dataDir, 'worktrees') });
+    this.repos = new RepoManager(ctx, {
+      worktreesDir: path.join(opts.dataDir, 'worktrees'),
+      guardFile: path.join(opts.dataDir, 'git', 'agent-guard.gitconfig'),
+      ...(opts.repoFaults ? { faults: opts.repoFaults } : {}),
+    });
     const costUsd = this.store.data.agents.reduce((s, a) => s + a.costUsd, 0);
     const tokens = this.store.data.agents.reduce((s, a) => s + a.tokens, 0);
     this.status = { version: VERSION, auth: 'unknown', message: 'avvio…', costUsd, tokens, userName: this.userName };
@@ -92,6 +82,11 @@ export class Orchestrator {
   // ---- ciclo di vita ------------------------------------------------------------------------
 
   async start(): Promise<void> {
+    // cartelle di worktree rimaste occupate o orfane da un'esecuzione precedente
+    await this.repos.pruneOrphans().then(
+      (r) => r.forEach((line) => this.log.info(`pulizia worktree: ${line}`)),
+      (e: Error) => this.log.warn(`pulizia dei worktree all'avvio: ${e.message}`),
+    );
     await this.team.start();
   }
 
@@ -286,7 +281,7 @@ export class Orchestrator {
       kind: 'merge',
       question: `Unire ${t.id} "${t.title}" (${wt.branch}) in ${wt.base}?`,
       options: MERGE_OPTIONS,
-      context: `${summary}\n${wt.files} file, +${wt.additions} -${wt.deletions} | test: ${t.ci}`,
+      context: [summary, `${wt.files} file, +${wt.additions} -${wt.deletions}`, `Test: ${this.team.ciNoteOf(t.id) ?? (t.ci === 'unknown' ? 'non eseguiti' : t.ci)}`].join('\n'),
       taskId: t.id,
       repoId: t.repoId,
       worktree: wt.id,
@@ -311,13 +306,33 @@ export class Orchestrator {
     const t = d.taskId ? this.tasks.get(d.taskId) : undefined;
     const opt = d.answer?.option;
     if (opt === MERGE_OPTIONS[0]) {
+      const wt = d.repoId && d.worktree ? this.repos.findWorktree(d.repoId, d.worktree) : undefined;
+      const agentId = wt?.agentId ?? t?.assignee ?? this.leadId;
       try {
-        const res = await this.merger.merge(d, t);
+        const res = await this.repos.merge(d, {
+          commitMessage: t ? `${t.id}: ${t.title}${t.summary ? `\n\n${t.summary}` : ''}` : `merge ${d.worktree ?? ''}`,
+          agentIdentity: { name: `Keystone ${this.nameOf(agentId)}`, email: `${agentId}@keystone.local` },
+        });
         if (t) this.tasks.setStatus(t.id, 'done', { merged: true });
-        this.bus.feed('merge', `Unito ${d.worktree ?? ''} (${res.sha}, ${res.files} file)`);
+        this.bus.feed('merge', `Unito ${res.branch} in ${res.base} (${res.sha}, ${res.files} file)`);
         if (t?.assignee && this.agent(t.assignee)?.taskId === t.id) this.setAgent(t.assignee, { state: 'idle', activity: `${t.id} unito`, taskId: undefined, worktree: undefined });
         this.team.tick();
       } catch (e) {
+        if (e instanceof RepoError && e.code === 'empty' && t) {
+          // niente da unire (nessuna modifica rispetto alla base): il task è semplicemente completato
+          if (wt?.status === 'active') await this.repos.abandon(wt.repoId, wt.id, `${t.id}: nessuna modifica`, { name: `Keystone ${this.nameOf(agentId)}`, email: `${agentId}@keystone.local` });
+          this.tasks.setStatus(t.id, 'done', { force: true });
+          this.bus.feed('merge', `${t.id}: niente da unire, chiuso come completato`);
+          this.team.tick();
+          return;
+        }
+        if (e instanceof RepoError && e.code === 'conflict' && t && wt && this.team.onMergeConflict(t, { base: wt.base, branch: wt.branch, files: e.files })) {
+          // il branch torna al worker: dopo la risoluzione arriverà una nuova decisione di merge
+          this.decisions.reopen(d.id);
+          this.decisions.cancel(d.id, `conflitto con ${wt.base} in ${e.files.join(', ')}: rimandato a ${this.nameOf(t.assignee!)} per la risoluzione`);
+          this.bus.feed('merge', `${t.id} è in conflitto con ${wt.base} (${e.files.join(', ')}): ${this.nameOf(t.assignee!)} unisce ${wt.base} e risolve`, { agentId: t.assignee! });
+          return;
+        }
         const reason = e instanceof RepoError ? e.message : `merge fallito: ${(e as Error).message}`;
         this.decisions.reopen(d.id, `${d.context ?? ''}\n\nMerge non eseguito: ${reason}`.trim());
         this.notify('warn', `Merge di ${d.taskId ?? d.id} non eseguito: ${reason}`);
@@ -335,6 +350,27 @@ export class Orchestrator {
       if (t.assignee && this.agent(t.assignee)?.taskId === t.id) this.setAgent(t.assignee, { state: 'idle', activity: `${t.id} rifiutato`, taskId: undefined, worktree: undefined });
       this.team.tick();
     }
+  }
+
+  /**
+   * Pulizia manuale dei worktree: chiude quelli attivi il cui task è finito, annullato o sparito
+   * (salvando il lavoro sul branch), poi rimuove le cartelle orfane e fa `git worktree prune`.
+   * I worktree su cui un agente sta lavorando non vengono toccati.
+   */
+  async pruneWorktrees(): Promise<string[]> {
+    const report: string[] = [];
+    for (const r of this.repos.list()) {
+      for (const w of r.worktrees.filter((x) => x.status === 'active')) {
+        const t = w.taskId ? this.tasks.get(w.taskId) : undefined;
+        const finished = !t || t.status === 'done' || t.status === 'cancelled' || t.worktree !== w.id;
+        if (!finished || this.team.isWorkingOn(w.agentId, w.taskId)) continue;
+        await this.repos.abandon(r.id, w.id, `${w.taskId ?? w.id}: lavoro salvato durante la pulizia`, { name: `Keystone ${this.nameOf(w.agentId)}`, email: `${w.agentId}@keystone.local` });
+        report.push(`chiuso il worktree ${w.id} (task ${w.taskId ?? '?'} ${t?.status ?? 'inesistente'}); branch ${w.branch} conservato`);
+      }
+    }
+    report.push(...(await this.repos.pruneOrphans()));
+    this.bus.feed('system', `Pulizia dei worktree: ${report.length ? `${report.length} operazioni` : 'niente da fare'}`);
+    return report;
   }
 
   // ---- intenti del client -------------------------------------------------------------------
@@ -409,6 +445,10 @@ export class Orchestrator {
       case 'repo.add': {
         const r = await this.repos.add(msg.path);
         return { repoId: r.id };
+      }
+      case 'worktrees.prune': {
+        const report = await this.pruneWorktrees();
+        return { report };
       }
     }
   }

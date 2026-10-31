@@ -325,6 +325,7 @@ export const AgentActionMsg = z.object({
 });
 export const DiffRequestMsg = z.object({ ...envelope('diff.request'), requestId: z.string().min(1).max(100), repoId: Id, worktree: Id });
 export const RepoAddMsg = z.object({ ...envelope('repo.add'), path: z.string().min(1) });
+export const WorktreesPruneMsg = z.object({ ...envelope('worktrees.prune') });
 
 export const ClientMessage = z.discriminatedUnion('type', [
   HelloMsg,
@@ -335,6 +336,7 @@ export const ClientMessage = z.discriminatedUnion('type', [
   AgentActionMsg,
   DiffRequestMsg,
   RepoAddMsg,
+  WorktreesPruneMsg,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 

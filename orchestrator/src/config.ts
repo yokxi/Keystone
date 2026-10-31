@@ -25,6 +25,9 @@ export interface OrchestratorConfig {
   maxConcurrent: number;
   turnTimeoutMs: number;
   leadReview: boolean;
+  /** comando dei test del repository target (default: rilevato) */
+  ciCommand?: string;
+  ciTimeoutMs: number;
   userName?: string;
   sim: { stepDelayMs: number };
 }
@@ -61,6 +64,7 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): Orchestrato
     maxConcurrent: 3,
     turnTimeoutMs: 45 * 60_000,
     leadReview: true,
+    ciTimeoutMs: 10 * 60_000,
     sim: { stepDelayMs: 400 },
   };
 }

@@ -18,7 +18,7 @@ import type { EngineAdapter, EngineTurn, TurnSpec } from '../engines/types.js';
 import { lastLines, truncate } from '../util/text.js';
 import { agentEnv } from './agent-env.js';
 import type { Orchestrator } from './orchestrator.js';
-import { classify, describeCall } from './policy.js';
+import { classify, describeCall, describeRuleKey } from './policy.js';
 import { leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, workerInstructions, workPrompt } from './prompts.js';
 import type { InflightJob, JobKind } from './store.js';
 import { teamTools, type ToolHooks } from './tools.js';
@@ -40,6 +40,9 @@ export interface TeamOptions {
   turnTimeoutMs: number;
   /** il lead rivede ogni task prima che la decisione di merge arrivi all'utente */
   leadReview: boolean;
+  /** comando dei test del repository target (default: rilevato, es. npm test) */
+  ciCommand?: string;
+  ciTimeoutMs?: number;
 }
 
 type AbortReason = 'pause' | 'stop' | 'shutdown' | 'cancel' | 'timeout';
@@ -87,6 +90,8 @@ export class Team {
   private pausedJobs = new Map<string, Job>();
   /** task per cui CI/review è già in corso */
   private reviewing = new Set<string>();
+  /** esito dei test dell'ultimo giro per task */
+  private lastCi = new Map<string, string>();
   private stopping = false;
   private authFailed = false;
   private tickQueued = false;
@@ -202,6 +207,12 @@ export class Team {
     const r = this.running.get(agentId);
     if (r && pred(r.job)) return true;
     return (this.queues.get(agentId) ?? []).some(pred);
+  }
+
+  /** L'agente ha un turno (in corso, in coda o in pausa) per questo task? */
+  isWorkingOn(agentId: string, taskId: string | undefined): boolean {
+    if (!taskId) return false;
+    return this.hasJob(agentId, (j) => j.taskId === taskId) || this.pausedJobs.get(agentId)?.taskId === taskId;
   }
 
   private openQuestionOf(agentId: string): Decision | undefined {
@@ -486,8 +497,14 @@ export class Team {
       kind: 'permission',
       tool: ev.tool,
       question: `${m.name} vuole eseguire ${truncate(what, 200)}`,
-      options: PERMISSION_OPTIONS,
-      context: `${verdict.reason}\ncartella: ${cwd}${ev.reason ? `\nmotivo: ${ev.reason}` : ''}\n"${PERMISSION_OPTIONS[1]}" vale per: ${verdict.ruleKey}`,
+      // config git, variabili d'ambiente, hook, git -c, .git: si approva solo la singola esecuzione
+      options: verdict.sticky ? PERMISSION_OPTIONS : [PERMISSION_OPTIONS[0], PERMISSION_OPTIONS[2]],
+      context: [
+        verdict.reason,
+        `cartella: ${cwd}`,
+        ...(ev.reason ? [`motivo: ${ev.reason}`] : []),
+        verdict.sticky ? `"${PERMISSION_OPTIONS[1]}" vale per: ${verdict.ruleKeys.map(describeRuleKey).join('; ')}` : 'Questa azione richiede sempre la tua approvazione: non si può consentire una volta per tutte.',
+      ].join('\n'),
       ...(before?.taskId ? { taskId: before.taskId } : {}),
     });
     entry.decisions.add(d.id);
@@ -498,9 +515,9 @@ export class Team {
     if (before) this.o.setAgent(agentId, { state: before.state === 'waiting_user' ? 'thinking' : before.state, activity: before.activity });
     const opt = res.answer?.option;
     if (res.status === 'answered' && (opt === PERMISSION_OPTIONS[0] || opt === PERMISSION_OPTIONS[1])) {
-      if (opt === PERMISSION_OPTIONS[1]) {
+      if (opt === PERMISSION_OPTIONS[1] && verdict.sticky) {
         const rules = (this.o.store.data.permissionRules[agentId] ??= []);
-        if (!rules.includes(verdict.ruleKey)) rules.push(verdict.ruleKey);
+        for (const k of verdict.ruleKeys) if (!rules.includes(k)) rules.push(k);
         this.o.store.markDirty();
       }
       this.o.agentLog(agentId, 'permission', `consentito: ${what}`);
@@ -606,21 +623,44 @@ export class Team {
     this.o.setAgent(job.agentId, { state: 'idle', activity: 'libero' });
   }
 
-  /** Un worker ha finito: (test in Fase 3) poi review del lead, oppure decisione di merge diretta. */
+  /** Un worker ha finito: test del repository, poi review del lead (o decisione di merge diretta). */
   private async afterWorkerDone(taskId: string): Promise<void> {
     if (this.reviewing.has(taskId)) return;
     this.reviewing.add(taskId);
     try {
       const t = this.o.tasks.get(taskId);
       if (!t || t.status !== 'review' || !t.repoId || !t.worktree) return;
-      if (t.assignee) this.o.setAgent(t.assignee, { state: 'idle', activity: `${t.id} in review` });
+      const worker = t.assignee;
       await this.o.repos.refresh(t.repoId);
-      if (this.opts.leadReview && this.o.agent(this.lead.id)?.active) {
-        const files = await this.o.repos.diff(t.repoId, t.worktree);
-        if (!files.length) {
-          await this.o.openMergeDecision(t, t.summary ?? 'nessuna modifica');
+      const files = await this.o.repos.diff(t.repoId, t.worktree);
+      if (!files.length) {
+        // niente da unire (report, analisi): si chiude senza test né merge
+        await this.o.openMergeDecision(t, t.summary ?? 'nessuna modifica');
+        return;
+      }
+
+      // loop dei test: dopo ogni task, nel worktree, con l'ambiente sicuro degli agenti
+      const ci = await this.runCi(t);
+      if (ci && !ci.pass) {
+        const fixes = this.st.ciFixes[t.id] ?? 0;
+        if (fixes < 1 && worker && this.o.agent(worker)?.active) {
+          this.st.ciFixes[t.id] = fixes + 1;
+          this.o.store.markDirty();
+          this.sendBackToWorker(
+            t.id,
+            `I test sono falliti dopo ${t.id} (${ci.command}):\n${ci.output}\n\nCorreggi gli errori, rilancia i test, poi update_task("${t.id}", status "review", summary).`,
+          );
           return;
         }
+        // secondo fallimento: si va comunque in review, con il fallimento annotato
+        this.o.tasks.update(t.id, { summary: `${t.summary ? `${t.summary}\n` : ''}ATTENZIONE: i test falliscono ancora (${ci.command}).` });
+        this.o.bus.feed('ci', `${t.id}: i test falliscono anche dopo la correzione: va in review con il fallimento annotato`, worker ? { agentId: worker } : {});
+      }
+      const ciNote = !ci ? 'nessun comando di test riconosciuto nel repository' : ci.pass ? `superati (${ci.command}, ${(ci.durationMs / 1000).toFixed(1)} s)` : `FALLITI (${ci.command}):\n${ci.output}`;
+      this.lastCi.set(t.id, ciNote);
+      if (worker) this.o.setAgent(worker, { state: 'idle', activity: `${t.id} in review` });
+
+      if (this.opts.leadReview && this.o.agent(this.lead.id)?.active) {
         this.o.setAgent(this.lead.id, { state: 'reading', activity: `rivede ${t.id}` });
         this.enqueue({
           kind: 'review',
@@ -628,7 +668,7 @@ export class Team {
           taskId: t.id,
           ...(t.goalId ? { goalId: t.goalId } : {}),
           sessionKey: `${this.lead.id}:${t.goalId ?? 'adhoc'}`,
-          prompt: reviewPrompt(this.promptEnv(), t, files, 'non eseguiti (loop dei test in arrivo)'),
+          prompt: reviewPrompt(this.promptEnv(), t, files, ciNote),
         });
       } else {
         await this.o.openMergeDecision(t, t.summary ?? 'Lavoro completato.');
@@ -636,6 +676,57 @@ export class Team {
     } finally {
       this.reviewing.delete(taskId);
     }
+  }
+
+  /** Esito dei test dell'ultimo giro per un task (per il testo della decisione di merge). */
+  ciNoteOf(taskId: string): string | undefined {
+    return this.lastCi.get(taskId);
+  }
+
+  /** Esegue i test del repository target nel worktree del task. */
+  private async runCi(t: Task) {
+    if (!t.repoId || !t.worktree) return undefined;
+    const wt = this.o.repos.requireWorktree(t.repoId, t.worktree);
+    const command = this.opts.ciCommand ?? this.o.repos.detectTestCommand(wt.path);
+    const worker = t.assignee;
+    if (!command) {
+      this.o.tasks.update(t.id, { ci: 'unknown' });
+      if (worker) this.o.agentLog(worker, 'test', 'nessun comando di test riconosciuto: test non eseguiti');
+      return undefined;
+    }
+    this.o.tasks.update(t.id, { ci: 'running' });
+    this.o.repos.setCi(t.repoId, 'running');
+    if (worker) {
+      this.o.setAgent(worker, { state: 'testing', activity: `test di ${t.id}` });
+      this.o.agentLog(worker, 'test', `test: ${command}`);
+    }
+    const m = worker ? this.member(worker) : undefined;
+    const env = agentEnv(process.env, { agentId: worker ?? 'ci', name: m?.name ?? 'CI', cwd: wt.path }) as NodeJS.ProcessEnv;
+    const res = await this.o.repos.runTests(t.repoId, t.worktree, { command, env, timeoutMs: this.opts.ciTimeoutMs ?? 10 * 60_000 });
+    if (!res) return undefined;
+    this.o.tasks.update(t.id, { ci: res.pass ? 'pass' : 'fail' });
+    this.o.repos.setCi(t.repoId, res.pass ? 'pass' : 'fail');
+    if (worker) this.o.agentLog(worker, res.pass ? 'test' : 'error', `test ${res.pass ? 'superati' : 'FALLITI'} (${(res.durationMs / 1000).toFixed(1)} s)\n${lastLines(res.output, 12)}`);
+    this.o.bus.feed('ci', `${t.id}: test ${res.pass ? 'superati' : 'falliti'} (${res.command})`, worker ? { agentId: worker } : {});
+    return res;
+  }
+
+  /**
+   * Un merge approvato è in conflitto con la base (nel frattempo è stato unito altro lavoro): il
+   * branch torna al worker, che unisce la base nel suo worktree, risolve e richiede la review.
+   * Restituisce false se non c'è nessuno a cui rimandarlo (decide l'utente).
+   */
+  onMergeConflict(t: Task, info: { base: string; branch: string; files: string[] }): boolean {
+    if (!t.assignee || !this.o.agent(t.assignee)?.active) return false;
+    delete this.st.ciFixes[t.id];
+    this.o.store.markDirty();
+    this.sendBackToWorker(
+      t.id,
+      `${this.o.userName} ha approvato il merge di ${t.id}, ma ${info.branch} ora è in conflitto con ${info.base} (nel frattempo è stato unito altro lavoro) in: ${info.files.join(', ') || '(vedi git status)'}.\n` +
+        `Nel tuo worktree esegui \`git merge ${info.base}\`, risolvi ogni conflitto tenendo le modifiche di entrambe le parti, rilancia i test e committa il merge (git commit --no-edit). ` +
+        `Non fare rebase, reset né checkout di altri branch. Poi update_task("${t.id}", status "review", summary).`,
+    );
+    return true;
   }
 
   /** Riprende la sessione del worker con un feedback (modifiche richieste, conflitto, test falliti). */
