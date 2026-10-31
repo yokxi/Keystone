@@ -48,6 +48,12 @@ export interface PolicyContext {
   readDirs?: string[];
   /** chiavi "consenti sempre" già approvate per questo agente */
   alwaysAllow?: readonly string[];
+  /**
+   * Percorsi che nessun agente può modificare (negato, non chiesto): il file del guardiano git,
+   * il .git/config del repository (che lo include), il collegamento .git del worktree e i dati dei
+   * worktree in .git/worktrees.
+   */
+  protectedPaths?: string[];
 }
 
 type Finding = { kind: 'deny'; reason: string } | { kind: 'ask'; reason: string; key: string; sticky: boolean };
@@ -99,6 +105,16 @@ interface Scope {
   readRoots: string[];
   /** cartella corrente virtuale (segue i `cd`); undefined = non nota */
   cwd: string | undefined;
+  protectedPaths: string[];
+}
+
+/** `abs` è (o è dentro) un percorso protetto? Confronto anche sui percorsi reali (link). */
+function isProtected(protectedPaths: readonly string[], abs: string): boolean {
+  return protectedPaths.some((p) => insideRoot(p, abs) || isInsideOrEqual(p, abs));
+}
+
+function protectedDenial(prog: string, target: string): Finding {
+  return deny(`${prog}: ${target} è un percorso protetto di Keystone (guardiano git, configurazione del repository o collegamento del worktree): gli agenti non possono modificarlo`);
 }
 
 function checkPath(scope: Scope, word: Word, mode: 'r' | 'w', prog: string): Finding | undefined {
@@ -106,6 +122,7 @@ function checkPath(scope: Scope, word: Word, mode: 'r' | 'w', prog: string): Fin
   if (word.dynamic) return ask(`${prog}: percorso non verificabile "${word.text}"`, `Bash:path:${prog}:${hash(word.text)}`, true);
   if (!scope.cwd) return ask(`${prog}: cartella corrente non nota (cd con variabile)`, `Bash:path:${prog}:${hash(word.text)}`, true);
   const abs = path.resolve(scope.cwd, word.text);
+  if (mode === 'w' && isProtected(scope.protectedPaths, abs)) return protectedDenial(prog, word.text);
   if (hasGitSegment(path.relative(scope.root, abs)) || hasGitSegment(word.text)) {
     if (mode === 'w') return ask(`${prog} scrive in un percorso .git (configurazione, hook o collegamento del worktree): ${word.text}`, exactKey('Bash', `${prog} .git ${word.text}`), false);
   }
@@ -175,6 +192,7 @@ function classifyGit(scope: Scope, words: Word[], raw: string): Finding[] {
     if (opt === '-c' || opt.startsWith('--config-env')) {
       const val = opt === '-c' ? (words[i + 1]?.text ?? '') : opt;
       if (/\bpush\b|send-pack/i.test(val)) out.push(deny(`git -c ${val}: un alias o una configurazione che fa push non è consentito`));
+      if (/^include(if)?\b/i.test(val)) out.push(deny(`git -c ${val}: gli include della configurazione git (il guardiano) non si toccano`));
       out.push(ask(`git ${opt} ${val}: cambia la configurazione git per questo comando`, exactKey('Bash', raw), false));
       i += opt === '-c' ? 2 : 1;
       continue;
@@ -241,6 +259,13 @@ function classifyGit(scope: Scope, words: Word[], raw: string): Finding[] {
     return out;
   }
   if (sub === 'config') {
+    // il guardiano: nessuna chiave include/includeIf e nessun file protetto, nemmeno con conferma
+    if (a.some((x) => /^include(if)?\b/i.test(x))) return [deny('git config: gli include della configurazione git (il guardiano di Keystone) non si possono modificare')];
+    const fileIdx = a.findIndex((x) => x === '--file' || x === '-f' || x.startsWith('--file='));
+    if (fileIdx >= 0) {
+      const f = a[fileIdx]!.startsWith('--file=') ? a[fileIdx]!.slice(7) : (a[fileIdx + 1] ?? '');
+      if (f && scope.cwd && isProtected(scope.protectedPaths, path.resolve(scope.cwd, f))) return [protectedDenial('git config --file', f)];
+    }
     const reads = ['--get', '--get-all', '--get-regexp', '--list', '-l', '--get-urlmatch', 'get', 'list', '--show-origin', '--show-scope', '--name-only', '--null', '-z', '--type', '--bool', '--int', '--path', '--global', '--local', '--system', '--worktree'];
     const nonOpts = a.filter((x) => !x.startsWith('-'));
     const readOnly = a.every((x) => !x.startsWith('-') || reads.some((r) => x === r || x.startsWith(`${r}=`))) && (has('--get', '--get-all', '--get-regexp', '--list', '-l', '--get-urlmatch') || nonOpts[0] === 'get' || nonOpts[0] === 'list' || nonOpts.length === 1);
@@ -609,7 +634,7 @@ function classifyText(scope: Scope, text: string, depth: number): Finding[] {
 
 /** Classifica un comando di shell (Bash o PowerShell). */
 export function classifyShell(command: string, ctx: PolicyContext): Finding[] {
-  const scope: Scope = { role: ctx.role, root: path.resolve(ctx.cwd), readRoots: [ctx.cwd, ...(ctx.readDirs ?? [])], cwd: path.resolve(ctx.cwd) };
+  const scope: Scope = { role: ctx.role, root: path.resolve(ctx.cwd), readRoots: [ctx.cwd, ...(ctx.readDirs ?? [])], cwd: path.resolve(ctx.cwd), protectedPaths: ctx.protectedPaths ?? [] };
   if (!command.trim()) return [ask('comando vuoto', exactKey('Bash', command))];
   return classifyText(scope, command, 0);
 }
@@ -655,6 +680,7 @@ export function classify(tool: string, input: Record<string, unknown>, ctx: Poli
     const p = pathOf(input);
     if (!p) return combine([ask(`${tool} senza percorso`, exactKey(tool, JSON.stringify(input)), false)], always);
     const abs = path.resolve(root, p);
+    if (isProtected(ctx.protectedPaths ?? [], abs)) return { action: 'deny', reason: (protectedDenial(tool, p) as { reason: string }).reason };
     if (hasGitSegment(path.relative(root, abs))) return combine([ask(`${tool} su un percorso .git (configurazione, hook o collegamento del worktree): ${p}`, exactKey(tool, abs), false)], always);
     if (insideRoot(root, abs)) return { action: 'allow', reason: 'modifica dentro il worktree' };
     return combine([ask(`scrittura fuori dal worktree: ${p}`, `Write:${path.dirname(abs)}`)], always);

@@ -16,7 +16,9 @@
 import { PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus } from '@keystone/shared';
 import type { EngineAdapter, EngineTurn, TurnSpec } from '../engines/types.js';
 import { lastLines, truncate } from '../util/text.js';
+import path from 'node:path';
 import { agentEnv } from './agent-env.js';
+import { guardActive } from './gitsafety.js';
 import type { Orchestrator } from './orchestrator.js';
 import { classify, describeCall, describeRuleKey } from './policy.js';
 import { leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, workerInstructions, workPrompt } from './prompts.js';
@@ -69,6 +71,8 @@ interface Running {
   decisions: Set<string>;
   whenAborted: Promise<void>;
   resolveAborted: () => void;
+  /** percorsi che l'agente non può modificare in questo turno */
+  protectedPaths: string[];
 }
 
 interface TurnOutcome {
@@ -325,7 +329,7 @@ export class Team {
     const job = q.shift()!;
     let resolveAborted!: () => void;
     const whenAborted = new Promise<void>((r) => (resolveAborted = r));
-    const entry: Running = { job, decisions: new Set(), whenAborted, resolveAborted };
+    const entry: Running = { job, decisions: new Set(), whenAborted, resolveAborted, protectedPaths: [] };
     this.running.set(agentId, entry);
     entry.done = this.runJob(entry).catch((e) => this.o.log.error(`turno di ${agentId}: ${(e as Error).stack ?? e}`));
   }
@@ -342,6 +346,24 @@ export class Team {
       if (reason === 'shutdown' && d.kind === 'question') continue;
       this.o.decisions.cancel(id, `turno di ${this.o.nameOf(r.job.agentId)} interrotto (${reason})`);
     }
+  }
+
+  /**
+   * Percorsi che l'agente non può modificare: la cartella del guardiano git (~/.keystone/git), il
+   * .git/config del repository (contiene l'include del guardiano), i dati dei worktree in
+   * .git/worktrees e il collegamento .git del worktree.
+   */
+  private async protectedPathsFor(job: Job, cwd: string): Promise<string[]> {
+    const out = [path.dirname(this.o.repos.guardFile)];
+    const goal = job.goalId ? this.o.goal(job.goalId) : undefined;
+    const t = job.taskId ? this.o.tasks.get(job.taskId) : undefined;
+    const repoId = t?.repoId ?? goal?.repoId ?? this.o.repos.defaultRepo()?.id;
+    if (repoId) {
+      const common = await this.o.repos.commonDir(repoId);
+      out.push(path.join(common, 'config'), path.join(common, 'worktrees'));
+    }
+    if (this.member(job.agentId)?.role === 'worker') out.push(path.join(cwd, '.git'));
+    return out;
   }
 
   private cwdFor(job: Job): string {
@@ -367,6 +389,14 @@ export class Team {
     let outcome: TurnOutcome = { status: 'error', errors: [] };
     try {
       const cwd = this.cwdFor(job);
+      entry.protectedPaths = await this.protectedPathsFor(job, cwd);
+      if (m.role === 'worker' && !(await guardActive(cwd))) {
+        // il guardiano git è stato rimosso o manomesso: nessun turno senza protezione
+        const t = job.taskId ? this.o.tasks.get(job.taskId) : undefined;
+        if (t) this.o.tasks.setStatus(t.id, 'blocked', { force: true, reason: 'guardiano git non attivo nel worktree: registra di nuovo il repository' });
+        this.o.notify('warn', `Turno di ${m.name} non avviato: il guardiano git non è attivo in ${cwd}`);
+        throw new Error(`guardiano git non attivo in ${cwd}: turno non avviato`);
+      }
       const session = this.o.store.data.sessions[job.sessionKey];
       const resume = !job.fresh && session && session.engine === m.engine.id ? session.sessionId : undefined;
       const inflight: InflightJob = { kind: job.kind, sessionKey: job.sessionKey, prompt: job.prompt, startedAt: this.o.now(), ...(job.taskId ? { taskId: job.taskId } : {}), ...(job.goalId ? { goalId: job.goalId } : {}) };
@@ -484,7 +514,7 @@ export class Team {
   private async gate(entry: Running, m: TeamMember, cwd: string, ev: Extract<EngineEvent, { type: 'permission_request' }>) {
     const agentId = m.id;
     if (entry.reason) return { allow: false as const, message: 'turno interrotto' };
-    const verdict = classify(ev.tool, ev.input, { role: m.role, cwd, readDirs: [this.o.memory.dir], alwaysAllow: this.o.store.data.permissionRules[agentId] ?? [] });
+    const verdict = classify(ev.tool, ev.input, { role: m.role, cwd, readDirs: [this.o.memory.dir], alwaysAllow: this.o.store.data.permissionRules[agentId] ?? [], protectedPaths: entry.protectedPaths });
     const what = describeCall(ev.tool, ev.input);
     if (verdict.action === 'allow') return { allow: true as const };
     if (verdict.action === 'deny') {
@@ -496,6 +526,8 @@ export class Team {
       agentId,
       kind: 'permission',
       tool: ev.tool,
+      command: what,
+      alwaysAsk: !verdict.sticky,
       question: `${m.name} vuole eseguire ${truncate(what, 200)}`,
       // config git, variabili d'ambiente, hook, git -c, .git: si approva solo la singola esecuzione
       options: verdict.sticky ? PERMISSION_OPTIONS : [PERMISSION_OPTIONS[0], PERMISSION_OPTIONS[2]],

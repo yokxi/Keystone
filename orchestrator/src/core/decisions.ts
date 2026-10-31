@@ -25,6 +25,10 @@ export interface NewDecision {
   repoId?: string;
   worktree?: string;
   tool?: string;
+  /** permesso: il comando completo */
+  command?: string;
+  /** permesso: richiede sempre approvazione (niente "Consenti sempre") */
+  alwaysAsk?: boolean;
 }
 
 export class DecisionQueue {
@@ -68,6 +72,8 @@ export class DecisionQueue {
       ...(input.repoId ? { repoId: input.repoId } : {}),
       ...(input.worktree ? { worktree: input.worktree } : {}),
       ...(input.tool ? { tool: input.tool } : {}),
+      ...(input.command ? { command: input.command } : {}),
+      ...(input.alwaysAsk !== undefined ? { alwaysAsk: input.alwaysAsk } : {}),
     };
     this.all.push(d);
     this.trim();
