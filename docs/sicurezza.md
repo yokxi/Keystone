@@ -217,3 +217,16 @@ e non può modificare file.
 Il classificatore usa un piccolo parser di shell (virgolette, operatori, redirezioni, here-doc,
 sostituzioni, variabili) e analizza anche i comandi annidati. Quando non riesce a capire un
 comando, chiede.
+
+## 6. Dipendenze
+
+- Tutte le dipendenze hanno versioni esatte, il lockfile è nel repository e `npm audit` deve
+  risultare pulito.
+- Regola generale: si usano versioni pubblicate da almeno due settimane. Una correzione di
+  sicurezza ha la precedenza su questa regola.
+- **Electron 44.10.1** (scelta del 31 ottobre 2026): le versioni 44.x fino alla 44.9.0 sono
+  colpite dall'avviso [GHSA-jr5w-w6x2-84p9](https://github.com/advisories/GHSA-jr5w-w6x2-84p9)
+  (certificati intermedi eMudhra compromessi, gravità alta), corretto dalla 44.9.1. Al momento
+  della scelta nessuna 44.x corretta era uscita da almeno due settimane: la prima, la 44.9.1, era
+  del 20 ottobre. Si usa quindi la 44.10.1, l'ultima della serie. Quando la 44.10.1 avrà più di
+  due settimane la regola sarà di nuovo rispettata, senza bisogno di cambiare versione.
