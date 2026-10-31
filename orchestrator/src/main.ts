@@ -13,7 +13,7 @@ import { buildOrchestrator } from './bootstrap.js';
 import { dataDir, defaultAgents, defaultConfig } from './config.js';
 import { consoleLogger } from './core/context.js';
 import { VERSION } from './core/orchestrator.js';
-import { createDemoRepo } from './demo.js';
+import { createDemoRepo, isKeystoneDemo } from './demo.js';
 import { removeGuard } from './core/gitsafety.js';
 import { claimProfile, readRunInfo, releaseProfile } from './runfile.js';
 import { OrchestratorServer } from './server.js';
@@ -132,7 +132,12 @@ async function main(): Promise<void> {
   });
 
   const repos: Array<{ path: string; demo: boolean }> = (values.repo ?? []).map((p) => ({ path: p, demo: false }));
-  if (values.demo) repos.unshift({ path: await createDemoRepo(path.join(cfg.home, 'demo-repo')), demo: true });
+  if (values.demo) {
+    const demoDir = path.join(cfg.home, 'demo-repo');
+    const created = await createDemoRepo(demoDir);
+    // conferma automatica solo per il repository di prova creato da Keystone (marcatore + percorso)
+    repos.unshift({ path: created, demo: isKeystoneDemo(created, demoDir) });
+  }
   for (const r of repos) {
     // la modifica al .git/config si mostra sempre e si applica solo con conferma
     const pv = await o.repos.preview(r.path);

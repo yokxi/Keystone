@@ -1,7 +1,7 @@
 // Il guardiano git: sta fuori da repository e worktree (in ~/.keystone/git), si installa solo con
 // la conferma dell'utente, un agente non può modificarlo né cambiare il percorso dell'include, e
 // senza guardiano nessun worker lavora.
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { EngineId, PermissionAnswer } from '@keystone/shared';
@@ -13,7 +13,8 @@ import { SimEngine } from '../src/engines/sim/sim-engine.js';
 import type { SimScript } from '../src/engines/sim/script.js';
 import type { EngineAdapter } from '../src/engines/types.js';
 import { gitOut } from '../src/util/git.js';
-import { demoRepo, noReply, testOrchestrator, tmpDir, waitFor } from './helpers.js';
+import { demoRepo, noReply, onCleanup, testOrchestrator, tmpDir, waitFor } from './helpers.js';
+import { createDemoRepo, isKeystoneDemo } from '../src/demo.js';
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..');
 
@@ -171,5 +172,55 @@ describe('un agente non può modificare il guardiano', () => {
     await o.repos.add(repo, { confirmGuard: true });
     await removeGuard(repo);
     await expect(o.repos.createWorktree('repo', 'bruno', { id: 't9', title: 'x' })).rejects.toMatchObject({ code: 'unsafe' });
+  });
+});
+
+describe('conferma automatica solo per il repository di prova creato da Keystone', () => {
+  it('isKeystoneDemo: serve il marcatore scritto alla creazione, nel percorso previsto', async () => {
+    const dir = tmpDir();
+    const demo = path.join(dir, 'home', 'demo-repo');
+    await createDemoRepo(demo);
+    expect(isKeystoneDemo(demo, demo)).toBe(true);
+    // stesso repository ma percorso diverso da quello previsto
+    expect(isKeystoneDemo(demo, path.join(dir, 'altrove'))).toBe(false);
+    // un repository copiato altrove porta con sé il marcatore, ma il percorso non corrisponde
+    const copy = path.join(dir, 'copia');
+    fs.cpSync(demo, copy, { recursive: true });
+    expect(isKeystoneDemo(copy, copy)).toBe(false);
+    // un repository qualunque, senza marcatore
+    const other = await demoRepo(dir);
+    fs.rmSync(path.join(other, '.git', 'keystone-demo.json'), { force: true });
+    expect(isKeystoneDemo(other, other)).toBe(false);
+  });
+
+  it('--demo con un repository non creato da Keystone nel percorso di prova: la conferma resta obbligatoria', async () => {
+    const dir = tmpDir();
+    const home = path.join(dir, 'home');
+    const userRepo = path.join(home, 'demo-repo');
+    fs.mkdirSync(userRepo, { recursive: true });
+    await gitOut(userRepo, ['init', '-q', '-b', 'main']);
+    fs.writeFileSync(path.join(userRepo, 'mio.txt'), 'lavoro mio\n');
+    await gitOut(userRepo, ['add', '-A']);
+    await gitOut(userRepo, ['-c', 'user.name=U', '-c', 'user.email=u@u', 'commit', '-qm', 'mio']);
+    const before = fs.readFileSync(path.join(userRepo, '.git', 'config'), 'utf8');
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'orchestrator/src/main.ts', '--demo', '--home', home, '--port', '0'], { cwd: ROOT, encoding: 'utf8', windowsHide: true, timeout: 60_000, input: '' });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toMatch(/includeIf "gitdir\/i:/);
+    expect(r.stderr).toMatch(/--confirm-guard/);
+    expect(fs.readFileSync(path.join(userRepo, '.git', 'config'), 'utf8')).toBe(before);
+    expect(fs.readFileSync(path.join(userRepo, 'mio.txt'), 'utf8')).toBe('lavoro mio\n'); // non toccato
+  });
+
+  it('--demo che crea il proprio repository di prova: conferma automatica (la riga viene comunque mostrata)', async () => {
+    const home = path.join(tmpDir(), 'home');
+    const child = spawn(process.execPath, ['--import', 'tsx', 'orchestrator/src/main.ts', '--demo', '--home', home, '--port', '0'], { cwd: ROOT, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', (d) => (out += String(d)));
+    onCleanup(() => {
+      if (child.exitCode === null) child.kill('SIGKILL');
+    });
+    const config = path.join(home, 'demo-repo', '.git', 'config');
+    await waitFor(() => fs.existsSync(config) && /includeIf/.test(fs.readFileSync(config, 'utf8')) && /in ascolto/.test(out), 'guardiano installato nel repository di prova', 60_000);
+    expect(out).toMatch(/includeIf "gitdir\/i:/);
   });
 });
