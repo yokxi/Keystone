@@ -1,0 +1,224 @@
+# Protocollo Keystone (v1)
+
+Questo documento descrive due contratti:
+
+1. **Orchestratore ↔ interfaccia**: messaggi WebSocket tra il processo orchestratore e l'app.
+2. **Motori → orchestratore**: eventi normalizzati che ogni motore (sim, Claude, Codex) emette
+   durante un turno.
+
+La fonte di verità sono gli schemi zod in `shared/src/protocol.ts` e `shared/src/engine-events.ts`.
+Il test `shared/test/protocol.test.ts` fallisce se un tipo di messaggio o di evento non è
+documentato qui.
+
+---
+
+## 1. Trasporto
+
+- WebSocket su `ws://127.0.0.1:<porta>` (default `7931`, oppure `KEYSTONE_PORT` o `--port`).
+  L'orchestratore ascolta **solo su loopback**.
+- Un messaggio JSON per frame: `{ "v": 1, "type": "...", "id"?: "...", ...payload }`.
+- **Connessioni rifiutate (HTTP 401):**
+  - qualunque richiesta con header `Origin`, anche vuoto o `null`, perché ogni browser lo manda e
+    così una pagina web non può pilotare gli agenti;
+  - qualunque `Host` diverso da `127.0.0.1`, `localhost` o `[::1]` (protezione dal DNS rebinding).
+- **App Electron:** il WebSocket lo apre solo il **processo main** (Node, nessun `Origin`). Il
+  renderer comunica con il main esclusivamente via IPC tramite preload/`contextBridge`, con
+  `contextIsolation: true` e `nodeIntegration: false`. Vedi `app/src/main/orchestrator-client.ts`.
+- **Handshake:** il client manda `hello` e riceve uno `snapshot` completo, poi tutti gli
+  aggiornamenti. Prima di `hello` gli altri messaggi vengono rifiutati con `error`. Dopo una
+  riconnessione arriva un nuovo snapshot.
+- **Ack:** ogni messaggio del client con `id` riceve un `ack` con `re` uguale a quell'`id`,
+  `ok`, `error?` e `result?`. Gli errori di validazione arrivano anche come `error`.
+- **Persistenza:** l'interfaccia non salva nulla. Lo stato vive nell'orchestratore, sotto
+  `~/.keystone/<profilo>/`.
+
+## 2. Entità
+
+| Entità | Campi |
+|---|---|
+| `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens` |
+| `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `createdBy`, `createdAt`, `updatedAt` |
+| `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`done`/`failed`/`cancelled`), `progress` 0..1, `repoId?`, `createdAt` |
+| `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `createdAt`, `answeredAt?` |
+| `Repo` | `id`, `name`, `path`, `branch`, `dirty`, `ci`, `worktrees[]` |
+| `Worktree` | `id` (`<agente>-<task>`), `repoId`, `agentId`, `taskId?`, `branch` (`Keystone/<agente>/<task>-<slug>`), `base`, `path`, `status` (`active`/`merged`/`abandoned`), `files`, `additions`, `deletions` |
+| `MemoryEntry` | `id` (`shared/<slug>` o `<agente>/<slug>`), `scope`, `title`, `body` (markdown), `author?`, `updated` |
+| `FeedItem` | `ts`, `kind`, `text`, `agentId?`, `to?` |
+| `LogEntry` | `ts`, `kind` (`text`/`tool`/`result`/`error`/`diff`/`test`/`permission`), `text` |
+| `OrchestratorStatus` | `version`, `auth` (`ok`/`failed`/`unknown`), `message`, `costUsd`, `tokens`, `userName` |
+| `DiffFile` | `path`, `oldPath?`, `status` (`added`/`modified`/`deleted`/`renamed`), `binary`, `additions`, `deletions`, `hunks[]` {`header`, `oldStart`, `newStart`, `lines[]` {`kind`: `add`/`del`/`ctx`, `text`, `oldNo?`, `newNo?`}} |
+
+**Stati di un agente:** `idle`, `thinking`, `reading`, `editing`, `running`, `testing`,
+`waiting_user`, `blocked`, `done`, `error`.
+
+**Stati di un task e transizioni ammesse:**
+
+```
+todo      → doing, blocked, cancelled, done
+doing     → review, blocked, todo, cancelled, done
+review    → done, doing, blocked, todo, cancelled
+blocked   → todo, doing, review, cancelled
+done      → todo        (retry)
+cancelled → todo        (retry)
+```
+
+Un task entra in `doing` solo se ha un assegnatario e tutte le dipendenze sono `done`. Un task con
+worktree diventa `done` solo tramite merge approvato dall'utente.
+
+**Opzioni fisse delle decisioni:**
+
+- merge: `Merge` / `Richiedi modifiche` / `Rifiuta`;
+- permesso: `Consenti una volta` / `Consenti sempre per questo agente` / `Nega`.
+
+## 3. Orchestratore → interfaccia
+
+### `snapshot`
+Lo stato completo, inviato in risposta a `hello`.
+`{ status, agents[], tasks[], goals[], decisions[], repos[], memory[], feed[], logs: { [agentId]: LogEntry[] } }`
+(per i log, solo le ultime righe di ogni agente).
+
+### `agent.upsert`
+`{ agent }`: un agente è nuovo o è cambiato (stato, attività, modello, costo…).
+
+### `agent.log`
+`{ agentId, entries: LogEntry[] }`: nuove righe del log live di un agente (tool call, risultati,
+diff, test, permessi).
+
+### `agent.say`
+`{ agentId, to?, text, ts }`: un agente ha mandato un messaggio (a un compagno, a `all` o a
+`user`).
+
+### `task.upsert`
+`{ task }`: un task è nuovo o è cambiato.
+
+### `goal.upsert`
+`{ goal }`: un obiettivo è nuovo o è cambiato (stato, avanzamento).
+
+### `decision.upsert`
+`{ decision }`: una decisione è stata aperta, risolta, riaperta o annullata.
+
+### `repo.upsert`
+`{ repo }`: repository registrato o aggiornato (branch, modifiche non committate, worktree).
+
+### `memory.upsert`
+`{ entry }`: una nota della memoria è stata scritta.
+
+### `feed.add`
+`{ item }`: una nuova voce nel feed delle attività.
+
+### `status`
+`{ status }`: lo stato globale è cambiato (autenticazione, messaggio, costo e token totali).
+
+### `diff`
+`{ requestId, repoId, worktree, files: DiffFile[] }`: risposta a `diff.request`, inviata solo al
+client che l'ha chiesta.
+
+### `notify`
+`{ level: info|warn|need_user, text }`: notifica da mostrare. `need_user` indica che una decisione
+aspetta l'utente.
+
+### `ack`
+`{ re, ok, error?, result? }`: esito di un messaggio del client che aveva un `id`.
+
+### `error`
+`{ message, re? }`: messaggio del client non valido o arrivato prima di `hello`.
+
+## 4. Interfaccia → orchestratore
+
+### `hello`
+`{ client, protocol: 1 }`: apre la sessione; la risposta è uno `snapshot`.
+
+### `goal.submit`
+`{ text, repoId? }`: nuovo obiettivo (senza `repoId` si usa il primo repository registrato).
+Risultato: `{ goalId }`.
+
+### `user.message`
+`{ to, text }`: messaggio a un agente (id o nome, `@` facoltativo) oppure a `all`. Se l'agente è
+in un turno, il messaggio arriva con il prossimo risultato di un suo tool; altrimenti parte un
+turno di follow-up. Risultato: `{ to }`.
+
+### `decision.answer`
+`{ decisionId, option?, text? }`: risposta a una decisione. `option` può essere l'etichetta
+(senza distinzione tra maiuscole e minuscole) o il numero dell'opzione partendo da 1. Una domanda
+accetta anche solo `text`. Se gli effetti falliscono (es. merge rifiutato) la decisione viene
+riaperta con il motivo in `context`.
+
+### `task.action`
+`{ taskId, action: cancel|retry|prioritize|reassign, arg? }`. Per `prioritize`, `arg` è la nuova
+priorità (intero); per `reassign`, `arg` è il worker.
+
+### `agent.action`
+`{ agentId, action }`:
+- `pause`: interrompe il turno e l'agente tiene il task;
+- `resume`: riprende il lavoro;
+- `stop`: l'agente va fuori turno e i suoi task tornano sul tabellone (chi li riprende parte dal
+  suo branch);
+- `spawn`: riporta in servizio un agente fuori turno.
+
+### `diff.request`
+`{ requestId, repoId, worktree }`: chiede il diff di un worktree (anche chiuso: in quel caso si usa
+il branch conservato). La risposta è un messaggio `diff`.
+
+### `repo.add`
+`{ path }`: registra un repository. Deve essere la radice del repo e avere almeno un commit.
+Risultato: `{ repoId }`.
+
+---
+
+## 5. Eventi dei motori (EngineEvent)
+
+Ogni adattatore implementa `EngineAdapter` (`orchestrator/src/engines/types.ts`):
+
+| Operazione | Metodo |
+|---|---|
+| avvia sessione | `startSession(spec): EngineTurn` |
+| riprendi sessione | `resumeSession(sessionId, spec): EngineTurn` |
+| invia messaggio | tra un turno e l'altro: `resumeSession(sessionId, spec)` con il messaggio come prompt; durante un turno: allegato ai risultati dei tool del team |
+| stream di eventi | `EngineTurn.events: AsyncIterable<EngineEvent>` |
+| risposta a un permesso | `EngineTurn.respond(requestId, { allow: true } \| { allow: false, message })` |
+| interruzione | `EngineTurn.abort(reason)`: lo stream termina con `turn_end` `aborted` |
+
+Ogni turno emette prima `session` e chiude sempre con un solo `turn_end`. A ogni `tool_call`
+corrisponde un `tool_result` con lo stesso `callId`. Il test `orchestrator/test/engine-contract.test.ts`
+verifica queste regole; varrà per tutti i motori.
+
+### `session`
+`{ sessionId }`: l'id della sessione (sessione Claude, thread Codex, id del sim), salvato per
+poterla riprendere.
+
+### `model`
+`{ model }`: il modello effettivamente in uso (es. `claude-opus-5-5`). L'interfaccia lo mostra
+nella forma restituita da `EngineAdapter.displayModel()`.
+
+### `text`
+`{ text }`: testo dell'agente.
+
+### `tool_call`
+`{ callId, tool, input }`: l'agente usa un tool. Il vocabolario è comune a tutti i motori:
+`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`, `PowerShell`, oppure un tool del team
+(`send_message`, `ask_user`, `write_memory`, `read_memory`, `update_task`, `report_status`,
+`list_tasks`, `create_task`, `request_merge`).
+
+### `tool_result`
+`{ callId, ok, output }`: esito di una tool call.
+
+### `file_change`
+`{ path, change: add|modify|delete, diff? }`: un file è stato modificato (path relativo alla
+cartella di lavoro, diff unificato se il motore lo conosce).
+
+### `permission_request`
+`{ requestId, tool, input, reason? }`: il motore chiede se può usare un tool e il turno resta in
+attesa. L'orchestratore applica la policy e, se la policy non può decidere da sola, apre una
+decisione `permission` per l'utente. Poi risponde con `respond()`.
+
+### `usage`
+`{ inputTokens, outputTokens, costUsd? }`: consumo **incrementale** da sommare (non cumulativo).
+Codex riporta solo i token.
+
+### `error`
+`{ message, auth? }`: errore. Con `auth: true` è un errore di autenticazione e l'orchestratore
+smette di avviare turni finché non viene riavviato.
+
+### `turn_end`
+`{ status: success|error|aborted|max_turns, resultText? }`: fine del turno, sempre l'ultimo
+evento.
