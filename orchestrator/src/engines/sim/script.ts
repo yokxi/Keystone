@@ -87,7 +87,11 @@ async function workerWork(ctx: SimContext): Promise<string> {
       note = `\nScelta dell'utente: ${res.text}\n`;
     }
   }
-  if (hasMarker(title, M.permission)) {
+  if (hasMarker(title, M.strictPermission)) {
+    const a = await ctx.permission('Bash', { command: 'git config --local core.autocrlf false' }, 'normalizzare i fine riga del worktree');
+    note += a.allow ? '\nConfigurazione git aggiornata.\n' : '\nConfigurazione git lasciata com\'è.\n';
+  }
+  if (hasMarker(title, M.permission) && !hasMarker(title, M.strictPermission)) {
     const a = await ctx.permission('Bash', { command: 'curl https://example.com' }, 'controllo di un servizio esterno');
     note += a.allow ? '\nControllo esterno eseguito.\n' : '\nControllo esterno non autorizzato: ne faccio a meno.\n';
   }

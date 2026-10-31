@@ -6,6 +6,8 @@ export const SIM_MARKERS = {
   question: '[domanda]',
   /** il worker chiede un permesso che la policy non concede da sola (rete) */
   permission: '[permesso]',
+  /** il worker chiede di modificare la configurazione git: permesso che richiede sempre approvazione */
+  strictPermission: '[permesso-config]',
   /** il worker si dichiara bloccato */
   block: '[blocca]',
   /** il worker non modifica nessun file */

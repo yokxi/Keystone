@@ -477,8 +477,10 @@ export class Team {
         this.o.setAgent(agentId, { state: 'thinking' });
         return undefined;
       case 'tool_call': {
-        this.o.agentLog(agentId, 'tool', describeCall(ev.tool, ev.input));
-        const state = stateForTool(ev.tool, ev.input);
+        const team = describeTeamCall(ev.tool, ev.input);
+        this.o.agentLog(agentId, 'tool', team ?? describeCall(ev.tool, ev.input));
+        // i tool del team aggiornano da soli stato e attività (es. ask_user: "aspetta una tua risposta")
+        const state = team ? undefined : stateForTool(ev.tool, ev.input);
         if (state) this.o.setAgent(agentId, { state, activity: truncate(describeCall(ev.tool, ev.input), 80) });
         return undefined;
       }
@@ -932,6 +934,33 @@ export class Team {
       if (Date.now() - start > timeoutMs) throw new Error('il team non si è fermato in tempo');
       await new Promise((r) => setTimeout(r, 20));
     }
+  }
+}
+
+/** Descrizione leggibile di una chiamata a un tool del team (undefined se non è un tool del team). */
+function describeTeamCall(tool: string, input: Record<string, unknown>): string | undefined {
+  const s = (k: string) => (typeof input[k] === 'string' ? (input[k] as string) : '');
+  switch (tool) {
+    case 'ask_user':
+      return `chiede: ${s('question')}${Array.isArray(input.options) && input.options.length ? ` (${(input.options as string[]).join(' / ')})` : ''}`;
+    case 'send_message':
+      return `messaggio a ${s('to')}: ${s('text')}`;
+    case 'write_memory':
+      return `scrive in memoria: ${s('title')}`;
+    case 'read_memory':
+      return `legge la memoria${s('id') ? `: ${s('id')}` : s('query') ? `: "${s('query')}"` : ''}`;
+    case 'update_task':
+      return `aggiorna ${s('task_id')}${s('status') ? ` → ${s('status')}` : ''}${s('summary') ? `: ${s('summary')}` : ''}`;
+    case 'report_status':
+      return `stato: ${s('activity')}`;
+    case 'list_tasks':
+      return 'guarda il tabellone';
+    case 'create_task':
+      return `crea il task "${s('title')}"${Array.isArray(input.deps) && input.deps.length ? ` (dopo ${(input.deps as string[]).join(', ')})` : ''}`;
+    case 'request_merge':
+      return `propone il merge di ${s('task_id')}`;
+    default:
+      return undefined;
   }
 }
 
