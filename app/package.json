@@ -6,6 +6,6 @@
   "description": "Interfaccia desktop (Electron) di Keystone: solo vista e comandi. Electron e React arrivano in Fase 4.",
   "dependencies": {
     "@keystone/shared": "0.1.0",
-    "ws": "^8.22.1"
+    "ws": "8.22.1"
   }
 }
