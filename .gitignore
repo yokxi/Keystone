@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+coverage/
+*.log
+*.tsbuildinfo
+
+# segreti: mai nel repository
+.env
+.env.*
+!.env.example
+
+# stato locale di sviluppo
+.keystone-home/

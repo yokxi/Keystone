@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["shared/src", "shared/test", "orchestrator/src", "orchestrator/test", "app/src", "app/test", "vitest.config.ts"]
+}
