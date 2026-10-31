@@ -68,7 +68,10 @@ worktree diventa `done` solo tramite merge approvato dall'utente.
 **Opzioni fisse delle decisioni:**
 
 - merge: `Merge` / `Richiedi modifiche` / `Rifiuta`;
-- permesso: `Consenti una volta` / `Consenti sempre per questo agente` / `Nega`.
+- permesso: `Consenti una volta` / `Consenti sempre per questo agente` / `Nega`. Per le azioni che
+  richiedono sempre approvazione (configurazione git, variabili d'ambiente, hook e `.git`,
+  `git -c`) le opzioni sono solo `Consenti una volta` / `Nega`. Il `context` della decisione
+  spiega cosa coprirebbe "Consenti sempre". Dettagli in `docs/sicurezza.md`.
 
 ## 3. Orchestratore → interfaccia
 
@@ -161,7 +164,14 @@ il branch conservato). La risposta è un messaggio `diff`.
 
 ### `repo.add`
 `{ path }`: registra un repository. Deve essere la radice del repo e avere almeno un commit.
-Risultato: `{ repoId }`.
+Nel suo `.git/config` viene installato il guardiano git di Keystone, che blocca il push solo nei
+worktree degli agenti (vedi `docs/sicurezza.md`). Risultato: `{ repoId }`.
+
+### `worktrees.prune`
+`{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o
+scomparsi (il lavoro viene salvato sul branch, che resta), rimuove le cartelle orfane ed esegue
+`git worktree prune`. I worktree su cui un agente sta lavorando non vengono toccati. Risultato:
+`{ report: string[] }`. Da riga di comando: `npm run orchestrator -- --prune-worktrees`.
 
 ---
 
