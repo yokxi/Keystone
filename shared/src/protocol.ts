@@ -32,13 +32,14 @@ export type CiStatus = z.infer<typeof CiStatus>;
 export const LogKind = z.enum(['text', 'tool', 'result', 'error', 'diff', 'test', 'permission']);
 export type LogKind = z.infer<typeof LogKind>;
 
-export const DecisionKind = z.enum(['question', 'permission', 'merge']);
+export const DecisionKind = z.enum(['question', 'permission', 'merge', 'budget']);
 export type DecisionKind = z.infer<typeof DecisionKind>;
 
 export const DecisionStatus = z.enum(['open', 'answered', 'cancelled']);
 export type DecisionStatus = z.infer<typeof DecisionStatus>;
 
-export const GoalStatus = z.enum(['planning', 'active', 'done', 'failed', 'cancelled']);
+/** paused: fermato perché ha raggiunto il tetto di spesa (riprende quando il tetto viene alzato) */
+export const GoalStatus = z.enum(['planning', 'active', 'paused', 'done', 'failed', 'cancelled']);
 export type GoalStatus = z.infer<typeof GoalStatus>;
 
 export const FeedKind = z.enum(['goal', 'plan', 'task', 'message', 'decision', 'merge', 'ci', 'memory', 'system', 'error', 'user']);
@@ -53,6 +54,8 @@ export type NotifyLevel = z.infer<typeof NotifyLevel>;
 /** Opzioni fisse delle decisioni di merge e di permesso (l'interfaccia le mostra così). */
 export const MERGE_OPTIONS = ['Merge', 'Richiedi modifiche', 'Rifiuta'] as const;
 export const PERMISSION_OPTIONS = ['Consenti una volta', 'Consenti sempre per questo agente', 'Nega'] as const;
+/** Decisione di tetto di spesa raggiunto: il testo della risposta può indicare il nuovo tetto in dollari. */
+export const BUDGET_OPTIONS = ['Aumenta il tetto', 'Lascia in pausa'] as const;
 
 // ---- entità ---------------------------------------------------------------------------------
 
@@ -109,6 +112,12 @@ export const Goal = z.object({
   /** 0..1 */
   progress: z.number().min(0).max(1),
   repoId: Id.optional(),
+  /** spesa registrata per l'obiettivo in dollari (i motori che riportano solo token contano 0) */
+  costUsd: z.number().nonnegative(),
+  /** tetto di spesa in dollari; assente = nessun tetto */
+  budgetUsd: z.number().positive().optional(),
+  /** lo stato da ripristinare quando un obiettivo in pausa riprende */
+  pausedFrom: GoalStatus.optional(),
   createdAt: Ts,
 });
 export type Goal = z.infer<typeof Goal>;
@@ -301,7 +310,15 @@ export type Outbound = ServerMessage extends infer M ? (M extends { v: number } 
 // ---- messaggi interfaccia -> orchestratore ------------------------------------------------
 
 export const HelloMsg = z.object({ ...envelope('hello'), client: z.string().max(100), protocol: z.literal(PROTOCOL_VERSION) });
-export const GoalSubmitMsg = z.object({ ...envelope('goal.submit'), text: z.string().trim().min(1).max(20_000), repoId: Id.optional() });
+export const GoalSubmitMsg = z.object({
+  ...envelope('goal.submit'),
+  text: z.string().trim().min(1).max(20_000),
+  repoId: Id.optional(),
+  /** tetto di spesa in dollari per questo obiettivo (default: quello della configurazione) */
+  budgetUsd: z.number().positive().max(100_000).optional(),
+});
+/** Cambia il tetto di spesa di un obiettivo; se era in pausa per il tetto e ora c'è margine, riprende. */
+export const GoalBudgetMsg = z.object({ ...envelope('goal.budget'), goalId: Id, budgetUsd: z.number().positive().max(100_000) });
 export const UserMessageMsg = z.object({
   ...envelope('user.message'),
   /** id o nome dell'agente, oppure "all" */
@@ -359,6 +376,7 @@ export const ClientMessage = z.discriminatedUnion('type', [
   RepoPreviewMsg,
   RepoAddMsg,
   WorktreesPruneMsg,
+  GoalBudgetMsg,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 

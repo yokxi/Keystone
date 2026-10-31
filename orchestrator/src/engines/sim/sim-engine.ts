@@ -43,7 +43,7 @@ export interface SimContext {
   readFile(relPath: string): string | undefined;
   /** git nella cartella di lavoro, con l'ambiente dell'agente. */
   git(args: string[]): Promise<{ code: number; stdout: string; stderr: string }>;
-  usage(inputTokens: number, outputTokens: number): void;
+  usage(inputTokens: number, outputTokens: number, costUsd?: number): void;
   step(): Promise<void>;
 }
 
@@ -165,8 +165,8 @@ export class SimEngine implements EngineAdapter {
       async git(args) {
         return git(spec.cwd, args, { env: spec.env as NodeJS.ProcessEnv, allowFail: true });
       },
-      usage(inputTokens, outputTokens) {
-        emit({ type: 'usage', inputTokens, outputTokens, costUsd: 0 });
+      usage(inputTokens, outputTokens, costUsd = 0) {
+        emit({ type: 'usage', inputTokens, outputTokens, costUsd });
       },
     };
 

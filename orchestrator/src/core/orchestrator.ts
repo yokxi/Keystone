@@ -37,6 +37,8 @@ export interface OrchestratorOptions {
   repoFaults?: RepoManagerOptions['faults'];
   /** file di regole del guardiano git (default: <home>/git/agent-guard.gitconfig) */
   guardFile?: string;
+  /** tetto di spesa predefinito per obiettivo in dollari (0 o assente = nessun tetto) */
+  defaultBudgetUsd?: number;
   storeDebounceMs?: number;
 }
 
@@ -53,12 +55,14 @@ export class Orchestrator {
   readonly log: Logger;
   readonly userName: string;
   readonly now: () => number;
+  readonly defaultBudgetUsd: number | undefined;
   status: OrchestratorStatus;
   private listeners = new Set<Listener>();
 
   constructor(opts: OrchestratorOptions) {
     this.log = opts.logger ?? consoleLogger();
     this.now = opts.now ?? Date.now;
+    this.defaultBudgetUsd = opts.defaultBudgetUsd && opts.defaultBudgetUsd > 0 ? opts.defaultBudgetUsd : undefined;
     this.userName = opts.userName ?? (os.userInfo().username || 'utente');
     this.store = new Store(opts.dataDir, { now: this.now, onWarn: (m) => this.log.warn(m), ...(opts.storeDebounceMs !== undefined ? { debounceMs: opts.storeDebounceMs } : {}) });
     const ctx: Ctx = { store: this.store, now: this.now, emit: (m) => this.emit(m), log: this.log };
@@ -193,6 +197,26 @@ export class Orchestrator {
     this.emit({ type: 'agent.log', agentId, entries: [entry] });
   }
 
+  /**
+   * Somma la spesa all'obiettivo. Restituisce true se il tetto è stato raggiunto con questa spesa
+   * (il team allora ferma gli agenti dell'obiettivo).
+   */
+  addGoalCost(goalId: string, costUsd: number): boolean {
+    const g = this.goal(goalId);
+    if (!g || costUsd <= 0) return false;
+    g.costUsd = Math.round((g.costUsd + costUsd) * 1e6) / 1e6;
+    this.store.markDirty();
+    this.emit({ type: 'goal.upsert', goal: { ...g } });
+    return g.budgetUsd !== undefined && g.costUsd >= g.budgetUsd;
+  }
+
+  /** Spesa ancora disponibile per l'obiettivo (undefined = nessun tetto). */
+  remainingBudget(goalId: string | undefined): number | undefined {
+    const g = goalId ? this.goal(goalId) : undefined;
+    if (!g || g.budgetUsd === undefined) return undefined;
+    return Math.max(0, g.budgetUsd - g.costUsd);
+  }
+
   addUsage(agentId: string, tokens: number, costUsd: number): void {
     const a = this.agent(agentId);
     if (!a) return;
@@ -241,7 +265,7 @@ export class Orchestrator {
     if (!g) return;
     const progress = this.tasks.progress(goalId);
     let status = g.status;
-    if (this.tasks.goalComplete(goalId) && (status === 'active' || status === 'planning')) status = 'done';
+    if (this.tasks.goalComplete(goalId) && (status === 'active' || status === 'planning' || status === 'paused')) status = 'done';
     else if (status === 'cancelled' && this.tasks.ofGoal(goalId).some((t) => t.status !== 'cancelled' && t.status !== 'done')) status = 'active';
     if (progress !== g.progress || status !== g.status) {
       g.progress = progress;
@@ -298,6 +322,7 @@ export class Orchestrator {
     this.bus.feed('decision', `${this.userName} ha risposto a ${d.id}: ${[d.answer?.option, d.answer?.text].filter(Boolean).join(' — ')}`);
     try {
       if (d.kind === 'merge') await this.applyMergeAnswer(d);
+      if (d.kind === 'budget') this.team.onBudgetAnswer(d);
     } finally {
       this.decisions.settle(d.id);
     }
@@ -399,7 +424,8 @@ export class Orchestrator {
       case 'goal.submit': {
         const repo = msg.repoId ? this.repos.get(msg.repoId) : this.repos.defaultRepo();
         if (!repo) throw new ClientError(msg.repoId ? `nessun repository ${msg.repoId}` : 'nessun repository registrato: aggiungine uno');
-        const goal: Goal = { id: this.store.nextId('g'), text: msg.text.trim(), status: 'planning', progress: 0, repoId: repo.id, createdAt: this.now() };
+        const budgetUsd = msg.budgetUsd ?? this.defaultBudgetUsd;
+        const goal: Goal = { id: this.store.nextId('g'), text: msg.text.trim(), status: 'planning', progress: 0, repoId: repo.id, costUsd: 0, ...(budgetUsd ? { budgetUsd } : {}), createdAt: this.now() };
         this.store.data.goals.push(goal);
         this.store.markDirty();
         this.emit({ type: 'goal.upsert', goal: { ...goal } });
@@ -452,6 +478,12 @@ export class Orchestrator {
       case 'repo.add': {
         const r = await this.repos.add(msg.path, { confirmGuard: msg.confirmGuard === true });
         return { repoId: r.id };
+      }
+      case 'goal.budget': {
+        const g = this.goal(msg.goalId);
+        if (!g) throw new ClientError(`nessun obiettivo ${msg.goalId}`);
+        this.team.setGoalBudget(g.id, msg.budgetUsd);
+        return { goalId: g.id, budgetUsd: msg.budgetUsd, status: this.goal(g.id)!.status };
       }
       case 'worktrees.prune': {
         const report = await this.pruneWorktrees();

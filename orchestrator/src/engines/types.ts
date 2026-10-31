@@ -50,6 +50,10 @@ export interface TurnSpec {
   /** cartelle scrivibili oltre a `cwd` (es. la gitdir del worktree, per committare) */
   writableRoots: string[];
   tools: TeamTool[];
+  /** spesa ancora disponibile per l'obiettivo in dollari (il motore non deve superarla nel turno) */
+  budgetUsd?: number;
+  /** costo cumulativo già registrato per la sessione da riprendere (per calcolare gli incrementi) */
+  sessionCostUsd?: number;
   /**
    * Il lavoro di cui fa parte il turno. I motori reali non ne hanno bisogno (è tutto nel prompt);
    * il motore sim lo usa per scegliere la sceneggiatura.

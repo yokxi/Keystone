@@ -109,7 +109,12 @@ async function workerWork(ctx: SimContext): Promise<string> {
       return 'commit creato';
     });
   }
-  ctx.usage(2400, 600);
+  if (hasMarker(title, M.costly)) {
+    ctx.usage(2400, 600, 0.4);
+    await ctx.say('Lavoro ancora un po’ (spesa simulata).');
+    ctx.usage(2400, 600, 0.4);
+    await ctx.say('Quasi finito.');
+  } else ctx.usage(2400, 600);
   await ctx.team('update_task', { task_id: taskId, status: 'review', summary: hasMarker(title, M.empty) ? 'Analisi senza modifiche ai file.' : `Creato keystone-sim/${taskId}.md.` });
   return `${taskId} pronto per la review.`;
 }

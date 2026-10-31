@@ -13,7 +13,7 @@
 //
 // Gli eventi dei motori (EngineEvent) vengono tradotti qui, in un punto solo, in log, stato
 // dell'agente, costi e richieste di permesso.
-import { PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus } from '@keystone/shared';
+import { BUDGET_OPTIONS, PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus } from '@keystone/shared';
 import type { EngineAdapter, EngineTurn, TurnSpec } from '../engines/types.js';
 import { lastLines, truncate } from '../util/text.js';
 import path from 'node:path';
@@ -47,7 +47,8 @@ export interface TeamOptions {
   ciTimeoutMs?: number;
 }
 
-type AbortReason = 'pause' | 'stop' | 'shutdown' | 'cancel' | 'timeout';
+/** budget: l'obiettivo ha raggiunto il tetto di spesa (il turno resta salvato, come per shutdown) */
+type AbortReason = 'pause' | 'stop' | 'shutdown' | 'cancel' | 'timeout' | 'budget';
 
 interface Job {
   kind: JobKind;
@@ -175,6 +176,7 @@ export class Team {
         delete this.st.inflight[agentId];
         continue;
       }
+      if (this.goalPaused(inf.goalId ?? (inf.taskId ? this.o.tasks.get(inf.taskId)?.goalId : undefined))) continue;
       if (this.openQuestionOf(agentId)) {
         // aspetta la risposta: onDecisionSettled riprenderà la sessione
         this.o.setAgent(agentId, { state: 'waiting_user', activity: 'aspetta una tua risposta' });
@@ -191,7 +193,8 @@ export class Team {
       else this.enqueuePlan(g);
     }
     for (const t of this.o.tasks.list()) {
-      if (t.status === 'doing' && t.assignee && !this.hasJob(t.assignee, (j) => j.taskId === t.id) && !this.openQuestionOf(t.assignee)) {
+      if (this.goalPaused(t.goalId)) continue;
+      if (t.status === 'doing' && t.assignee && !this.hasJob(t.assignee, (j) => j.taskId === t.id) && !this.openQuestionOf(t.assignee) && !this.st.inflight[t.assignee]) {
         // un task "doing" senza turno dietro: si riprende la sessione del worker
         const wt = t.worktree && t.repoId ? this.o.repos.findWorktree(t.repoId, t.worktree) : undefined;
         if (wt?.status === 'active') {
@@ -326,7 +329,10 @@ export class Team {
     const q = this.queues.get(agentId);
     if (!q?.length) return;
     if (agentId !== this.lead.id && this.workersBusy() >= this.opts.maxConcurrent) return;
-    const job = q.shift()!;
+    // i lavori di un obiettivo in pausa per il tetto di spesa aspettano in coda
+    const idx = q.findIndex((j) => !this.goalPaused(this.goalOfJob(j)));
+    if (idx < 0) return;
+    const job = q.splice(idx, 1)[0]!;
     let resolveAborted!: () => void;
     const whenAborted = new Promise<void>((r) => (resolveAborted = r));
     const entry: Running = { job, decisions: new Set(), whenAborted, resolveAborted, protectedPaths: [] };
@@ -343,7 +349,7 @@ export class Team {
     for (const id of r.decisions) {
       const d = this.o.decisions.get(id);
       if (!d || d.status !== 'open') continue;
-      if (reason === 'shutdown' && d.kind === 'question') continue;
+      if ((reason === 'shutdown' || reason === 'budget') && d.kind === 'question') continue;
       this.o.decisions.cancel(id, `turno di ${this.o.nameOf(r.job.agentId)} interrotto (${reason})`);
     }
   }
@@ -431,6 +437,8 @@ export class Team {
         env: agentEnv(process.env, { agentId, name: m.name, cwd }),
         writableRoots: [],
         tools: teamTools(this.o, agentId, m.role, hooks, guard),
+        ...(this.o.remainingBudget(this.goalOfJob(job)) !== undefined ? { budgetUsd: this.o.remainingBudget(this.goalOfJob(job))! } : {}),
+        ...(resume && session?.costUsd !== undefined ? { sessionCostUsd: session.costUsd } : {}),
         job: { kind: job.kind, ...(job.taskId ? { taskId: job.taskId } : {}), ...(job.goalId ? { goalId: job.goalId } : {}), ...(job.kind === 'plan' && goal ? { title: goal.text } : task ? { title: task.title } : {}) },
       };
       const turn = resume ? m.engine.resumeSession(resume, spec) : m.engine.startSession(spec);
@@ -464,7 +472,7 @@ export class Team {
       case 'session': {
         const prev = this.o.store.data.sessions[entry.job.sessionKey];
         if (prev?.sessionId !== ev.sessionId || prev.engine !== m.engine.id) {
-          this.o.store.data.sessions[entry.job.sessionKey] = { sessionId: ev.sessionId, engine: m.engine.id, model: this.modelOf(m), updatedAt: this.o.now() };
+          this.o.store.data.sessions[entry.job.sessionKey] = { sessionId: ev.sessionId, engine: m.engine.id, model: this.modelOf(m), updatedAt: this.o.now(), ...(prev?.sessionId === ev.sessionId && prev.costUsd !== undefined ? { costUsd: prev.costUsd } : {}) };
           this.o.store.markDirty();
         }
         return undefined;
@@ -498,6 +506,12 @@ export class Team {
         return undefined;
       case 'usage':
         this.o.addUsage(agentId, ev.inputTokens + ev.outputTokens, ev.costUsd ?? 0);
+        if (ev.costUsd) {
+          const rec = this.o.store.data.sessions[entry.job.sessionKey];
+          if (rec) rec.costUsd = Math.round(((rec.costUsd ?? 0) + ev.costUsd) * 1e6) / 1e6;
+          const goalId = this.goalOfJob(entry.job);
+          if (goalId && this.o.addGoalCost(goalId, ev.costUsd)) this.onBudgetReached(goalId);
+        }
         return undefined;
       case 'error':
         this.o.agentLog(agentId, 'error', ev.message);
@@ -566,6 +580,12 @@ export class Team {
     const agentId = job.agentId;
     const reason = entry.reason;
     if (reason === 'shutdown') return; // inflight resta salvato: si riprende al riavvio
+    // tetto di spesa raggiunto (anche se il turno è finito da solo per il tetto del motore):
+    // il turno resta salvato e riprende quando il tetto viene alzato
+    if (reason === 'budget' || (outcome.status !== 'success' && this.goalPaused(this.goalOfJob(job)))) {
+      this.o.setAgent(agentId, { state: 'idle', activity: 'fermo: tetto di spesa raggiunto' });
+      return;
+    }
     delete this.st.inflight[agentId];
     this.o.store.markDirty();
     try {
@@ -849,6 +869,66 @@ export class Team {
     if (r?.job.taskId === t.id) await r.done;
     const m = this.member(wt.agentId);
     await this.o.repos.abandon(t.repoId, wt.id, `${t.id}: lavoro salvato (${why})`, { name: `Keystone ${m?.name ?? wt.agentId}`, email: `${wt.agentId}@keystone.local` });
+  }
+
+  /** L'obiettivo di un lavoro (direttamente o tramite il suo task). */
+  private goalOfJob(j: { goalId?: string; taskId?: string }): string | undefined {
+    return j.goalId ?? (j.taskId ? this.o.tasks.get(j.taskId)?.goalId : undefined);
+  }
+
+  private goalPaused(goalId: string | undefined): boolean {
+    return !!goalId && this.o.goal(goalId)?.status === 'paused';
+  }
+
+  /**
+   * Tetto di spesa raggiunto: l'obiettivo va in pausa, i suoi turni vengono fermati e restano
+   * salvati (si riprendono con la stessa sessione), e arriva una decisione per l'utente.
+   */
+  onBudgetReached(goalId: string): void {
+    const g = this.o.goal(goalId);
+    if (!g || g.status === 'paused' || g.status === 'done' || g.status === 'cancelled' || g.status === 'failed') return;
+    this.o.setGoal(goalId, { status: 'paused', pausedFrom: g.status });
+    for (const r of this.running.values()) if (this.goalOfJob(r.job) === goalId) this.abort(r, 'budget');
+    if (!this.o.decisions.open().some((d) => d.kind === 'budget' && d.context?.includes(`[${goalId}]`))) {
+      this.o.createDecision({
+        agentId: this.lead.id,
+        kind: 'budget',
+        question: `Tetto di spesa raggiunto: $${g.costUsd.toFixed(2)} su $${(g.budgetUsd ?? 0).toFixed(2)}. Gli agenti sono fermi e il lavoro è salvato.`,
+        options: BUDGET_OPTIONS,
+        context: `Obiettivo [${goalId}]: ${truncate(g.text, 300)}\nPer continuare scegli "${BUDGET_OPTIONS[0]}" e scrivi il nuovo tetto in dollari (senza importo: il doppio di quello attuale). "${BUDGET_OPTIONS[1]}" lascia tutto fermo: potrai alzare il tetto più tardi.`,
+      });
+    }
+    this.o.bus.feed('goal', `Tetto di spesa raggiunto per "${truncate(g.text, 80)}": agenti fermi, lavoro salvato`);
+  }
+
+  /** Risposta alla decisione di tetto raggiunto. */
+  onBudgetAnswer(d: Decision): void {
+    const goalId = /\[(g\d+)\]/.exec(d.context ?? '')?.[1];
+    const g = goalId ? this.o.goal(goalId) : undefined;
+    if (!g || d.answer?.option !== BUDGET_OPTIONS[0]) return;
+    const asked = Number(String(d.answer?.text ?? '').replace(',', '.').match(/\d+(\.\d+)?/)?.[0]);
+    const budget = Number.isFinite(asked) && asked > 0 ? asked : (g.budgetUsd ?? 1) * 2;
+    this.setGoalBudget(g.id, budget);
+  }
+
+  /** Cambia il tetto di un obiettivo; se era in pausa e ora c'è margine, i suoi turni riprendono. */
+  setGoalBudget(goalId: string, budgetUsd: number): void {
+    const g = this.o.goal(goalId);
+    if (!g) return;
+    this.o.setGoal(goalId, { budgetUsd });
+    if (g.status !== 'paused' || g.costUsd >= budgetUsd) return;
+    this.o.setGoal(goalId, { status: g.pausedFrom ?? 'active', pausedFrom: undefined });
+    this.o.bus.feed('goal', `Tetto alzato a $${budgetUsd.toFixed(2)}: gli agenti riprendono "${truncate(g.text, 80)}"`);
+    for (const d of this.o.decisions.open().filter((x) => x.kind === 'budget' && x.context?.includes(`[${goalId}]`))) this.o.decisions.cancel(d.id, 'tetto aggiornato');
+    // i turni fermati riprendono con la stessa sessione
+    for (const [agentId, inf] of Object.entries(this.st.inflight)) {
+      if (this.goalOfJob(inf) !== goalId || this.running.has(agentId) || this.openQuestionOf(agentId)) continue;
+      delete this.st.inflight[agentId];
+      this.enqueue({ kind: inf.kind, agentId, sessionKey: inf.sessionKey, prompt: `Il lavoro era stato fermato perché l'obiettivo aveva raggiunto il tetto di spesa; ora il tetto è stato alzato. Riprendi da dove eri rimasto.\n\nIl lavoro era:\n${inf.prompt}`, ...(inf.taskId ? { taskId: inf.taskId } : {}), ...(inf.goalId ? { goalId: inf.goalId } : {}) });
+    }
+    this.o.store.markDirty();
+    for (const id of this.queues.keys()) this.pump(id);
+    this.tick();
   }
 
   async onTaskAction(t: Task, action: 'cancel' | 'retry' | 'prioritize' | 'reassign', arg?: string): Promise<void> {

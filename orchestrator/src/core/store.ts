@@ -24,6 +24,8 @@ export interface BusMessage {
 
 export interface SessionRecord {
   sessionId: string;
+  /** costo cumulativo riportato dal motore per questa sessione (per calcolare gli incrementi) */
+  costUsd?: number;
   engine: string;
   model?: string;
   updatedAt: number;
@@ -105,6 +107,8 @@ function normalize(raw: Partial<StateData>, now: number): StateData {
   const base = emptyState(now);
   const out = { ...base, ...raw } as StateData;
   out.team = { ...base.team, ...(raw.team ?? {}) };
+  // obiettivi salvati da versioni precedenti, senza spesa
+  for (const g of out.goals) g.costUsd ??= 0;
   return out;
 }
 

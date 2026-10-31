@@ -12,6 +12,8 @@ export const SIM_MARKERS = {
   block: '[blocca]',
   /** il worker non modifica nessun file */
   empty: '[vuoto]',
+  /** il worker simula una spesa ($0.40 per passo): serve a provare il tetto di spesa */
+  costly: '[costoso]',
   /** il worker scrive un test che fallisce, e lo corregge quando i test tornano indietro */
   failingTest: '[test-rotto]',
   /** il worker scrive un test che fallisce e non riesce a correggerlo */

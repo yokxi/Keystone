@@ -38,8 +38,8 @@ documentato qui.
 |---|---|
 | `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens` |
 | `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `createdBy`, `createdAt`, `updatedAt` |
-| `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`done`/`failed`/`cancelled`), `progress` 0..1, `repoId?`, `createdAt` |
-| `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `command?` (permesso: il comando completo, senza tagli), `alwaysAsk?` (permesso: richiede sempre approvazione, niente "Consenti sempre"), `createdAt`, `answeredAt?` |
+| `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`paused`/`done`/`failed`/`cancelled`; `paused` = fermo perché ha raggiunto il tetto di spesa), `progress` 0..1, `repoId?`, `costUsd` (spesa registrata), `budgetUsd?` (tetto di spesa; assente = nessun tetto), `pausedFrom?`, `createdAt` |
+| `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`/`budget`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `command?` (permesso: il comando completo, senza tagli), `alwaysAsk?` (permesso: richiede sempre approvazione, niente "Consenti sempre"), `createdAt`, `answeredAt?` |
 | `Repo` | `id`, `name`, `path`, `branch`, `dirty`, `ci`, `worktrees[]` |
 | `Worktree` | `id` (`<agente>-<task>`), `repoId`, `agentId`, `taskId?`, `branch` (`Keystone/<agente>/<task>-<slug>`), `base`, `path`, `status` (`active`/`merged`/`abandoned`), `files`, `additions`, `deletions` |
 | `MemoryEntry` | `id` (`shared/<slug>` o `<agente>/<slug>`), `scope`, `title`, `body` (markdown), `author?`, `updated` |
@@ -68,6 +68,8 @@ worktree diventa `done` solo tramite merge approvato dall'utente.
 **Opzioni fisse delle decisioni:**
 
 - merge: `Merge` / `Richiedi modifiche` / `Rifiuta`;
+- tetto di spesa raggiunto (`budget`): `Aumenta il tetto` / `Lascia in pausa`. Il `text` della
+  risposta può indicare il nuovo tetto in dollari; senza importo il tetto raddoppia;
 - permesso: `Consenti una volta` / `Consenti sempre per questo agente` / `Nega`. Per le azioni che
   richiedono sempre approvazione (configurazione git, variabili d'ambiente, hook e `.git`,
   `git -c`) le opzioni sono solo `Consenti una volta` / `Nega`. Il `context` della decisione
@@ -132,7 +134,12 @@ aspetta l'utente.
 `{ client, protocol: 1 }`: apre la sessione; la risposta è uno `snapshot`.
 
 ### `goal.submit`
-`{ text, repoId? }`: nuovo obiettivo (senza `repoId` si usa il primo repository registrato).
+`{ text, repoId?, budgetUsd? }`: nuovo obiettivo (senza `repoId` si usa il primo repository
+registrato). `budgetUsd` è il tetto di spesa in dollari; se manca vale quello della configurazione
+(default 5, `--budget` o `KEYSTONE_BUDGET_USD`; 0 = nessun tetto). Quando la spesa lo raggiunge,
+l'obiettivo passa in `paused`: i turni dei suoi agenti vengono fermati e salvati, i lavori in coda
+aspettano, e arriva una decisione `budget`. Il motore Claude riceve anche la spesa residua come
+limite del turno, così la CLI stessa si ferma al tetto.
 Risultato: `{ goalId }`.
 
 ### `user.message`
@@ -175,6 +182,11 @@ modifica.
 `confirmGuard: true`, cioè che l'utente abbia visto l'anteprima (`repo.preview`) e confermato;
 senza conferma la registrazione viene rifiutata e il `.git/config` non cambia. Risultato:
 `{ repoId }`.
+
+### `goal.budget`
+`{ goalId, budgetUsd }`: cambia il tetto di spesa di un obiettivo. Se l'obiettivo era in pausa per il
+tetto e ora c'è margine, riprende: i turni fermati ripartono con la stessa sessione. Risultato:
+`{ goalId, budgetUsd, status }`.
 
 ### `worktrees.prune`
 `{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o

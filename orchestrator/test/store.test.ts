@@ -21,7 +21,7 @@ describe('Store', () => {
   it('sopravvive a un riavvio: lo stato viene ricaricato', () => {
     const dir = tmpDir();
     const a = new Store(dir);
-    a.data.goals.push({ id: 'g1', text: 'obiettivo', status: 'active', progress: 0.5, createdAt: 1 });
+    a.data.goals.push({ id: 'g1', text: 'obiettivo', status: 'active', progress: 0.5, costUsd: 0, createdAt: 1 });
     a.markDirty();
     a.close();
     const b = new Store(dir);
