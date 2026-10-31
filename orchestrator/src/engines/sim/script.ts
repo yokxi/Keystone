@@ -1,14 +1,12 @@
 // La sceneggiatura predefinita del motore sim. È deterministica e idempotente: un turno ripreso
 // dopo un riavvio non duplica task né commit.
 //
-// Marcatori nel testo dell'obiettivo o nel titolo di un task, per esercitare i vari flussi:
-//   [domanda]   il worker chiede all'utente (ask_user) prima di scrivere
-//   [permesso]  il worker chiede un permesso che la policy non concede da sola (rete)
-//   [blocca]    il worker si dichiara bloccato
-//   [vuoto]     il worker non modifica nessun file
+// I marcatori (markers.ts) nel testo dell'obiettivo o nel titolo di un task esercitano i vari
+// flussi: domande, permessi, task bloccati, task senza modifiche, test che falliscono.
 //
 // Pianificazione: l'obiettivo diviso su ";" o a capo diventa un task per parte (indipendenti);
 // un obiettivo semplice diventa due task, il secondo dipendente dal primo.
+import { hasMarker, SIM_MARKERS as M } from './markers.js';
 import type { SimContext } from './sim-engine.js';
 
 export type SimScript = (ctx: SimContext) => Promise<string | undefined>;
@@ -74,13 +72,13 @@ async function workerWork(ctx: SimContext): Promise<string> {
   await ctx.say(ctx.resumed ? `Riprendo ${taskId}.` : `Inizio ${taskId}: ${title}`);
   await ctx.tool('Read', { file_path: 'README.md' }, async () => ctx.readFile('README.md') ?? '(nessun README)');
 
-  if (title.includes('[blocca]')) {
+  if (hasMarker(title, M.block)) {
     await ctx.team('update_task', { task_id: taskId, status: 'blocked', blocked_reason: 'serve una decisione esterna (sim)' });
     return `${taskId} bloccato.`;
   }
 
   let note = '';
-  if (title.includes('[domanda]')) {
+  if (hasMarker(title, M.question)) {
     // ripreso dopo un riavvio con la risposta nel prompt: come farebbe un modello, non richiede
     const earlier = ctx.resumed ? /Risposta: (.+?)\. \(La domanda/.exec(ctx.spec.prompt)?.[1] : undefined;
     if (earlier) note = `\nScelta dell'utente (ricevuta prima del riavvio): ${earlier}\n`;
@@ -89,14 +87,15 @@ async function workerWork(ctx: SimContext): Promise<string> {
       note = `\nScelta dell'utente: ${res.text}\n`;
     }
   }
-  if (title.includes('[permesso]')) {
+  if (hasMarker(title, M.permission)) {
     const a = await ctx.permission('Bash', { command: 'curl https://example.com' }, 'controllo di un servizio esterno');
     note += a.allow ? '\nControllo esterno eseguito.\n' : '\nControllo esterno non autorizzato: ne faccio a meno.\n';
   }
 
-  if (!title.includes('[vuoto]')) {
+  if (!hasMarker(title, M.empty)) {
     const file = `keystone-sim/${taskId}.md`;
     await ctx.writeFile(file, `# ${title}\n\nLavoro svolto da ${ctx.spec.agentName} (motore sim).\n${note}`);
+    if (hasMarker(title, M.failingTest) || hasMarker(title, M.alwaysFailingTest)) await ctx.writeFile(testFile(taskId), simTest(false));
     await ctx.tool('Bash', { command: 'git add -A && git commit' }, async () => {
       await ctx.git(['add', '-A']);
       const st = await ctx.git(['status', '--porcelain']);
@@ -107,7 +106,7 @@ async function workerWork(ctx: SimContext): Promise<string> {
     });
   }
   ctx.usage(2400, 600);
-  await ctx.team('update_task', { task_id: taskId, status: 'review', summary: title.includes('[vuoto]') ? 'Analisi senza modifiche ai file.' : `Creato keystone-sim/${taskId}.md.` });
+  await ctx.team('update_task', { task_id: taskId, status: 'review', summary: hasMarker(title, M.empty) ? 'Analisi senza modifiche ai file.' : `Creato keystone-sim/${taskId}.md.` });
   return `${taskId} pronto per la review.`;
 }
 
@@ -117,6 +116,30 @@ async function workerFollowup(ctx: SimContext): Promise<string> {
     await ctx.team('send_message', { to: 'user', text: 'Ricevuto.' });
     return 'ok';
   }
+  const title = ctx.spec.job.title ?? '';
+  // conflitto con la base: unisce la base nel worktree e risolve tenendo entrambe le parti
+  const conflict = /in conflitto[\s\S]*`git merge ([^`\s]+)`/.exec(ctx.spec.prompt);
+  if (conflict) {
+    const base = conflict[1]!;
+    await ctx.tool('Bash', { command: `git merge ${base}` }, async () => {
+      const m = await ctx.git(['merge', '--no-edit', base]);
+      if (m.code === 0) return 'merge senza conflitti';
+      const files = (await ctx.git(['diff', '--name-only', '--diff-filter=U'])).stdout.split('\n').map((f) => f.trim()).filter(Boolean);
+      for (const f of files) {
+        const text = ctx.readFile(f) ?? '';
+        // tiene le righe di entrambe le parti, senza i marcatori di conflitto
+        await ctx.writeFile(f, text.split('\n').filter((l) => !/^(<{7}|={7}|>{7})( |$)/.test(l)).join('\n'));
+      }
+      await ctx.git(['add', '-A']);
+      const c = await ctx.git(['commit', '-q', '--no-edit']);
+      if (c.code !== 0) throw new Error(`commit del merge fallito: ${c.stderr.trim()}`);
+      return `conflitti risolti in: ${files.join(', ')}`;
+    });
+    await ctx.team('update_task', { task_id: taskId, status: 'review', summary: `Unito ${base} e risolti i conflitti.` });
+    return `${taskId}: conflitto risolto.`;
+  }
+  // test tornati indietro: il worker corregge il test (salvo il marcatore dei test sempre rotti)
+  if (/test sono falliti/.test(ctx.spec.prompt) && hasMarker(title, M.failingTest)) await ctx.writeFile(testFile(taskId), simTest(true));
   const file = `keystone-sim/${taskId}.md`;
   const before = ctx.readFile(file) ?? `# ${ctx.spec.job.title ?? taskId}\n`;
   // il feedback ricevuto (prime righe del prompt) finisce nel file, così la revisione è verificabile
@@ -154,3 +177,12 @@ export const defaultSimScript: SimScript = async (ctx) => {
   if (job.kind === 'work') return workerWork(ctx);
   return workerFollowup(ctx);
 };
+
+function testFile(taskId: string): string {
+  return `keystone-sim/${taskId}.test.js`;
+}
+
+/** Un test per node --test che fallisce o passa (CommonJS: funziona in ogni progetto). */
+function simTest(pass: boolean): string {
+  return ["const test = require('node:test');", "const assert = require('node:assert');", '', "test('verifica del sim', () => {", `  assert.strictEqual(${pass ? 1 : 2}, 1);`, '});', ''].join('\n');
+}

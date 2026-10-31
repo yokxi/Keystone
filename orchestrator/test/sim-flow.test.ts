@@ -53,16 +53,101 @@ describe('flusso con il motore sim', () => {
     expect(o.status.tokens).toBeGreaterThan(0);
   });
 
-  it('il merge non è ancora disponibile in Fase 2: la decisione resta aperta con il motivo', async () => {
+  it('merge approvato: il task si chiude, il dipendente parte e l\'obiettivo si completa', async () => {
     const { o, repo } = await setup();
     await submit(o, 'Aggiungi un saluto');
-    const merge = await waitFor(() => openDecision(o, (d) => d.kind === 'merge'), 'decisione di merge');
+    const m1 = await waitFor(() => openDecision(o, (d) => d.kind === 'merge' && d.taskId === 't1'), 'merge di t1');
+    expect(m1.context).toMatch(/Test: superati \(npm test/);
+    await answer(o, m1.id, 'Merge');
+    expect(o.tasks.get('t1')?.status).toBe('done');
+    expect(await gitOut(repo, ['status', '--porcelain'])).toBe('');
+    expect(fs.existsSync(path.join(repo, 'keystone-sim', 't1.md'))).toBe(true);
+    // t2 dipendeva da t1: ora parte, e parte dal codice già unito
+    const m2 = await waitFor(() => openDecision(o, (d) => d.kind === 'merge' && d.taskId === 't2'), 'merge di t2');
+    await answer(o, m2.id, 'Merge');
+    expect(o.goal('g1')).toMatchObject({ status: 'done', progress: 1 });
+    expect(await gitOut(repo, ['status', '--porcelain'])).toBe('');
+    expect(fs.existsSync(path.join(repo, 'keystone-sim', 't2.md'))).toBe(true);
+    const merges = (await gitOut(repo, ['log', '--merges', '--format=%an|%s'])).split('\n');
+    expect(merges).toHaveLength(2);
+    // il merge approvato è dell'utente: la sua identità git, non quella di un agente
+    const userName = await gitOut(repo, ['config', 'user.name']);
+    expect(merges.every((l) => l.startsWith(`${userName}|Merge Keystone/`))).toBe(true);
+  });
+
+  it('merge rifiutato perché il checkout ha modifiche: la decisione si riapre con il motivo', async () => {
+    const { o, repo } = await setup();
+    await submit(o, 'Aggiungi un saluto');
+    const m = await waitFor(() => openDecision(o, (d) => d.kind === 'merge'), 'decisione di merge');
+    fs.appendFileSync(path.join(repo, 'index.js'), '// modifica in corso dell\'utente\n');
     const headBefore = await gitOut(repo, ['rev-parse', 'HEAD']);
-    await answer(o, merge.id, 'Merge');
-    expect(o.decisions.get(merge.id)).toMatchObject({ status: 'open' });
-    expect(o.decisions.get(merge.id)?.context).toMatch(/Fase 3/);
+    await answer(o, m.id, 'Merge');
+    expect(o.decisions.get(m.id)).toMatchObject({ status: 'open' });
+    expect(o.decisions.get(m.id)?.context).toMatch(/modifiche non committate/);
     expect(o.tasks.get('t1')?.status).toBe('review');
     expect(await gitOut(repo, ['rev-parse', 'HEAD'])).toBe(headBefore);
+    // l'utente committa le sue modifiche e riprova: ora il merge passa
+    await gitOut(repo, ['-c', 'user.name=U', '-c', 'user.email=u@u', 'commit', '-qam', 'lavoro dell\'utente']);
+    await answer(o, m.id, 'Merge');
+    expect(o.tasks.get('t1')?.status).toBe('done');
+  });
+
+  it('conflitto al merge: il branch torna al worker, che unisce la base, risolve e richiede la review', async () => {
+    const { o, repo } = await setup();
+    await submit(o, 'Aggiungi un saluto');
+    const m1 = await waitFor(() => openDecision(o, (d) => d.kind === 'merge'), 'prima decisione');
+    // nel frattempo sulla base arriva un altro lavoro che tocca lo stesso file
+    fs.mkdirSync(path.join(repo, 'keystone-sim'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'keystone-sim', 't1.md'), '# Versione arrivata prima sulla base\n');
+    await gitOut(repo, ['add', '-A']);
+    await gitOut(repo, ['-c', 'user.name=U', '-c', 'user.email=u@u', 'commit', '-qm', 'lavoro parallelo']);
+    await answer(o, m1.id, 'Merge');
+    expect(o.decisions.get(m1.id)).toMatchObject({ status: 'cancelled' });
+    expect(o.decisions.get(m1.id)?.cancelReason).toMatch(/conflitto.*rimandato a Bruno/);
+    const m2 = await waitFor(() => openDecision(o, (d) => d.kind === 'merge' && d.id !== m1.id), 'nuova decisione dopo la risoluzione');
+    expect(m2.taskId).toBe('t1');
+    const branch = o.tasks.get('t1')!.branch!;
+    const resolved = await gitOut(repo, ['show', `${branch}:keystone-sim/t1.md`]);
+    expect(resolved).toContain('Versione arrivata prima sulla base');
+    expect(resolved).toContain('Lavoro svolto da Bruno');
+    expect(resolved).not.toMatch(/^(<{7}|>{7})/m);
+    await answer(o, m2.id, 'Merge');
+    expect(o.tasks.get('t1')?.status).toBe('done');
+    expect(await gitOut(repo, ['status', '--porcelain'])).toBe('');
+  });
+
+  it('test falliti: il task torna al worker una volta e, corretto, va in review', async () => {
+    const { o } = await setup({ workers: 1 });
+    await submit(o, 'Aggiungi un test [test-rotto]; Altro [vuoto]');
+    const m = await waitFor(() => openDecision(o, (d) => d.kind === 'merge' && d.taskId === 't1'), 'merge di t1', 60_000);
+    expect(o.tasks.get('t1')?.ci).toBe('pass');
+    expect(o.store.data.team.ciFixes.t1).toBe(1);
+    expect(o.store.logTail('bruno').some((l) => l.text.startsWith('test FALLITI'))).toBe(true);
+    expect(m.context).toMatch(/Test: superati/);
+  });
+
+  it('test che falliscono anche dopo la correzione: in review con il fallimento annotato', async () => {
+    const { o } = await setup({ workers: 1 });
+    await submit(o, 'Aggiungi un test [test-sempre-rotto]; Altro [vuoto]');
+    const m = await waitFor(() => openDecision(o, (d) => d.kind === 'merge' && d.taskId === 't1'), 'merge di t1', 60_000);
+    const t = o.tasks.get('t1')!;
+    expect(t.ci).toBe('fail');
+    expect(t.summary).toMatch(/i test falliscono ancora/);
+    expect(m.context).toMatch(/Test: FALLITI/);
+    expect(o.store.data.team.ciFixes.t1).toBe(1); // rimandato al worker una sola volta
+  });
+
+  it('worktrees.prune dal protocollo chiude i worktree di task finiti', async () => {
+    const { o } = await setup();
+    await submit(o, 'Aggiungi un saluto');
+    await waitFor(() => openDecision(o, (d) => d.kind === 'merge'), 'decisione');
+    await o.team.idle();
+    await o.handle({ v: 1, type: 'task.action', taskId: 't2', action: 'cancel' }, noReply);
+    const t1 = o.tasks.get('t1')!;
+    const res = await o.handle({ v: 1, type: 'worktrees.prune' }, noReply);
+    // t1 è in review: il suo worktree resta
+    expect(o.repos.findWorktree(t1.repoId!, t1.worktree!)?.status).toBe('active');
+    expect(Array.isArray(res?.report)).toBe(true);
   });
 
   it('obiettivo in più parti: task indipendenti lavorati in parallelo da worker diversi', async () => {
