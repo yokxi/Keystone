@@ -32,11 +32,11 @@ import { runShell } from '../util/proc.js';
 import { lastLines, slugify } from '../util/text.js';
 import type { Ctx } from './context.js';
 import { parseUnifiedDiff } from './diff.js';
-import { guardActive, installGuard, WORKTREE_PREFIX } from './gitsafety.js';
+import { guardActive, guardInstalled, installGuard, previewGuard, writeGuardFile, WORKTREE_PREFIX, type GuardPreview } from './gitsafety.js';
 
 export const BRANCH_PREFIX = 'Keystone';
 
-export type RepoErrorCode = 'not_found' | 'not_git' | 'not_root' | 'no_commits' | 'refused' | 'conflict' | 'dirty' | 'empty' | 'unsafe' | 'failed';
+export type RepoErrorCode = 'not_found' | 'not_git' | 'not_root' | 'no_commits' | 'needs_confirmation' | 'refused' | 'conflict' | 'dirty' | 'empty' | 'unsafe' | 'failed';
 
 export class RepoError extends Error {
   constructor(
@@ -134,8 +134,37 @@ export class RepoManager {
     return next;
   }
 
-  /** Registra un repository (la radice, con almeno un commit) e vi installa il guardiano git. */
-  async add(p: string): Promise<Repo> {
+  /**
+   * Anteprima della registrazione: verifica che sia la radice di un repository con almeno un
+   * commit e mostra la riga che verrebbe aggiunta al suo .git/config (il guardiano git).
+   */
+  async preview(p: string): Promise<{ root: string } & GuardPreview> {
+    const abs = await this.validateRoot(p);
+    return { root: abs, ...(await previewGuard(abs, this.opts.guardFile)) };
+  }
+
+  /**
+   * Registra un repository. Se il guardiano non è ancora installato serve `confirmGuard: true`,
+   * cioè che l'utente abbia visto l'anteprima (preview) e confermato la modifica al .git/config.
+   */
+  async add(p: string, opts: { confirmGuard?: boolean } = {}): Promise<Repo> {
+    const abs = await this.validateRoot(p);
+    const pv = await previewGuard(abs, this.opts.guardFile);
+    if (!pv.installed && !opts.confirmGuard) {
+      throw new RepoError(`per registrare ${abs} va aggiunta a ${pv.configFile} questa riga (guardiano git di Keystone):\n${pv.lines.join('\n')}\nConferma la modifica per continuare.`, 'needs_confirmation');
+    }
+    await installGuard(abs, this.opts.guardFile);
+    const existing = this.repos.find((r) => samePath(r.path, abs));
+    if (existing) return this.refresh(existing.id);
+    let id = slugify(path.basename(abs), 40);
+    for (let i = 2; this.get(id); i++) id = `${slugify(path.basename(abs), 36)}-${i}`;
+    const repo: Repo = { id, name: path.basename(abs), path: abs, branch: await this.currentBranch(abs), dirty: false, ci: 'unknown', worktrees: [] };
+    this.repos.push(repo);
+    this.ctx.log.info(`guardiano git installato in ${pv.configFile} (push bloccato nei worktree degli agenti)`);
+    return this.refresh(id);
+  }
+
+  private async validateRoot(p: string): Promise<string> {
     const abs = path.resolve(p);
     if (!fs.existsSync(abs)) throw new RepoError(`${abs} non esiste`, 'not_found');
     const top = await git(abs, ['rev-parse', '--show-toplevel'], { allowFail: true });
@@ -147,15 +176,17 @@ export class RepoManager {
     if ((await git(abs, ['rev-parse', '--verify', '--quiet', 'HEAD'], { allowFail: true })).code !== 0) {
       throw new RepoError(`${abs} non ha ancora commit: crea almeno un commit`, 'no_commits');
     }
-    await installGuard(abs, this.opts.guardFile);
-    const existing = this.repos.find((r) => samePath(r.path, abs));
-    if (existing) return this.refresh(existing.id);
-    let id = slugify(path.basename(abs), 40);
-    for (let i = 2; this.get(id); i++) id = `${slugify(path.basename(abs), 36)}-${i}`;
-    const repo: Repo = { id, name: path.basename(abs), path: abs, branch: await this.currentBranch(abs), dirty: false, ci: 'unknown', worktrees: [] };
-    this.repos.push(repo);
-    this.ctx.log.info(`guardiano git installato in ${abs} (push bloccato nei worktree degli agenti)`);
-    return this.refresh(id);
+    return abs;
+  }
+
+  /** La cartella git comune del repository (dove stanno config, hook e i dati dei worktree). */
+  async commonDir(repoId: string): Promise<string> {
+    const r = this.require(repoId);
+    return path.resolve(r.path, await gitOut(r.path, ['rev-parse', '--git-common-dir']));
+  }
+
+  get guardFile(): string {
+    return this.opts.guardFile;
   }
 
   private async currentBranch(dir: string): Promise<string> {
@@ -212,7 +243,11 @@ export class RepoManager {
       if (existing && fs.existsSync(existing.path)) return existing;
       const base = await this.currentBranch(r.path);
       if (base === 'HEAD') throw new RepoError(`il checkout di ${r.name} non è su un branch (HEAD staccato)`, 'refused');
-      await installGuard(r.path, this.opts.guardFile);
+      // il guardiano si installa solo con la conferma dell'utente (add): qui si verifica soltanto
+      writeGuardFile(this.opts.guardFile);
+      if (!(await guardInstalled(r.path, this.opts.guardFile))) {
+        throw new RepoError(`il guardiano git non è installato in ${r.name}: registra di nuovo il repository e conferma la modifica al .git/config`, 'unsafe');
+      }
       const branch = this.branchName(agentId, task.id, task.title);
       const dir = path.join(this.opts.worktreesDir, r.id, `${WORKTREE_PREFIX}${id}`);
       if (fs.existsSync(dir)) {

@@ -7,7 +7,7 @@ import { demoRepo, onCleanup, testOrchestrator, waitFor } from './helpers.js';
 
 async function setup() {
   const { o, cfg } = testOrchestrator({ workers: 1 });
-  await o.repos.add(await demoRepo(cfg.home));
+  await o.repos.add(await demoRepo(cfg.home), { confirmGuard: true });
   await o.start();
   const server = new OrchestratorServer(o, { port: 0, log: silentLogger, validateOutbound: true });
   const port = await server.listen();

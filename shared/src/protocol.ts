@@ -132,6 +132,10 @@ export const Decision = z.object({
   worktree: Id.optional(),
   /** permesso: il tool richiesto (Bash, Edit, ...) */
   tool: z.string().optional(),
+  /** permesso: il comando o la chiamata completa, senza tagli */
+  command: z.string().optional(),
+  /** permesso: richiede sempre approvazione ("Consenti sempre" non è disponibile) */
+  alwaysAsk: z.boolean().optional(),
   createdAt: Ts,
   answeredAt: Ts.optional(),
 });
@@ -324,7 +328,24 @@ export const AgentActionMsg = z.object({
   action: z.enum(['pause', 'resume', 'stop', 'spawn']),
 });
 export const DiffRequestMsg = z.object({ ...envelope('diff.request'), requestId: z.string().min(1).max(100), repoId: Id, worktree: Id });
-export const RepoAddMsg = z.object({ ...envelope('repo.add'), path: z.string().min(1) });
+/** Anteprima della registrazione: la riga che verrebbe aggiunta al .git/config. */
+export const RepoPreviewMsg = z.object({ ...envelope('repo.preview'), path: z.string().min(1) });
+export const RepoAddMsg = z.object({
+  ...envelope('repo.add'),
+  path: z.string().min(1),
+  /** l'utente ha visto l'anteprima e conferma la modifica al .git/config */
+  confirmGuard: z.boolean().optional(),
+});
+
+/** Risultato di repo.preview (nel campo `result` dell'ack). */
+export const RepoPreview = z.object({
+  root: z.string(),
+  configFile: z.string(),
+  lines: z.array(z.string()),
+  guardFile: z.string(),
+  installed: z.boolean(),
+});
+export type RepoPreview = z.infer<typeof RepoPreview>;
 export const WorktreesPruneMsg = z.object({ ...envelope('worktrees.prune') });
 
 export const ClientMessage = z.discriminatedUnion('type', [
@@ -335,6 +356,7 @@ export const ClientMessage = z.discriminatedUnion('type', [
   TaskActionMsg,
   AgentActionMsg,
   DiffRequestMsg,
+  RepoPreviewMsg,
   RepoAddMsg,
   WorktreesPruneMsg,
 ]);

@@ -39,7 +39,7 @@ documentato qui.
 | `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens` |
 | `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `createdBy`, `createdAt`, `updatedAt` |
 | `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`done`/`failed`/`cancelled`), `progress` 0..1, `repoId?`, `createdAt` |
-| `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `createdAt`, `answeredAt?` |
+| `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `command?` (permesso: il comando completo, senza tagli), `alwaysAsk?` (permesso: richiede sempre approvazione, niente "Consenti sempre"), `createdAt`, `answeredAt?` |
 | `Repo` | `id`, `name`, `path`, `branch`, `dirty`, `ci`, `worktrees[]` |
 | `Worktree` | `id` (`<agente>-<task>`), `repoId`, `agentId`, `taskId?`, `branch` (`Keystone/<agente>/<task>-<slug>`), `base`, `path`, `status` (`active`/`merged`/`abandoned`), `files`, `additions`, `deletions` |
 | `MemoryEntry` | `id` (`shared/<slug>` o `<agente>/<slug>`), `scope`, `title`, `body` (markdown), `author?`, `updated` |
@@ -162,10 +162,19 @@ priorità (intero); per `reassign`, `arg` è il worker.
 `{ requestId, repoId, worktree }`: chiede il diff di un worktree (anche chiuso: in quel caso si usa
 il branch conservato). La risposta è un messaggio `diff`.
 
+### `repo.preview`
+`{ path }`: anteprima della registrazione, senza modificare nulla. Verifica che sia la radice di
+un repository con almeno un commit e restituisce la modifica che verrà fatta al suo
+`.git/config` (il guardiano git, vedi `docs/sicurezza.md`). Risultato:
+`{ root, configFile, lines: string[], guardFile, installed }`. `lines` sono esattamente le righe
+che verranno aggiunte in fondo a `configFile`; `installed: true` significa che non serve nessuna
+modifica.
+
 ### `repo.add`
-`{ path }`: registra un repository. Deve essere la radice del repo e avere almeno un commit.
-Nel suo `.git/config` viene installato il guardiano git di Keystone, che blocca il push solo nei
-worktree degli agenti (vedi `docs/sicurezza.md`). Risultato: `{ repoId }`.
+`{ path, confirmGuard? }`: registra un repository. Se il guardiano non è ancora installato serve
+`confirmGuard: true`, cioè che l'utente abbia visto l'anteprima (`repo.preview`) e confermato;
+senza conferma la registrazione viene rifiutata e il `.git/config` non cambia. Risultato:
+`{ repoId }`.
 
 ### `worktrees.prune`
 `{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o

@@ -79,7 +79,7 @@ describe('marcatori del sim', () => {
   it('con un motore che non è il sim sono testo qualunque: [blocca] e [vuoto] non bloccano né svuotano il task', async () => {
     const engines = new Map<EngineId, EngineAdapter>([['codex', new PlainEngine()]]);
     const { o, cfg } = testOrchestrator({ engines, cfg: { agents: [{ id: 'ada', name: 'Ada', role: 'lead', engine: 'codex' }, { id: 'bruno', name: 'Bruno', role: 'worker', engine: 'codex' }] } });
-    await o.repos.add(await demoRepo(cfg.home));
+    await o.repos.add(await demoRepo(cfg.home), { confirmGuard: true });
     await o.start();
     await o.handle({ v: 1, type: 'goal.submit', text: `Pubblica il pacchetto ${SIM_MARKERS.block} ${SIM_MARKERS.empty} ${SIM_MARKERS.alwaysFailingTest}` }, noReply);
     const m = await waitFor(() => o.decisions.open().find((d) => d.kind === 'merge'), 'decisione di merge');
@@ -92,7 +92,7 @@ describe('marcatori del sim', () => {
 
   it('con il motore sim, invece, [blocca] blocca il task', async () => {
     const { o, cfg } = testOrchestrator({ workers: 1 });
-    await o.repos.add(await demoRepo(cfg.home));
+    await o.repos.add(await demoRepo(cfg.home), { confirmGuard: true });
     await o.start();
     await o.handle({ v: 1, type: 'goal.submit', text: `Pubblica ${SIM_MARKERS.block}; Altro ${SIM_MARKERS.empty}` }, noReply);
     await waitFor(() => o.tasks.get('t1')?.status === 'blocked', 't1 bloccato');

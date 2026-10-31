@@ -82,15 +82,58 @@ o in un hook, quindi è git stesso a rifiutarlo, con due livelli indipendenti.
 **Livello 2: guardiano nel repository**, che regge anche a un ambiente sovrascritto o svuotato con
 `env -i`:
 
-- quando registri un repository, Keystone aggiunge al suo `.git/config` una riga
-  `includeIf "gitdir/i:<.git>/worktrees/ks-*"` che include il file
-  `~/.keystone/<profilo>/git/agent-guard.gitconfig`, con le stesse regole del livello 1;
+- quando registri un repository, Keystone **ti mostra la modifica e chiede conferma** prima di
+  aggiungere in fondo al suo `.git/config` queste due righe (il percorso cambia con il repository):
+
+  ```ini
+  [includeIf "gitdir/i:C:/percorso/del/repo/.git/worktrees/ks-*"]
+  	path = C:/Users/<tu>/.keystone/git/agent-guard.gitconfig
+  ```
+
+  Senza conferma la registrazione si ferma e il file non cambia. Questo vale nell'interfaccia,
+  con `repo.preview` e `repo.add { confirmGuard: true }`, e da riga di comando, dove `--repo`
+  chiede `s/N` oppure richiede `--confirm-guard`. Fa eccezione solo il repository di prova creato
+  da `--demo`;
+- il file incluso sta in `~/.keystone/git/`, **fuori** da ogni repository e worktree. Per la policy
+  è un **percorso protetto** insieme al `.git/config` del repository, ai dati dei worktree in
+  `.git/worktrees` e al collegamento `.git` di ogni worktree: un agente non può scriverli,
+  cancellarli né cambiare le chiavi `include`/`includeIf` (né con `git config` né con `git -c`).
+  Questi comandi vengono **negati**, non chiesti, e nemmeno "Consenti sempre" li sblocca;
 - vale **solo** nei worktree degli agenti (cartelle `ks-…`). Il tuo checkout, il tuo push e i tuoi
   fetch non cambiano: un test lo verifica;
-- prima di consegnare un worktree a un agente, Keystone verifica che il guardiano sia attivo; se
-  non lo è, si rifiuta;
-- se il file di Keystone viene cancellato, git ignora l'include e il tuo repository non si rompe;
-- per toglierlo: `npm run orchestrator -- --remove-git-guard <percorso del repo>`.
+- Keystone verifica che il guardiano sia attivo prima di creare un worktree e **prima di ogni turno
+  di un worker**. Se manca o è stato manomesso, il turno non parte e il task si blocca con il
+  motivo. Keystone non lo reinstalla mai da solo: serve registrare di nuovo il repository e
+  confermare;
+- se il file di Keystone viene cancellato, git ignora l'include e il tuo repository non si rompe.
+
+**Come rimuovere il guardiano** da un repository (gli agenti non potranno più lavorarci finché non
+lo registri di nuovo):
+
+- da riga di comando: `npm run orchestrator -- --remove-git-guard "C:\percorso\del\repo"`;
+- oppure con git: `git -C "C:\percorso\del\repo" config --local --remove-section "includeIf.gitdir/i:<percorso>/.git/worktrees/ks-*"`.
+  Il nome esatto della sezione si vede con `git config --local --list --show-origin`;
+- oppure a mano: apri `.git/config` del repository e cancella le due righe mostrate sopra.
+
+**Livello 3: nessuna credenziale nei worktree degli agenti.** È un livello indipendente dai primi
+due: vale anche se un comando riuscisse ad aggirare il blocco dei trasporti.
+
+- Sia l'ambiente sia il guardiano impostano `credential.helper` vuoto, che azzera gli helper
+  configurati prima (Git Credential Manager, `store`, …). Impostano anche
+  `credential.interactive=never`, un `core.askPass` inesistente e un `core.sshCommand` che fallisce
+  sempre.
+- L'ambiente degli agenti non eredita l'agent SSH (`SSH_AUTH_SOCK`, `SSH_AGENT_PID`), i programmi
+  per chiedere password (`GIT_ASKPASS`, `SSH_ASKPASS`), i comandi ssh personalizzati
+  (`GIT_SSH`, `GIT_SSH_COMMAND`) né token (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `*_PAT`,
+  variabili `GCM_*`, …).
+- Test: un push con un `pushurl` valido verso un server HTTP locale che chiede l'autenticazione
+  fallisce, sia con l'ambiente dell'agente sia con `env -i`. Il server viene raggiunto ma non
+  riceve **nessuna** credenziale, mentre dal tuo checkout la stessa credenziale arriva
+  (controprova). Anche ssh fallisce.
+- Nota: la riga del guardiano viene aggiunta in fondo al `.git/config`, così il suo
+  `credential.helper` vuoto azzera gli helper definiti prima. Se in futuro aggiungi a mano un
+  helper *dopo* quella riga, nei worktree degli agenti lo azzera comunque l'ambiente (livello 1);
+  resta scoperto solo il caso di un ambiente svuotato apposta.
 
 I test dimostrano che il push fallisce:
 
@@ -105,10 +148,24 @@ I test dimostrano che il push fallisce:
 
 Sono bloccati anche fetch e ls-remote nei worktree degli agenti, e la firma con le tue chiavi.
 
-**Limite noto.** Non è una sandbox del sistema operativo. Per aggirare il blocco servono **insieme**
-la manomissione dell'ambiente e della configurazione: per esempio svuotare l'ambiente, riabilitare
-il protocollo e impostare un `pushurl` con `-c`, tutto nello stesso comando. La policy chiede
-approvazione per ciascuno di questi passi quando li vede.
+## 4bis. Limite: Keystone non è una sandbox
+
+I tre livelli e la policy rendono molto difficile pubblicare qualcosa per errore o per un agente
+troppo intraprendente, ma **non sono un isolamento del sistema operativo**:
+
+- gli agenti girano con il tuo utente Windows e possono leggere ciò che legge il tuo utente, se
+  approvi le richieste o se il codice lo fa da uno script (per esempio un test);
+- un programma scritto apposta per aggirare i controlli può farlo. Per pubblicare dovrebbe, nello
+  stesso comando, svuotare l'ambiente, riabilitare il protocollo, impostare un `pushurl` con `-c` e
+  procurarsi credenziali che nei worktree non ci sono. La policy chiede approvazione per ciascuno
+  di questi passi quando li vede, ma non vede dentro gli script;
+- il codice che gli agenti scrivono ed eseguono (test, build) ha accesso alla rete come qualunque
+  programma lanciato da te.
+
+**Raccomandazione.** Per repository sensibili (codice di lavoro, segreti, accessi a produzione)
+usa Keystone in un ambiente separato: una **macchina virtuale**, oppure un **utente Windows
+dedicato** senza accesso ai tuoi file, alle tue chiavi SSH e al tuo Git Credential Manager. In
+quell'ambiente clona solo il repository su cui vuoi far lavorare gli agenti.
 
 ## 5. Policy dei permessi
 

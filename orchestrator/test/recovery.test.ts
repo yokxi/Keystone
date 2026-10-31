@@ -21,7 +21,7 @@ describe('ripresa dopo riavvio', () => {
     const home = tmpDir();
     const a = testOrchestrator({ home, workers: 1, engines: slowSim(60) });
     const repo = await demoRepo(home);
-    await a.o.repos.add(repo);
+    await a.o.repos.add(repo, { confirmGuard: true });
     await a.o.start();
     await a.o.handle({ v: 1, type: 'goal.submit', text: 'Aggiungi un saluto' }, noReply);
     await waitFor(() => a.o.tasks.get('t1')?.status === 'doing' && a.o.store.data.team.inflight.bruno, 'bruno al lavoro su t1');
@@ -40,7 +40,7 @@ describe('ripresa dopo riavvio', () => {
   it('una domanda aperta resta aperta dopo il riavvio; la risposta riprende la sessione', async () => {
     const home = tmpDir();
     const a = testOrchestrator({ home, workers: 1 });
-    await a.o.repos.add(await demoRepo(home));
+    await a.o.repos.add(await demoRepo(home), { confirmGuard: true });
     await a.o.start();
     await a.o.handle({ v: 1, type: 'goal.submit', text: 'Scegli [domanda]; Altro [vuoto]' }, noReply);
     const q = await waitFor(() => a.o.decisions.open().find((d) => d.kind === 'question'), 'domanda');
@@ -57,7 +57,7 @@ describe('ripresa dopo riavvio', () => {
   it('le richieste di permesso di un processo che non c\'è più vengono annullate e richieste di nuovo', async () => {
     const home = tmpDir();
     const a = testOrchestrator({ home, workers: 1 });
-    await a.o.repos.add(await demoRepo(home));
+    await a.o.repos.add(await demoRepo(home), { confirmGuard: true });
     await a.o.start();
     await a.o.handle({ v: 1, type: 'goal.submit', text: 'Verifica [permesso]; Altro [vuoto]' }, noReply);
     const p = await waitFor(() => a.o.decisions.open().find((d) => d.kind === 'permission'), 'permesso');
@@ -74,7 +74,7 @@ describe('ripresa dopo riavvio', () => {
   it('pianificazione interrotta: al riavvio il lead la riprende senza duplicare i task', async () => {
     const home = tmpDir();
     const a = testOrchestrator({ home, workers: 1, engines: slowSim(80) });
-    await a.o.repos.add(await demoRepo(home));
+    await a.o.repos.add(await demoRepo(home), { confirmGuard: true });
     await a.o.start();
     await a.o.handle({ v: 1, type: 'goal.submit', text: 'Uno; Due; Tre' }, noReply);
     await waitFor(() => a.o.tasks.list().length >= 1, 'primo task creato');

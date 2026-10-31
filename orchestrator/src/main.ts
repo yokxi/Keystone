@@ -7,6 +7,7 @@
 //   manutenzione: --prune-worktrees, --remove-git-guard <repo>
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { parseArgs } from 'node:util';
 import { buildOrchestrator } from './bootstrap.js';
 import { dataDir, defaultAgents, defaultConfig } from './config.js';
@@ -33,8 +34,21 @@ const HELP = `Keystone orchestratore ${VERSION}
 manutenzione (non avviano l'orchestratore):
   --prune-worktrees    chiude i worktree di task finiti e rimuove quelli orfani del profilo
   --remove-git-guard <repo>  toglie dal .git/config del repository il guardiano di Keystone
+
+  --confirm-guard      conferma senza chiedere la riga da aggiungere al .git/config dei repository
+                       passati con --repo (la riga viene comunque mostrata)
   --help               questo aiuto
 `;
+
+function askYesNo(question: string): Promise<boolean> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(/^(s|si|sì|y|yes)$/i.test(answer.trim()));
+    });
+  });
+}
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
@@ -51,6 +65,7 @@ async function main(): Promise<void> {
       ci: { type: 'string' },
       'prune-worktrees': { type: 'boolean' },
       'remove-git-guard': { type: 'string' },
+      'confirm-guard': { type: 'boolean' },
       help: { type: 'boolean' },
     },
   });
@@ -116,10 +131,33 @@ async function main(): Promise<void> {
     void shutdown(1);
   });
 
-  const repos = [...(values.repo ?? [])];
-  if (values.demo) repos.unshift(await createDemoRepo(path.join(cfg.home, 'demo-repo')));
+  const repos: Array<{ path: string; demo: boolean }> = (values.repo ?? []).map((p) => ({ path: p, demo: false }));
+  if (values.demo) repos.unshift({ path: await createDemoRepo(path.join(cfg.home, 'demo-repo')), demo: true });
   for (const r of repos) {
-    const repo = await o.repos.add(r);
+    // la modifica al .git/config si mostra sempre e si applica solo con conferma
+    const pv = await o.repos.preview(r.path);
+    let confirmed = pv.installed;
+    if (!pv.installed) {
+      process.stdout.write(
+        [
+          '',
+          `Per registrare ${pv.root} Keystone aggiungerà in fondo a ${pv.configFile}:`,
+          '',
+          ...pv.lines.map((l) => `    ${l}`),
+          '',
+          'Serve a bloccare push e credenziali nei worktree degli agenti; il tuo checkout non cambia.',
+          `Per toglierla: npm run orchestrator -- --remove-git-guard "${pv.root}"`,
+          '',
+          '',
+        ].join('\n'),
+      );
+      if (r.demo) confirmed = true; // repository di prova creato da Keystone stesso
+      else if (values['confirm-guard']) confirmed = true;
+      else if (process.stdin.isTTY) confirmed = await askYesNo('Aggiungo la riga? [s/N] ');
+      else throw new Error(`serve una conferma per modificare ${pv.configFile}: rilancia con --confirm-guard (o da un terminale interattivo)`);
+    }
+    if (!confirmed) throw new Error(`registrazione di ${pv.root} annullata: il .git/config non è stato modificato`);
+    const repo = await o.repos.add(r.path, { confirmGuard: true });
     log.info(`repository: ${repo.name} (${repo.path}, branch ${repo.branch})`);
   }
   await o.start();

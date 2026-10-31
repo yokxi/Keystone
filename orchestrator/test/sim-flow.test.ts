@@ -10,7 +10,7 @@ import { demoRepo, noReply, testOrchestrator, waitFor } from './helpers.js';
 async function setup(opts: Parameters<typeof testOrchestrator>[0] = {}) {
   const { o, cfg } = testOrchestrator(opts);
   const repo = await demoRepo(cfg.home);
-  await o.repos.add(repo);
+  await o.repos.add(repo, { confirmGuard: true });
   await o.start();
   return { o, repo, cfg };
 }

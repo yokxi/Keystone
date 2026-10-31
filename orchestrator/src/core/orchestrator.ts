@@ -35,6 +35,8 @@ export interface OrchestratorOptions {
   now?: () => number;
   /** solo test: guasti simulati durante il merge */
   repoFaults?: RepoManagerOptions['faults'];
+  /** file di regole del guardiano git (default: <home>/git/agent-guard.gitconfig) */
+  guardFile?: string;
   storeDebounceMs?: number;
 }
 
@@ -66,7 +68,8 @@ export class Orchestrator {
     this.memory = new Memory(ctx, path.join(opts.dataDir, 'memory'));
     this.repos = new RepoManager(ctx, {
       worktreesDir: path.join(opts.dataDir, 'worktrees'),
-      guardFile: path.join(opts.dataDir, 'git', 'agent-guard.gitconfig'),
+      // fuori da repository e worktree: ~/.keystone/git/ (percorso protetto dalla policy)
+      guardFile: opts.guardFile ?? path.join(path.dirname(path.resolve(opts.dataDir)), 'git', 'agent-guard.gitconfig'),
       ...(opts.repoFaults ? { faults: opts.repoFaults } : {}),
     });
     const costUsd = this.store.data.agents.reduce((s, a) => s + a.costUsd, 0);
@@ -442,8 +445,12 @@ export class Orchestrator {
         reply({ type: 'diff', requestId: msg.requestId, repoId: msg.repoId, worktree: msg.worktree, files });
         return { files: files.length };
       }
+      case 'repo.preview': {
+        const pv = await this.repos.preview(msg.path);
+        return { ...pv };
+      }
       case 'repo.add': {
-        const r = await this.repos.add(msg.path);
+        const r = await this.repos.add(msg.path, { confirmGuard: msg.confirmGuard === true });
         return { repoId: r.id };
       }
       case 'worktrees.prune': {

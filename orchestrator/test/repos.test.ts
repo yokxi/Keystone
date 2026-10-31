@@ -16,25 +16,25 @@ describe('RepoManager', () => {
   it('registra solo la radice di un repository con almeno un commit', async () => {
     const { repos, dir } = manager();
     const repo = await demoRepo(dir);
-    const r = await repos.add(repo);
+    const r = await repos.add(repo, { confirmGuard: true });
     expect(r).toMatchObject({ id: 'repo', branch: 'main', dirty: false });
     // registrare due volte lo stesso repo non lo duplica
-    await repos.add(repo);
+    await repos.add(repo, { confirmGuard: true });
     expect(repos.list()).toHaveLength(1);
     fs.mkdirSync(path.join(repo, 'sub'));
-    await expect(repos.add(path.join(repo, 'sub'))).rejects.toMatchObject({ code: 'not_root' });
-    await expect(repos.add(path.join(dir, 'nessuno'))).rejects.toBeInstanceOf(RepoError);
+    await expect(repos.add(path.join(repo, 'sub'), { confirmGuard: true })).rejects.toMatchObject({ code: 'not_root' });
+    await expect(repos.add(path.join(dir, 'nessuno'), { confirmGuard: true })).rejects.toBeInstanceOf(RepoError);
     const empty = path.join(dir, 'vuoto');
     fs.mkdirSync(empty);
-    await expect(repos.add(empty)).rejects.toMatchObject({ code: 'not_git' });
+    await expect(repos.add(empty, { confirmGuard: true })).rejects.toMatchObject({ code: 'not_git' });
     await git(empty, ['init', '-q']);
-    await expect(repos.add(empty)).rejects.toMatchObject({ code: 'no_commits' });
+    await expect(repos.add(empty, { confirmGuard: true })).rejects.toMatchObject({ code: 'no_commits' });
   });
 
   it('crea un worktree per task su Keystone/<agente>/<task> senza toccare il checkout dell\'utente', async () => {
     const { repos, dir } = manager();
     const repo = await demoRepo(dir);
-    await repos.add(repo);
+    await repos.add(repo, { confirmGuard: true });
     const headBefore = await gitOut(repo, ['rev-parse', 'HEAD']);
     const wt = await repos.createWorktree('repo', 'bruno', { id: 't1', title: 'Aggiungi il flag --version' });
     expect(wt.branch).toBe('Keystone/bruno/t1-aggiungi-il-flag-version');
@@ -52,7 +52,7 @@ describe('RepoManager', () => {
   it('il diff include modifiche committate, non committate e file nuovi, senza toccare l\'indice dell\'agente', async () => {
     const { repos, dir } = manager();
     const repo = await demoRepo(dir);
-    await repos.add(repo);
+    await repos.add(repo, { confirmGuard: true });
     const wt = await repos.createWorktree('repo', 'chiara', { id: 't2', title: 'diff' });
     fs.appendFileSync(path.join(wt.path, 'README.md'), 'Riga committata.\n');
     await git(wt.path, ['add', '-A']);
@@ -73,7 +73,7 @@ describe('RepoManager', () => {
   it('abbandonare un worktree salva il lavoro sul branch, rimuove la cartella e fa prune', async () => {
     const { repos, dir } = manager();
     const repo = await demoRepo(dir);
-    await repos.add(repo);
+    await repos.add(repo, { confirmGuard: true });
     const wt = await repos.createWorktree('repo', 'dario', { id: 't3', title: 'abbandono' });
     fs.writeFileSync(path.join(wt.path, 'lavoro.txt'), 'mezzo fatto\n');
     await repos.abandon('repo', wt.id, 't3: lavoro salvato', { name: 'Keystone Dario', email: 'dario@keystone.local' });
@@ -89,7 +89,7 @@ describe('RepoManager', () => {
   it('ricrea un worktree rimasto a metà da un crash (cartella esistente, non registrata)', async () => {
     const { repos, dir } = manager();
     const repo = await demoRepo(dir);
-    await repos.add(repo);
+    await repos.add(repo, { confirmGuard: true });
     const stale = path.join(dir, 'worktrees', 'repo', 'ks-elena-t4');
     fs.mkdirSync(stale, { recursive: true });
     fs.writeFileSync(path.join(stale, 'residuo.txt'), 'x');
@@ -101,7 +101,7 @@ describe('RepoManager', () => {
   it('segnala il checkout dell\'utente con modifiche non committate', async () => {
     const { repos, dir } = manager();
     const repo = await demoRepo(dir);
-    await repos.add(repo);
+    await repos.add(repo, { confirmGuard: true });
     fs.appendFileSync(path.join(repo, 'README.md'), 'modifica\n');
     expect((await repos.refresh('repo')).dirty).toBe(true);
   });

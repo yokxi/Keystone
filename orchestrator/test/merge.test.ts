@@ -23,7 +23,7 @@ async function setup(faults?: RepoManagerOptions['faults']) {
     removeDelayMs: 20,
     ...(faults ? { faults } : {}),
   });
-  await repos.add(repo);
+  await repos.add(repo, { confirmGuard: true });
   const wt = await repos.createWorktree('repo', 'bruno', { id: 't1', title: 'saluto' });
   fs.writeFileSync(path.join(wt.path, 'nuovo.txt'), 'scritto dall\'agente\n');
   fs.appendFileSync(path.join(wt.path, 'README.md'), 'Riga aggiunta dall\'agente.\n');

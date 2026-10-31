@@ -19,7 +19,7 @@ async function setup() {
   await git(repo, ['remote', 'add', 'origin', remote]);
   await git(repo, ['push', '-q', 'origin', 'main']);
   const repos = new RepoManager(testCtx(path.join(dir, 'state')), { worktreesDir: path.join(dir, 'worktrees'), guardFile: path.join(dir, 'state', 'git', 'agent-guard.gitconfig') });
-  await repos.add(repo);
+  await repos.add(repo, { confirmGuard: true });
   const wt = await repos.createWorktree('repo', 'bruno', { id: 't1', title: 'push' });
   fs.writeFileSync(path.join(wt.path, 'lavoro.txt'), 'lavoro dell\'agente\n');
   const env = agentEnv(process.env, { agentId: 'bruno', name: 'Bruno', cwd: wt.path }) as NodeJS.ProcessEnv;
