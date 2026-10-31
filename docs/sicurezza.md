@@ -230,3 +230,17 @@ comando, chiede.
   della scelta nessuna 44.x corretta era uscita da almeno due settimane: la prima, la 44.9.1, era
   del 20 ottobre. Si usa quindi la 44.10.1, l'ultima della serie. Quando la 44.10.1 avrà più di
   due settimane la regola sarà di nuovo rispettata, senza bisogno di cambiare versione.
+
+## 7. Motore Claude
+
+Dettagli in `docs/motore-claude.md`. In sintesi:
+
+- ogni chiamata a un tool passa dalla policy di Keystone (un hook PreToolUse su tutti i tool più
+  `canUseTool`). `permissionMode` è sempre `default` e non esiste una modalità che salti i permessi,
+  nemmeno come opzione;
+- gli agenti non ereditano la configurazione di Claude Code dell'utente: niente impostazioni, hook,
+  server MCP, comandi, skill o `CLAUDE.md` globale. Lo verifica un test sulla CLI vera;
+- di default si autentica solo via API (chiave o provider cloud); il login personale di Claude Code
+  si abilita esplicitamente;
+- ogni obiettivo ha un tetto di spesa: al raggiungimento gli agenti si fermano, il lavoro resta
+  salvato e la decisione su come proseguire spetta a te.
