@@ -1,0 +1,46 @@
+import type { AgentState, TaskStatus } from '@keystone/shared';
+
+export const STATE_LABEL: Record<AgentState, string> = {
+  idle: 'libero',
+  thinking: 'ragiona',
+  reading: 'legge',
+  editing: 'modifica',
+  running: 'esegue',
+  testing: 'test',
+  waiting_user: 'aspetta te',
+  blocked: 'bloccato',
+  done: 'finito',
+  error: 'errore',
+};
+
+export const STATUS_LABEL: Record<TaskStatus, string> = {
+  todo: 'Da fare',
+  doing: 'In corso',
+  review: 'In review',
+  blocked: 'Bloccati',
+  done: 'Completati',
+  cancelled: 'Annullati',
+};
+
+export function money(usd: number): string {
+  if (usd === 0) return '$0';
+  if (usd < 0.01) return '<$0.01';
+  return `$${usd.toFixed(2)}`;
+}
+
+export function tokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+export function time(ts: number): string {
+  return new Date(ts).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+export function ago(ts: number, now = Date.now()): string {
+  const s = Math.max(0, Math.round((now - ts) / 1000));
+  if (s < 60) return `${s}s fa`;
+  if (s < 3600) return `${Math.round(s / 60)} min fa`;
+  return `${Math.round(s / 3600)} h fa`;
+}
