@@ -45,7 +45,15 @@ export interface TeamOptions {
   /** comando dei test del repository target (default: rilevato, es. npm test) */
   ciCommand?: string;
   ciTimeoutMs?: number;
+  /** quota minima di spesa per avviare un turno quando altri turni dello stesso obiettivo sono in corso */
+  minTurnBudgetUsd?: number;
 }
+
+/** Quota minima predefinita per turno (dollari). */
+export const MIN_TURN_BUDGET_USD = 0.25;
+
+const BUDGET_CONTINUE_PROMPT =
+  "Il turno precedente si è fermato perché ha esaurito la quota di spesa riservata al turno (il tetto dell'obiettivo non è stato raggiunto). Continua da dove eri rimasto.";
 
 /** budget: l'obiettivo ha raggiunto il tetto di spesa (il turno resta salvato, come per shutdown) */
 type AbortReason = 'pause' | 'stop' | 'shutdown' | 'cancel' | 'timeout' | 'budget';
@@ -74,6 +82,11 @@ interface Running {
   resolveAborted: () => void;
   /** percorsi che l'agente non può modificare in questo turno */
   protectedPaths: string[];
+  /**
+   * quota di spesa riservata al turno (assente: obiettivo senza tetto). Finché il turno è in corso
+   * non è disponibile per altri turni dello stesso obiettivo.
+   */
+  reservedUsd?: number;
 }
 
 interface TurnOutcome {
@@ -329,15 +342,64 @@ export class Team {
     const q = this.queues.get(agentId);
     if (!q?.length) return;
     if (agentId !== this.lead.id && this.workersBusy() >= this.opts.maxConcurrent) return;
-    // i lavori di un obiettivo in pausa per il tetto di spesa aspettano in coda
-    const idx = q.findIndex((j) => !this.goalPaused(this.goalOfJob(j)));
-    if (idx < 0) return;
+    // i lavori di un obiettivo in pausa per il tetto di spesa aspettano in coda, e anche quelli
+    // per cui la spesa residua è già tutta riservata ad altri turni dello stesso obiettivo
+    let reservedUsd: number | undefined;
+    let waitingForBudget = false;
+    const idx = q.findIndex((j) => {
+      if (this.goalPaused(this.goalOfJob(j))) return false;
+      const r = this.reserveFor(j, agentId);
+      if (r === null) {
+        waitingForBudget = true;
+        return false;
+      }
+      reservedUsd = r;
+      return true;
+    });
+    if (idx < 0) {
+      const activity = 'aspetta: la spesa residua è riservata ad altri turni';
+      if (waitingForBudget && a.activity !== activity) this.o.setAgent(agentId, { activity });
+      return;
+    }
     const job = q.splice(idx, 1)[0]!;
     let resolveAborted!: () => void;
     const whenAborted = new Promise<void>((r) => (resolveAborted = r));
-    const entry: Running = { job, decisions: new Set(), whenAborted, resolveAborted, protectedPaths: [] };
+    const entry: Running = { job, decisions: new Set(), whenAborted, resolveAborted, protectedPaths: [], ...(reservedUsd !== undefined ? { reservedUsd } : {}) };
     this.running.set(agentId, entry);
     entry.done = this.runJob(entry).catch((e) => this.o.log.error(`turno di ${agentId}: ${(e as Error).stack ?? e}`));
+  }
+
+  /**
+   * La quota di spesa per un nuovo turno: undefined = obiettivo senza tetto, null = deve aspettare.
+   * Ogni turno riceve al massimo una fetta del tetto (tetto / posti: il lead più i worker che
+   * possono lavorare insieme) e mai più del residuo meno le quote dei turni in corso dello stesso
+   * obiettivo. Così la somma delle quote dei turni in corso non supera mai il residuo: lo
+   * sforamento massimo è l'ultima chiamata al modello di ciascun turno.
+   */
+  private reserveFor(job: Job, agentId: string): number | undefined | null {
+    const goalId = this.goalOfJob(job);
+    const remaining = this.o.remainingBudget(goalId);
+    if (remaining === undefined) return undefined;
+    if (remaining <= 0) return null;
+    const cap = this.o.goal(goalId!)!.budgetUsd!;
+    let reserved = 0;
+    let others = 0;
+    for (const [id, r] of this.running) {
+      if (id === agentId || r.reservedUsd === undefined || this.goalOfJob(r.job) !== goalId) continue;
+      reserved += r.reservedUsd;
+      others++;
+    }
+    const min = this.opts.minTurnBudgetUsd ?? MIN_TURN_BUDGET_USD;
+    const slots = 1 + Math.max(1, Math.min(this.opts.maxConcurrent, this.workers().length));
+    const slice = Math.max(min, cap / slots);
+    if (!others) return Math.min(slice, remaining);
+    const available = remaining - reserved;
+    if (available < Math.min(min, slice)) return null;
+    return Math.min(slice, available);
+  }
+
+  private pumpAll(): void {
+    for (const id of this.queues.keys()) this.pump(id);
   }
 
   private abort(r: Running, reason: AbortReason): void {
@@ -437,8 +499,8 @@ export class Team {
         env: agentEnv(process.env, { agentId, name: m.name, cwd }),
         writableRoots: [],
         tools: teamTools(this.o, agentId, m.role, hooks, guard),
-        ...(this.o.remainingBudget(this.goalOfJob(job)) !== undefined ? { budgetUsd: this.o.remainingBudget(this.goalOfJob(job))! } : {}),
-        ...(resume && session?.costUsd !== undefined ? { sessionCostUsd: session.costUsd } : {}),
+        ...(entry.reservedUsd !== undefined ? { budgetUsd: entry.reservedUsd } : {}),
+        ...(resume && session && (session.engineTotalUsd ?? session.costUsd) !== undefined ? { sessionCostUsd: (session.engineTotalUsd ?? session.costUsd)! } : {}),
         job: { kind: job.kind, ...(job.taskId ? { taskId: job.taskId } : {}), ...(job.goalId ? { goalId: job.goalId } : {}), ...(job.kind === 'plan' && goal ? { title: goal.text } : task ? { title: task.title } : {}) },
       };
       const turn = resume ? m.engine.resumeSession(resume, spec) : m.engine.startSession(spec);
@@ -472,7 +534,15 @@ export class Team {
       case 'session': {
         const prev = this.o.store.data.sessions[entry.job.sessionKey];
         if (prev?.sessionId !== ev.sessionId || prev.engine !== m.engine.id) {
-          this.o.store.data.sessions[entry.job.sessionKey] = { sessionId: ev.sessionId, engine: m.engine.id, model: this.modelOf(m), updatedAt: this.o.now(), ...(prev?.sessionId === ev.sessionId && prev.costUsd !== undefined ? { costUsd: prev.costUsd } : {}) };
+          const same = prev?.sessionId === ev.sessionId;
+          this.o.store.data.sessions[entry.job.sessionKey] = {
+            sessionId: ev.sessionId,
+            engine: m.engine.id,
+            model: this.modelOf(m),
+            updatedAt: this.o.now(),
+            ...(same && prev.costUsd !== undefined ? { costUsd: prev.costUsd } : {}),
+            ...(same && prev.engineTotalUsd !== undefined ? { engineTotalUsd: prev.engineTotalUsd } : {}),
+          };
           this.o.store.markDirty();
         }
         return undefined;
@@ -504,15 +574,26 @@ export class Team {
       case 'permission_request':
         void this.gate(entry, m, cwd, ev).then((answer) => entry.turn?.respond(ev.requestId, answer));
         return undefined;
-      case 'usage':
+      case 'usage': {
         this.o.addUsage(agentId, ev.inputTokens + ev.outputTokens, ev.costUsd ?? 0);
+        const rec = this.o.store.data.sessions[entry.job.sessionKey];
+        if (rec && ev.sessionTotalUsd !== undefined) {
+          rec.engineTotalUsd = ev.sessionTotalUsd;
+          this.o.store.markDirty();
+        }
+        const goalId = this.goalOfJob(entry.job);
+        if (ev.unreconciledUsd && goalId) {
+          this.o.addGoalUnreconciled(goalId, ev.unreconciledUsd);
+          this.o.agentLog(agentId, 'text', `spesa contata per prudenza: la sessione ripresa potrebbe non aver ritrovato $${ev.unreconciledUsd.toFixed(2)} già contati; restano contati finché non vengono riconciliati`);
+        }
         if (ev.costUsd) {
-          const rec = this.o.store.data.sessions[entry.job.sessionKey];
           if (rec) rec.costUsd = Math.round(((rec.costUsd ?? 0) + ev.costUsd) * 1e6) / 1e6;
-          const goalId = this.goalOfJob(entry.job);
+          // la spesa ora è nel totale dell'obiettivo: non è più riservata al turno
+          if (entry.reservedUsd !== undefined) entry.reservedUsd = Math.max(0, entry.reservedUsd - ev.costUsd);
           if (goalId && this.o.addGoalCost(goalId, ev.costUsd)) this.onBudgetReached(goalId);
         }
         return undefined;
+      }
       case 'error':
         this.o.agentLog(agentId, 'error', ev.message);
         if (ev.auth) {
@@ -588,6 +669,16 @@ export class Team {
     }
     delete this.st.inflight[agentId];
     this.o.store.markDirty();
+    if (!reason && outcome.status === 'budget') {
+      // quota del turno esaurita ma il tetto dell'obiettivo no: riprende la stessa sessione appena
+      // c'è spesa disponibile (in coda, come ogni turno)
+      this.o.agentLog(agentId, 'text', "quota di spesa del turno esaurita: riprende appena c'è spesa disponibile");
+      this.o.setAgent(agentId, { state: 'idle', activity: 'quota del turno esaurita: riprende a breve' });
+      this.enqueue({ ...job, fresh: false, prompt: BUDGET_CONTINUE_PROMPT });
+      this.pumpAll();
+      this.tick();
+      return;
+    }
     try {
       if (reason === 'pause') {
         const next: Job = { ...job, fresh: false, prompt: `${this.o.userName} ti aveva messo in pausa e ora ti ha ripreso. Le domande aperte sono state ritirate: richiedile se servono ancora. Continua il lavoro.` };
@@ -608,6 +699,8 @@ export class Team {
       this.o.log.error(`dopo il turno di ${agentId}: ${(e as Error).stack ?? e}`);
     }
     this.pump(agentId);
+    // la quota del turno è libera: possono partire turni che aspettavano spesa disponibile
+    this.pumpAll();
     if (reason !== 'stop' && reason !== 'pause') this.deliverPending(agentId);
     this.tick();
   }

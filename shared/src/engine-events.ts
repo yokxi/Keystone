@@ -48,13 +48,21 @@ export const UsageEvent = z.object({
   outputTokens: z.number().int().nonnegative(),
   /** costo in dollari, se il motore lo riporta (Codex riporta solo token) */
   costUsd: z.number().nonnegative().optional(),
+  /** totale cumulativo della sessione secondo il motore: la base per l'incremento del turno dopo */
+  sessionTotalUsd: z.number().nonnegative().optional(),
+  /**
+   * parte di `costUsd` contata per prudenza: il motore non sa dire se la sessione ripresa aveva
+   * ritrovato la spesa precedente, quindi la considera consumata (può essere contata due volte)
+   */
+  unreconciledUsd: z.number().nonnegative().optional(),
 });
 /** Errore non fatale o fatale; `auth` = errore di autenticazione. */
 export const ErrorEvent = z.object({ type: z.literal('error'), message: z.string(), auth: z.boolean().optional() });
 /** Fine del turno: sempre l'ultimo evento. */
 export const TurnEndEvent = z.object({
   type: z.literal('turn_end'),
-  status: z.enum(['success', 'error', 'aborted', 'max_turns']),
+  /** budget: il turno ha esaurito la quota di spesa che gli era stata riservata (non il tetto dell'obiettivo) */
+  status: z.enum(['success', 'error', 'aborted', 'max_turns', 'budget']),
   /** testo finale dell'agente */
   resultText: z.string().optional(),
 });

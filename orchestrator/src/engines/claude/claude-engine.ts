@@ -14,7 +14,9 @@
 //    dell'utente, perché lì vivono le credenziali: valgono comunque le altre barriere.
 //  - Tool: solo quelli di base per ruolo (il lead non ha Edit/Write) più i tool del team; niente
 //    sub-agenti, web, skill.
-//  - Spesa: maxBudgetUsd = spesa residua dell'obiettivo, così la CLI stessa si ferma al tetto.
+//  - Spesa: maxBudgetUsd = la quota riservata al turno dal team (mai più del residuo
+//    dell'obiettivo meno le quote dei turni in corso), così la CLI stessa si ferma.
+//  - Costi di una sessione ripresa: vedi sessionCostDelta (prudente quando non si può sapere).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -55,6 +57,14 @@ export interface ClaudeEngineConfig {
 /** La funzione che avvia un turno: quella dell'SDK, o un replay di una trascrizione nei test. */
 export type QueryFn = (params: { prompt: string; options: Options }, ctx: { tools: TeamTool[] }) => AsyncIterable<SDKMessage> & { close(): void };
 
+interface TurnAccounting {
+  seenUsage: Set<string>;
+  observedTokens: number;
+  compacted: boolean;
+  base: number;
+  resumed: boolean;
+}
+
 const realQuery: QueryFn = (params) => sdkQuery(params);
 
 export function assertNoPermissionBypass(options: Options): void {
@@ -65,6 +75,64 @@ export function assertNoPermissionBypass(options: Options): void {
   if (!options.hooks?.PreToolUse?.length || options.hooks.PreToolUse.some((m) => m.matcher)) throw new Error('serve un hook PreToolUse per tutti i tool');
   if (!options.canUseTool) throw new Error('serve canUseTool');
 }
+
+export interface CostInput {
+  /** totale della sessione registrato al turno precedente (0 o assente: sessione nuova) */
+  base: number;
+  /** total_cost_usd del risultato di questo turno */
+  total: number;
+  /** il turno riprende una sessione esistente */
+  resumed: boolean;
+  /** token visti nei messaggi di questo turno (solo il ciclo principale) */
+  observedTokens: number;
+  /** token di modelUsage del risultato (cumulativi come total_cost_usd) */
+  modelTokens: number;
+  /** nel turno c'è stata una compattazione (chiamate in più non visibili nei messaggi) */
+  compacted: boolean;
+}
+
+export interface CostDelta {
+  /** spesa da contare per questo turno */
+  delta: number;
+  /** parte di delta contata per prudenza (forse già contata in un turno precedente) */
+  unreconciled: number;
+  how: 'new' | 'restored' | 'not_restored' | 'unknown';
+}
+
+/**
+ * La spesa del turno a partire da total_cost_usd. Per una sessione ripresa la CLI riparte dal totale
+ * salvato nella trascrizione "quando c'è": se l'ha ritrovato, l'incremento è total - base; se no,
+ * total è solo la spesa di questo turno. Quando total < base è certo che non l'ha ritrovato.
+ * Altrimenti si confrontano i token del turno con quelli di modelUsage (che seguono lo stesso
+ * ciclo di vita di total_cost_usd): se modelUsage ne ha molti di più, la CLI ha ritrovato i turni
+ * precedenti; se sono quasi gli stessi, no. Se non si può dire, si conta in modo PRUDENTE: tutta la
+ * spesa, segnando base come "non riconciliata" (forse contata due volte), mai di meno.
+ */
+export function sessionCostDelta(c: CostInput): CostDelta {
+  const total = Math.max(0, c.total);
+  const base = Math.max(0, c.base);
+  if (!c.resumed || base === 0) return { delta: total, unreconciled: 0, how: 'new' };
+  if (total < base) return { delta: total, unreconciled: 0, how: 'not_restored' };
+  const evidence = !c.compacted && c.observedTokens > 0 && c.modelTokens > 0;
+  if (evidence) {
+    const share = Math.min(1, c.observedTokens / c.modelTokens);
+    const prior = base / Math.max(total, 1e-9); // quota della spesa che sarebbe dei turni precedenti
+    if (share <= 1 - 0.5 * prior) return { delta: total - base, unreconciled: 0, how: 'restored' };
+    if (share >= 1 - 0.1 * prior) return { delta: total, unreconciled: 0, how: 'not_restored' };
+  }
+  return { delta: total, unreconciled: Math.min(base, total), how: 'unknown' };
+}
+
+function modelUsageTokens(mu: unknown): number {
+  if (!mu || typeof mu !== 'object') return 0;
+  let n = 0;
+  for (const u of Object.values(mu as Record<string, Record<string, unknown>>)) {
+    for (const k of ['inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens']) if (typeof u?.[k] === 'number') n += u[k] as number;
+  }
+  return n;
+}
+
+const round6 = (v: number) => Math.round(v * 1e6) / 1e6;
 
 function normalizeToolName(name: string): string {
   return name.startsWith(MCP_PREFIX) ? name.slice(MCP_PREFIX.length) : name;
@@ -218,8 +286,7 @@ export class ClaudeEngine implements EngineAdapter {
 
     const q = this.queryFn({ prompt: spec.prompt, options }, { tools: spec.tools });
     const toolNames = new Map<string, string>();
-    const seenUsage = new Set<string>();
-    let baseline = spec.sessionCostUsd ?? 0;
+    const acc: TurnAccounting = { seenUsage: new Set(), observedTokens: 0, compacted: false, base: spec.sessionCostUsd ?? 0, resumed: !!resume };
 
     void (async () => {
       let ended = false;
@@ -227,7 +294,7 @@ export class ClaudeEngine implements EngineAdapter {
         for await (const msg of q) {
           if (abort.signal.aborted) break;
           recorder?.({ t: 'msg', msg });
-          for (const ev of this.map(msg, toolNames, seenUsage, () => baseline, (v) => (baseline = v))) {
+          for (const ev of this.map(msg, toolNames, acc)) {
             if (ev.type === 'turn_end') ended = true;
             emit(ev);
           }
@@ -263,8 +330,9 @@ export class ClaudeEngine implements EngineAdapter {
   }
 
   /** Traduce un messaggio dell'SDK negli eventi normalizzati. */
-  private *map(msg: SDKMessage, toolNames: Map<string, string>, seenUsage: Set<string>, getBaseline: () => number, setBaseline: (v: number) => void): Generator<EngineEvent> {
+  private *map(msg: SDKMessage, toolNames: Map<string, string>, acc: TurnAccounting): Generator<EngineEvent> {
     const m = msg as Record<string, unknown> & { type: string; subtype?: string };
+    if (m.type === 'system' && m.subtype === 'compact_boundary') acc.compacted = true;
     if (m.type === 'system' && m.subtype === 'init') {
       if (typeof m.session_id === 'string') yield { type: 'session', sessionId: m.session_id };
       if (typeof m.model === 'string') yield { type: 'model', model: m.model };
@@ -288,9 +356,11 @@ export class ClaudeEngine implements EngineAdapter {
         }
       }
       const u = message?.usage;
-      if (u && message?.id && !seenUsage.has(message.id)) {
-        seenUsage.add(message.id);
-        yield { type: 'usage', inputTokens: (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0), outputTokens: u.output_tokens ?? 0 };
+      if (u && message?.id && !acc.seenUsage.has(message.id)) {
+        acc.seenUsage.add(message.id);
+        const inputTokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+        acc.observedTokens += inputTokens + (u.output_tokens ?? 0);
+        yield { type: 'usage', inputTokens, outputTokens: u.output_tokens ?? 0 };
       }
       return;
     }
@@ -305,17 +375,24 @@ export class ClaudeEngine implements EngineAdapter {
     }
     if (m.type === 'result') {
       const total = typeof m.total_cost_usd === 'number' ? m.total_cost_usd : 0;
-      // total_cost_usd è cumulativo per la sessione: si conta solo l'incremento rispetto al già registrato
-      const base = getBaseline();
-      const delta = total >= base ? total - base : total;
-      setBaseline(total >= base ? total : base + total);
-      if (delta > 0) yield { type: 'usage', inputTokens: 0, outputTokens: 0, costUsd: Math.round(delta * 1e6) / 1e6 };
+      const c = sessionCostDelta({ base: acc.base, total, resumed: acc.resumed, observedTokens: acc.observedTokens, modelTokens: modelUsageTokens(m.modelUsage), compacted: acc.compacted });
+      // la base del turno dopo è il totale come lo conosce la CLI (che lo salva nella trascrizione)
+      acc.base = total;
+      yield {
+        type: 'usage',
+        inputTokens: 0,
+        outputTokens: 0,
+        ...(c.delta > 0 ? { costUsd: round6(c.delta) } : {}),
+        sessionTotalUsd: round6(total),
+        ...(c.unreconciled > 0 ? { unreconciledUsd: round6(c.unreconciled) } : {}),
+      };
       const sub = m.subtype;
       const errors = Array.isArray(m.errors) ? (m.errors as string[]) : [];
       if (sub === 'success') yield { type: 'turn_end', status: 'success', ...(typeof m.result === 'string' ? { resultText: m.result } : {}) };
       else if (sub === 'error_max_turns') yield { type: 'turn_end', status: 'max_turns' };
+      else if (sub === 'error_max_budget_usd') yield { type: 'turn_end', status: 'budget' };
       else {
-        const message = sub === 'error_max_budget_usd' ? 'raggiunto il tetto di spesa disponibile per questo turno' : errors.join('; ') || String(sub);
+        const message = errors.join('; ') || String(sub);
         yield { type: 'error', message };
         yield { type: 'turn_end', status: 'error' };
       }

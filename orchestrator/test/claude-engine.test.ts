@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { defaultAgents } from '../src/config.js';
 import { detectApiAuth, envForAuth } from '../src/engines/claude/auth.js';
-import { assertNoPermissionBypass, ClaudeEngine, DISALLOWED_TOOLS, LEAD_TOOLS, WORKER_TOOLS } from '../src/engines/claude/claude-engine.js';
+import { assertNoPermissionBypass, ClaudeEngine, DISALLOWED_TOOLS, LEAD_TOOLS, sessionCostDelta, WORKER_TOOLS } from '../src/engines/claude/claude-engine.js';
 import { displayClaudeModel } from '../src/engines/claude/models.js';
 import { loadTranscript, replayQuery, type ReplayRecord, type TranscriptEntry } from '../src/engines/claude/replay.js';
 import type { EngineAdapter, TurnSpec } from '../src/engines/types.js';
@@ -185,28 +185,72 @@ describe('motore Claude: ogni tool passa dalla policy di Keystone', () => {
 });
 
 describe('motore Claude: sessioni, costi ed errori', () => {
-  it('resumeSession passa resume e conta solo l\'incremento del costo cumulativo', async () => {
+  /** Un turno ripreso: un messaggio con `observed` token, poi il risultato con total e modelUsage. */
+  async function resumedTurn(total: number, base: number, observed: number, modelTokens?: number) {
     const records: ReplayRecord[] = [];
     const transcript: TranscriptEntry[] = [
       { t: 'msg', msg: { type: 'system', subtype: 'init', session_id: 'sess-x', model: 'claude-sonnet-5-5' } },
-      { t: 'msg', msg: { type: 'result', subtype: 'success', result: 'ok', total_cost_usd: 0.3, num_turns: 1 } },
+      { t: 'msg', msg: { type: 'assistant', message: { id: 'm1', content: [{ type: 'text', text: 'continuo' }], usage: { input_tokens: observed - 100, output_tokens: 100 } } } },
+      {
+        t: 'msg',
+        msg: { type: 'result', subtype: 'success', result: 'ok', total_cost_usd: total, num_turns: 1, ...(modelTokens ? { modelUsage: { 'claude-sonnet-5-5': { inputTokens: modelTokens - 100, outputTokens: 100, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: total } } } : {}) },
+      },
     ];
     const engine = new ClaudeEngine({ configDir: tmpDir() }, replayQuery([transcript], records));
-    const events = await drain(engine.resumeSession('sess-x', spec(tmpDir(), { sessionCostUsd: 0.25, budgetUsd: 1.234 })));
+    const events = await drain(engine.resumeSession('sess-x', spec(tmpDir(), { sessionCostUsd: base, budgetUsd: 1.234 })));
+    const cost = events.find((e) => e.type === 'usage' && e.sessionTotalUsd !== undefined) as Extract<EngineEvent, { type: 'usage' }>;
+    return { records, events, cost };
+  }
+
+  it('sessione ripresa che ha ritrovato il totale (modelUsage include i turni precedenti): conta solo l\'incremento', async () => {
+    const { records, events, cost } = await resumedTurn(0.3, 0.25, 2_000, 12_000);
     expect(records[0]!.options!.resume).toBe('sess-x');
     expect(records[0]!.options!.maxBudgetUsd).toBe(1.23);
-    const usage = events.filter((e) => e.type === 'usage' && e.costUsd);
-    expect(usage).toHaveLength(1);
-    expect((usage[0] as { costUsd: number }).costUsd).toBeCloseTo(0.05, 6);
+    expect(cost.costUsd).toBeCloseTo(0.05, 6);
+    expect(cost.unreconciledUsd).toBeUndefined();
+    expect(cost.sessionTotalUsd).toBe(0.3);
     expect(events.at(-1)).toEqual({ type: 'turn_end', status: 'success', resultText: 'ok' });
+  });
+
+  it('sessione ripresa che NON ha ritrovato il totale (total < base): conta tutto il totale', async () => {
+    const { cost } = await resumedTurn(0.1, 0.25, 2_000, 2_000);
+    expect(cost.costUsd).toBeCloseTo(0.1, 6);
+    expect(cost.unreconciledUsd).toBeUndefined();
+    // la base del turno dopo è il totale che conosce la CLI, non la somma di Keystone
+    expect(cost.sessionTotalUsd).toBe(0.1);
+  });
+
+  it('sessione ripresa non ritrovata con total >= base: modelUsage uguale al turno, conta tutto (prima ne contava meno)', async () => {
+    const { cost } = await resumedTurn(0.4, 0.25, 2_000, 2_050);
+    expect(cost.costUsd).toBeCloseTo(0.4, 6);
+    expect(cost.unreconciledUsd).toBeUndefined();
+  });
+
+  it('sessione ripresa senza prove (nessun modelUsage): conta in modo prudente e segna la parte non riconciliata', async () => {
+    const { cost } = await resumedTurn(0.3, 0.25, 2_000);
+    expect(cost.costUsd).toBeCloseTo(0.3, 6); // mai meno della spesa possibile
+    expect(cost.unreconciledUsd).toBeCloseTo(0.25, 6); // forse già contata
+  });
+
+  it('sessionCostDelta: casi limite', () => {
+    const base = { resumed: true, observedTokens: 1_000, modelTokens: 1_000, compacted: false };
+    expect(sessionCostDelta({ ...base, resumed: false, base: 0.5, total: 0.7 })).toEqual({ delta: 0.7, unreconciled: 0, how: 'new' });
+    expect(sessionCostDelta({ ...base, base: 0, total: 0.7 })).toMatchObject({ delta: 0.7, how: 'new' });
+    // una compattazione aggiunge token a modelUsage che il turno non vede: niente prove, prudenza
+    expect(sessionCostDelta({ ...base, compacted: true, modelTokens: 10_000, base: 0.2, total: 0.5 })).toMatchObject({ delta: 0.5, unreconciled: 0.2, how: 'unknown' });
+    // zona incerta tra "ritrovato" e "non ritrovato": prudenza
+    expect(sessionCostDelta({ ...base, modelTokens: 1_250, base: 0.5, total: 1 })).toMatchObject({ delta: 1, unreconciled: 0.5, how: 'unknown' });
+    expect(sessionCostDelta({ ...base, modelTokens: 2_000, base: 0.5, total: 1 })).toMatchObject({ delta: 0.5, how: 'restored' });
   });
 
   it('esiti di errore: limite di turni, tetto di spesa del turno, autenticazione', async () => {
     const run = async (msgs: Array<Record<string, unknown>>) => drain(new ClaudeEngine({ configDir: tmpDir() }, replayQuery([msgs.map((msg) => ({ t: 'msg' as const, msg }))])).startSession(spec(tmpDir())));
     expect((await run([{ type: 'result', subtype: 'error_max_turns', errors: [] }])).at(-1)).toEqual({ type: 'turn_end', status: 'max_turns' });
+    // quota del turno esaurita: non è un errore, il team riprende la sessione quando c'è spesa
     const budget = await run([{ type: 'result', subtype: 'error_max_budget_usd', errors: [], total_cost_usd: 0.5 }]);
-    expect(budget.find((e) => e.type === 'error')).toMatchObject({ message: expect.stringMatching(/tetto di spesa/) });
-    expect(budget.at(-1)).toEqual({ type: 'turn_end', status: 'error' });
+    expect(budget.find((e) => e.type === 'error')).toBeUndefined();
+    expect(budget.find((e) => e.type === 'usage')).toMatchObject({ costUsd: 0.5 });
+    expect(budget.at(-1)).toEqual({ type: 'turn_end', status: 'budget' });
     const auth = await run([{ type: 'assistant', error: 'authentication_failed', message: { id: 'm', content: [] } }, { type: 'result', subtype: 'error_during_execution', errors: ['401'] }]);
     expect(auth.find((e) => e.type === 'error' && e.auth)).toBeTruthy();
   });

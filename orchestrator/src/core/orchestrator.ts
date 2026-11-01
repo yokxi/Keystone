@@ -78,7 +78,7 @@ export class Orchestrator {
     });
     const costUsd = this.store.data.agents.reduce((s, a) => s + a.costUsd, 0);
     const tokens = this.store.data.agents.reduce((s, a) => s + a.tokens, 0);
-    this.status = { version: VERSION, auth: 'unknown', message: 'avvio…', costUsd, tokens, userName: this.userName };
+    this.status = { version: VERSION, auth: 'unknown', message: 'avvio…', costUsd, tokens, userName: this.userName, profile: path.basename(path.resolve(opts.dataDir)) };
     this.team = new Team(this, opts.members, opts.team);
   }
 
@@ -208,6 +208,15 @@ export class Orchestrator {
     this.store.markDirty();
     this.emit({ type: 'goal.upsert', goal: { ...g } });
     return g.budgetUsd !== undefined && g.costUsd >= g.budgetUsd;
+  }
+
+  /** Parte della spesa dell'obiettivo contata per prudenza (sessioni riprese non riconciliate). */
+  addGoalUnreconciled(goalId: string, usd: number): void {
+    const g = this.goal(goalId);
+    if (!g || usd <= 0) return;
+    g.costUnreconciledUsd = Math.round(((g.costUnreconciledUsd ?? 0) + usd) * 1e6) / 1e6;
+    this.store.markDirty();
+    this.emit({ type: 'goal.upsert', goal: { ...g } });
   }
 
   /** Spesa ancora disponibile per l'obiettivo (undefined = nessun tetto). */

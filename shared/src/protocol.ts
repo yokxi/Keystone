@@ -114,6 +114,8 @@ export const Goal = z.object({
   repoId: Id.optional(),
   /** spesa registrata per l'obiettivo in dollari (i motori che riportano solo token contano 0) */
   costUsd: z.number().nonnegative(),
+  /** parte di costUsd contata per prudenza su sessioni riprese, non ancora riconciliata */
+  costUnreconciledUsd: z.number().nonnegative().optional(),
   /** tetto di spesa in dollari; assente = nessun tetto */
   budgetUsd: z.number().positive().optional(),
   /** lo stato da ripristinare quando un obiettivo in pausa riprende */
@@ -208,6 +210,8 @@ export const OrchestratorStatus = z.object({
   costUsd: z.number().nonnegative(),
   tokens: z.number().int().nonnegative(),
   userName: z.string(),
+  /** il profilo dell'orchestratore (l'app avvisa se è diverso dal suo) */
+  profile: z.string().optional(),
 });
 export type OrchestratorStatus = z.infer<typeof OrchestratorStatus>;
 

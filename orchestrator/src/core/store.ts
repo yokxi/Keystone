@@ -24,8 +24,10 @@ export interface BusMessage {
 
 export interface SessionRecord {
   sessionId: string;
-  /** costo cumulativo riportato dal motore per questa sessione (per calcolare gli incrementi) */
+  /** spesa contata da Keystone per questa sessione */
   costUsd?: number;
+  /** ultimo totale cumulativo riportato dal motore (base dell'incremento del turno dopo) */
+  engineTotalUsd?: number;
   engine: string;
   model?: string;
   updatedAt: number;
