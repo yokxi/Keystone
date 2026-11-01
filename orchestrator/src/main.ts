@@ -10,7 +10,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { parseArgs } from 'node:util';
 import { buildOrchestrator } from './bootstrap.js';
-import { applyLoginBudget, dataDir, defaultAgents, defaultConfig } from './config.js';
+import { applyLoginBudget, applyLoginLimits, dataDir, defaultAgents, defaultConfig } from './config.js';
 import { consoleLogger } from './core/context.js';
 import { VERSION } from './core/orchestrator.js';
 import { createDemoRepo, isKeystoneDemo } from './demo.js';
@@ -39,6 +39,9 @@ const HELP = `Keystone orchestratore ${VERSION}
   --use-claude-login   usa il login personale di Claude Code invece della chiave API (solo uso personale)
   --record <cartella>  registra le trascrizioni dei turni Claude (per i test di replay)
   --keep-branches      conserva il branch dell'agente dopo un merge (default: eliminato)
+  --goal-turns <n>     limite di turni degli agenti per obiettivo (0 = nessuno; login: default 30)
+  --goal-minutes <n>   limite di minuti di lavoro per obiettivo, senza le attese di una tua risposta
+                       (0 = nessuno; login: default 60)
 
 manutenzione (non avviano l'orchestratore):
   --prune-worktrees    chiude i worktree di task finiti e rimuove quelli orfani del profilo; poi
@@ -79,6 +82,8 @@ async function main(): Promise<void> {
       'confirm-guard': { type: 'boolean' },
       'confirm-branches': { type: 'boolean' },
       'keep-branches': { type: 'boolean' },
+      'goal-turns': { type: 'string' },
+      'goal-minutes': { type: 'string' },
       engine: { type: 'string' },
       'lead-model': { type: 'string' },
       'worker-model': { type: 'string' },
@@ -114,9 +119,20 @@ async function main(): Promise<void> {
     if (!Number.isFinite(b) || b < 0) throw new Error(`tetto di spesa non valido: ${values.budget}`);
     cfg.budgetUsdPerGoal = b;
   }
+  const limitArg = (name: 'goal-turns' | 'goal-minutes'): number | undefined => {
+    const v = values[name];
+    if (v === undefined) return undefined;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0 || (name === 'goal-turns' && !Number.isInteger(n))) throw new Error(`--${name} non valido: ${v}`);
+    return n;
+  };
+  const explicitLimits = { ...(limitArg('goal-turns') !== undefined ? { turns: limitArg('goal-turns')! } : {}), ...(limitArg('goal-minutes') !== undefined ? { minutes: limitArg('goal-minutes')! } : {}) };
   if (values['use-claude-login']) {
     cfg.claude.useClaudeLogin = true;
     log.info(applyLoginBudget(cfg, values.budget !== undefined || !!process.env.KEYSTONE_BUDGET_USD?.trim()));
+    log.info(applyLoginLimits(cfg, explicitLimits));
+  } else if (explicitLimits.turns || explicitLimits.minutes) {
+    cfg.goalLimits = { ...(explicitLimits.turns ? { turns: explicitLimits.turns } : {}), ...(explicitLimits.minutes ? { minutes: explicitLimits.minutes } : {}) };
   }
   if (values.record) cfg.claude.recordDir = path.resolve(values.record);
   if (values['keep-branches']) cfg.keepMergedBranches = true;

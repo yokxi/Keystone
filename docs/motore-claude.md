@@ -54,6 +54,18 @@ come "Opus 5.5" e "Sonnet 5.5" accanto a ogni agente.
   non c'è un tetto in dollari: i turni non si fermano per la spesa stimata. Con `--budget <n>`
   esplicito il tetto si applica alla stima, come freno. I limiti di utilizzo del piano restano
   quelli dell'abbonamento: se si raggiungono, il turno finisce in errore.
+- **Limite per obiettivo in turni e tempo.** Al posto del tetto in dollari, con il login ogni
+  obiettivo ha un limite di **30 turni** degli agenti e di **60 minuti di lavoro**
+  (`--goal-turns <n>`, `--goal-minutes <n>`; `0` = nessun limite; si possono usare anche con la
+  chiave API):
+  - un turno è un avvio di un agente (piano, lavoro, review, risposta);
+  - il tempo è quello dei turni, senza le attese di una tua risposta (permessi e domande);
+  - raggiunto il limite di turni, quelli già avviati finiscono e non ne partono altri. Raggiunto
+    il limite di tempo, i turni in corso si fermano subito (il controllo è ogni 5 secondi), con la
+    sessione salvata;
+  - in entrambi i casi l'obiettivo va in pausa e arriva una decisione: **Aumenta il tetto** con il
+    nuovo limite (senza numero raddoppia) oppure **Lascia in pausa**. L'obiettivo riprende solo se
+    è dentro tutti i suoi limiti. Il tabellone mostra "turni 3/30 · 2/60 min".
 
 ## Ogni tool passa dalla policy di Keystone
 

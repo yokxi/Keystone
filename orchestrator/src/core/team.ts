@@ -87,7 +87,16 @@ interface Running {
    * non è disponibile per altri turni dello stesso obiettivo.
    */
   reservedUsd?: number;
+  /** inizio del turno e attese dell'agente già accumulate a quel momento (per il limite di tempo) */
+  startedAt: number;
+  waitedAtStart: number;
 }
+
+/** Il limite raggiunto da un obiettivo: spesa (tetto), turni o minuti di lavoro. */
+export type GoalLimit = 'budget' | 'turns' | 'minutes';
+
+/** Ogni quanto si controlla il limite di tempo durante i turni. */
+const LIMIT_CHECK_MS = 5_000;
 
 interface TurnOutcome {
   status: TurnEndStatus;
@@ -111,6 +120,7 @@ export class Team {
   /** esito dei test dell'ultimo giro per task */
   private lastCi = new Map<string, string>();
   private stopping = false;
+  private limitTimer: NodeJS.Timeout | undefined;
   private authFailed = false;
   private tickQueued = false;
 
@@ -171,6 +181,8 @@ export class Team {
   /** Ferma tutti i turni. Con "shutdown" i turni in corso restano salvati e ripartono al riavvio. */
   async stop(): Promise<void> {
     this.stopping = true;
+    if (this.limitTimer) clearInterval(this.limitTimer);
+    this.limitTimer = undefined;
     const waits: Promise<void>[] = [];
     for (const r of this.running.values()) {
       this.abort(r, 'shutdown');
@@ -346,8 +358,16 @@ export class Team {
     // per cui la spesa residua è già tutta riservata ad altri turni dello stesso obiettivo
     let reservedUsd: number | undefined;
     let waitingForBudget = false;
+    const reached: Array<{ goalId: string; limit: GoalLimit }> = [];
     const idx = q.findIndex((j) => {
-      if (this.goalPaused(this.goalOfJob(j))) return false;
+      const goalId = this.goalOfJob(j);
+      if (this.goalPaused(goalId)) return false;
+      // limite di turni o di tempo dell'obiettivo: nessun turno nuovo
+      const limit = goalId ? this.limitReached(goalId) : undefined;
+      if (limit) {
+        reached.push({ goalId: goalId!, limit });
+        return false;
+      }
       const r = this.reserveFor(j, agentId);
       if (r === null) {
         waitingForBudget = true;
@@ -359,12 +379,26 @@ export class Team {
     if (idx < 0) {
       const activity = 'aspetta: la spesa residua è riservata ad altri turni';
       if (waitingForBudget && a.activity !== activity) this.o.setAgent(agentId, { activity });
+      for (const r of reached) this.onBudgetReached(r.goalId, r.limit);
       return;
     }
     const job = q.splice(idx, 1)[0]!;
     let resolveAborted!: () => void;
     const whenAborted = new Promise<void>((r) => (resolveAborted = r));
-    const entry: Running = { job, decisions: new Set(), whenAborted, resolveAborted, protectedPaths: [], ...(reservedUsd !== undefined ? { reservedUsd } : {}) };
+    const entry: Running = {
+      job,
+      decisions: new Set(),
+      whenAborted,
+      resolveAborted,
+      protectedPaths: [],
+      ...(reservedUsd !== undefined ? { reservedUsd } : {}),
+      startedAt: this.o.now(),
+      waitedAtStart: this.o.decisions.waitedMs(agentId),
+    };
+    const goalId = this.goalOfJob(job);
+    const g = goalId ? this.o.goal(goalId) : undefined;
+    if (g?.turnLimit !== undefined) this.o.setGoal(g.id, { turnsUsed: (g.turnsUsed ?? 0) + 1 });
+    if (g?.minuteLimit !== undefined) this.ensureLimitTimer();
     this.running.set(agentId, entry);
     entry.done = this.runJob(entry).catch((e) => this.o.log.error(`turno di ${agentId}: ${(e as Error).stack ?? e}`));
   }
@@ -396,6 +430,47 @@ export class Team {
     const available = remaining - reserved;
     if (available < Math.min(min, slice)) return null;
     return Math.min(slice, available);
+  }
+
+  /** Il lavoro di un turno in corso finora, senza le attese di una risposta dell'utente. */
+  private activeSoFar(r: Running): number {
+    return Math.max(0, this.o.now() - r.startedAt - (this.o.decisions.waitedMs(r.job.agentId) - r.waitedAtStart));
+  }
+
+  /** Il tempo di lavoro dell'obiettivo: quello dei turni finiti più quello dei turni in corso. */
+  goalActiveMs(goalId: string): number {
+    let ms = this.o.goal(goalId)?.activeMs ?? 0;
+    for (const r of this.running.values()) if (this.goalOfJob(r.job) === goalId) ms += this.activeSoFar(r);
+    return ms;
+  }
+
+  /** Il limite di turni o di tempo raggiunto dall'obiettivo, se c'è (la spesa la controlla addGoalCost). */
+  private limitReached(goalId: string): GoalLimit | undefined {
+    const g = this.o.goal(goalId);
+    if (!g) return undefined;
+    if (g.turnLimit !== undefined && (g.turnsUsed ?? 0) >= g.turnLimit) return 'turns';
+    if (g.minuteLimit !== undefined && this.goalActiveMs(goalId) >= g.minuteLimit * 60_000) return 'minutes';
+    return undefined;
+  }
+
+  /** Durante i turni il limite di tempo si controlla ogni pochi secondi. */
+  private ensureLimitTimer(): void {
+    if (this.limitTimer) return;
+    this.limitTimer = setInterval(() => {
+      let any = false;
+      for (const r of [...this.running.values()]) {
+        const goalId = this.goalOfJob(r.job);
+        const g = goalId ? this.o.goal(goalId) : undefined;
+        if (!g || g.minuteLimit === undefined || r.reason) continue;
+        any = true;
+        if (this.goalActiveMs(g.id) >= g.minuteLimit * 60_000) this.onBudgetReached(g.id, 'minutes');
+      }
+      if (!any && this.limitTimer) {
+        clearInterval(this.limitTimer);
+        this.limitTimer = undefined;
+      }
+    }, LIMIT_CHECK_MS);
+    this.limitTimer.unref?.();
   }
 
   private pumpAll(): void {
@@ -521,6 +596,10 @@ export class Team {
       outcome = { status: 'error', errors: [...outcome.errors, msg] };
       this.o.agentLog(agentId, 'error', `errore del turno: ${truncate(msg, 400)}`);
     } finally {
+      // il tempo di lavoro del turno (senza le attese di una tua risposta) va all'obiettivo
+      const goalId = this.goalOfJob(job);
+      const g = goalId ? this.o.goal(goalId) : undefined;
+      if (g?.minuteLimit !== undefined) this.o.setGoal(g.id, { activeMs: Math.round((g.activeMs ?? 0) + this.activeSoFar(entry)) });
       this.running.delete(agentId);
     }
     await this.finishJob(entry, outcome);
@@ -977,47 +1056,84 @@ export class Team {
    * Tetto di spesa raggiunto: l'obiettivo va in pausa, i suoi turni vengono fermati e restano
    * salvati (si riprendono con la stessa sessione), e arriva una decisione per l'utente.
    */
-  onBudgetReached(goalId: string): void {
+  /**
+   * L'obiettivo ha raggiunto un limite: spesa (tetto in dollari), turni o minuti di lavoro. Va in
+   * pausa, il lavoro resta salvato e arriva una decisione. Con il tetto di spesa o di tempo i turni
+   * in corso si fermano subito (la sessione resta per riprenderli); con il limite di turni quelli
+   * già avviati finiscono, ma non ne partono altri.
+   */
+  onBudgetReached(goalId: string, limit: GoalLimit = 'budget'): void {
     const g = this.o.goal(goalId);
     if (!g || g.status === 'paused' || g.status === 'done' || g.status === 'cancelled' || g.status === 'failed') return;
     this.o.setGoal(goalId, { status: 'paused', pausedFrom: g.status });
-    for (const r of this.running.values()) if (this.goalOfJob(r.job) === goalId) this.abort(r, 'budget');
+    if (limit !== 'turns') for (const r of this.running.values()) if (this.goalOfJob(r.job) === goalId) this.abort(r, 'budget');
+    const minutes = Math.round(this.goalActiveMs(goalId) / 60_000);
+    const what =
+      limit === 'turns'
+        ? { question: `Limite di turni raggiunto: ${g.turnsUsed ?? 0} su ${g.turnLimit}.`, unit: 'il nuovo limite di turni', feed: 'Limite di turni raggiunto' }
+        : limit === 'minutes'
+          ? { question: `Limite di tempo raggiunto: ${minutes} su ${g.minuteLimit} minuti di lavoro.`, unit: 'il nuovo limite in minuti', feed: 'Limite di tempo raggiunto' }
+          : { question: `Tetto di spesa raggiunto: $${g.costUsd.toFixed(2)} su $${(g.budgetUsd ?? 0).toFixed(2)}.`, unit: 'il nuovo tetto in dollari', feed: 'Tetto di spesa raggiunto' };
     if (!this.o.decisions.open().some((d) => d.kind === 'budget' && d.context?.includes(`[${goalId}]`))) {
       this.o.createDecision({
         agentId: this.lead.id,
         kind: 'budget',
-        question: `Tetto di spesa raggiunto: $${g.costUsd.toFixed(2)} su $${(g.budgetUsd ?? 0).toFixed(2)}. Gli agenti sono fermi e il lavoro è salvato.`,
+        question: `${what.question} Gli agenti sono fermi e il lavoro è salvato.`,
         options: BUDGET_OPTIONS,
-        context: `Obiettivo [${goalId}]: ${truncate(g.text, 300)}\nPer continuare scegli "${BUDGET_OPTIONS[0]}" e scrivi il nuovo tetto in dollari (senza importo: il doppio di quello attuale). "${BUDGET_OPTIONS[1]}" lascia tutto fermo: potrai alzare il tetto più tardi.`,
+        context: `Obiettivo [${goalId}]: ${truncate(g.text, 300)}\nLimite: ${limit}\nPer continuare scegli "${BUDGET_OPTIONS[0]}" e scrivi ${what.unit} (senza numero: il doppio di quello attuale). "${BUDGET_OPTIONS[1]}" lascia tutto fermo: potrai alzarlo più tardi.`,
       });
     }
-    this.o.bus.feed('goal', `Tetto di spesa raggiunto per "${truncate(g.text, 80)}": agenti fermi, lavoro salvato`);
+    this.o.bus.feed('goal', `${what.feed} per "${truncate(g.text, 80)}": agenti fermi, lavoro salvato`);
   }
 
-  /** Risposta alla decisione di tetto raggiunto. */
+  /** Risposta alla decisione di limite raggiunto (spesa, turni o tempo). */
   onBudgetAnswer(d: Decision): void {
     const goalId = /\[(g\d+)\]/.exec(d.context ?? '')?.[1];
     const g = goalId ? this.o.goal(goalId) : undefined;
     if (!g || d.answer?.option !== BUDGET_OPTIONS[0]) return;
+    const limit = (/\nLimite: (budget|turns|minutes)\b/.exec(d.context ?? '')?.[1] ?? 'budget') as GoalLimit;
     const asked = Number(String(d.answer?.text ?? '').replace(',', '.').match(/\d+(\.\d+)?/)?.[0]);
-    const budget = Number.isFinite(asked) && asked > 0 ? asked : (g.budgetUsd ?? 1) * 2;
-    this.setGoalBudget(g.id, budget);
+    const ok = Number.isFinite(asked) && asked > 0;
+    if (limit === 'turns') this.setGoalLimits(g.id, { turnLimit: ok ? Math.ceil(asked) : (g.turnLimit ?? 1) * 2 });
+    else if (limit === 'minutes') this.setGoalLimits(g.id, { minuteLimit: ok ? asked : (g.minuteLimit ?? 1) * 2 });
+    else this.setGoalBudget(g.id, ok ? asked : (g.budgetUsd ?? 1) * 2);
+  }
+
+  /** Cambia il limite di turni o di tempo; se l'obiettivo era in pausa e ora c'è margine, riprende. */
+  setGoalLimits(goalId: string, limits: { turnLimit?: number; minuteLimit?: number }): void {
+    if (!this.o.goal(goalId)) return;
+    this.o.setGoal(goalId, limits);
+    const parts = [limits.turnLimit !== undefined ? `${limits.turnLimit} turni` : '', limits.minuteLimit !== undefined ? `${limits.minuteLimit} minuti` : ''].filter(Boolean).join(' e ');
+    this.resumeIfWithinLimits(goalId, `Limite alzato a ${parts}`);
   }
 
   /** Cambia il tetto di un obiettivo; se era in pausa e ora c'è margine, i suoi turni riprendono. */
   setGoalBudget(goalId: string, budgetUsd: number): void {
-    const g = this.o.goal(goalId);
-    if (!g) return;
+    if (!this.o.goal(goalId)) return;
     this.o.setGoal(goalId, { budgetUsd });
-    if (g.status !== 'paused' || g.costUsd >= budgetUsd) return;
+    this.resumeIfWithinLimits(goalId, `Tetto alzato a $${budgetUsd.toFixed(2)}`);
+  }
+
+  /** Un obiettivo in pausa riprende solo se è dentro TUTTI i suoi limiti; altrimenti arriva la decisione per il prossimo. */
+  private resumeIfWithinLimits(goalId: string, why: string): void {
+    const g = this.o.goal(goalId);
+    if (!g || g.status !== 'paused') return;
+    if (g.budgetUsd !== undefined && g.costUsd >= g.budgetUsd) return;
+    for (const d of this.o.decisions.open().filter((x) => x.kind === 'budget' && x.context?.includes(`[${goalId}]`))) this.o.decisions.cancel(d.id, 'limite aggiornato');
+    const other = this.limitReached(goalId);
+    if (other) {
+      // dentro il limite appena alzato ma fuori da un altro: torna in pausa con la decisione per quello
+      this.o.setGoal(goalId, { status: g.pausedFrom ?? 'active', pausedFrom: undefined });
+      this.onBudgetReached(goalId, other);
+      return;
+    }
     this.o.setGoal(goalId, { status: g.pausedFrom ?? 'active', pausedFrom: undefined });
-    this.o.bus.feed('goal', `Tetto alzato a $${budgetUsd.toFixed(2)}: gli agenti riprendono "${truncate(g.text, 80)}"`);
-    for (const d of this.o.decisions.open().filter((x) => x.kind === 'budget' && x.context?.includes(`[${goalId}]`))) this.o.decisions.cancel(d.id, 'tetto aggiornato');
+    this.o.bus.feed('goal', `${why}: gli agenti riprendono "${truncate(g.text, 80)}"`);
     // i turni fermati riprendono con la stessa sessione
     for (const [agentId, inf] of Object.entries(this.st.inflight)) {
       if (this.goalOfJob(inf) !== goalId || this.running.has(agentId) || this.openQuestionOf(agentId)) continue;
       delete this.st.inflight[agentId];
-      this.enqueue({ kind: inf.kind, agentId, sessionKey: inf.sessionKey, prompt: `Il lavoro era stato fermato perché l'obiettivo aveva raggiunto il tetto di spesa; ora il tetto è stato alzato. Riprendi da dove eri rimasto.\n\nIl lavoro era:\n${inf.prompt}`, ...(inf.taskId ? { taskId: inf.taskId } : {}), ...(inf.goalId ? { goalId: inf.goalId } : {}) });
+      this.enqueue({ kind: inf.kind, agentId, sessionKey: inf.sessionKey, prompt: `Il lavoro era stato fermato perché l'obiettivo aveva raggiunto un limite (spesa, turni o tempo); ora il limite è stato alzato. Riprendi da dove eri rimasto.\n\nIl lavoro era:\n${inf.prompt}`, ...(inf.taskId ? { taskId: inf.taskId } : {}), ...(inf.goalId ? { goalId: inf.goalId } : {}) });
     }
     this.o.store.markDirty();
     for (const id of this.queues.keys()) this.pump(id);
@@ -1097,11 +1213,13 @@ export class Team {
   /** Per i test: attende che non ci siano turni in corso né in coda. */
   async idle(timeoutMs = 30_000): Promise<void> {
     const start = Date.now();
+    // i lavori di un obiettivo in pausa non possono partire: non sono attività
+    const runnable = () => [...this.queues.values()].some((q) => q.some((j) => !this.goalPaused(this.goalOfJob(j))));
     for (;;) {
-      const queued = [...this.queues.values()].some((q) => q.length > 0);
+      const queued = runnable();
       if (!this.running.size && !queued && !this.tickQueued && !this.reviewing.size) {
         await new Promise((r) => setTimeout(r, 20));
-        const again = [...this.queues.values()].some((q) => q.length > 0);
+        const again = runnable();
         if (!this.running.size && !again && !this.tickQueued && !this.reviewing.size) return;
       }
       if (Date.now() - start > timeoutMs) throw new Error('il team non si è fermato in tempo');

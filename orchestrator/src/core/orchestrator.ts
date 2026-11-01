@@ -37,6 +37,8 @@ export interface OrchestratorOptions {
   repoFaults?: RepoManagerOptions['faults'];
   /** conserva il branch dell'agente dopo un merge riuscito */
   keepMergedBranches?: boolean;
+  /** limiti predefiniti per obiettivo in turni e minuti di lavoro (0 o assente = nessun limite) */
+  defaultGoalLimits?: { turns?: number; minutes?: number };
   /** file di regole del guardiano git (default: <home>/git/agent-guard.gitconfig) */
   guardFile?: string;
   /** tetto di spesa predefinito per obiettivo in dollari (0 o assente = nessun tetto) */
@@ -65,6 +67,7 @@ export class Orchestrator {
   readonly userName: string;
   readonly now: () => number;
   readonly defaultBudgetUsd: number | undefined;
+  readonly defaultGoalLimits: { turns?: number; minutes?: number };
   status: OrchestratorStatus;
   private listeners = new Set<Listener>();
 
@@ -72,6 +75,10 @@ export class Orchestrator {
     this.log = opts.logger ?? consoleLogger();
     this.now = opts.now ?? Date.now;
     this.defaultBudgetUsd = opts.defaultBudgetUsd && opts.defaultBudgetUsd > 0 ? opts.defaultBudgetUsd : undefined;
+    this.defaultGoalLimits = {
+      ...(opts.defaultGoalLimits?.turns && opts.defaultGoalLimits.turns > 0 ? { turns: Math.floor(opts.defaultGoalLimits.turns) } : {}),
+      ...(opts.defaultGoalLimits?.minutes && opts.defaultGoalLimits.minutes > 0 ? { minutes: opts.defaultGoalLimits.minutes } : {}),
+    };
     this.userName = opts.userName ?? (os.userInfo().username || 'utente');
     this.store = new Store(opts.dataDir, { now: this.now, onWarn: (m) => this.log.warn(m), ...(opts.storeDebounceMs !== undefined ? { debounceMs: opts.storeDebounceMs } : {}) });
     const ctx: Ctx = { store: this.store, now: this.now, emit: (m) => this.emit(m), log: this.log };
@@ -444,7 +451,19 @@ export class Orchestrator {
         const repo = msg.repoId ? this.repos.get(msg.repoId) : this.repos.defaultRepo();
         if (!repo) throw new ClientError(msg.repoId ? `nessun repository ${msg.repoId}` : 'nessun repository registrato: aggiungine uno');
         const budgetUsd = msg.budgetUsd ?? this.defaultBudgetUsd;
-        const goal: Goal = { id: this.store.nextId('g'), text: msg.text.trim(), status: 'planning', progress: 0, repoId: repo.id, costUsd: 0, ...(budgetUsd ? { budgetUsd } : {}), createdAt: this.now() };
+        const limits = this.defaultGoalLimits;
+        const goal: Goal = {
+          id: this.store.nextId('g'),
+          text: msg.text.trim(),
+          status: 'planning',
+          progress: 0,
+          repoId: repo.id,
+          costUsd: 0,
+          ...(budgetUsd ? { budgetUsd } : {}),
+          ...(limits.turns ? { turnLimit: limits.turns, turnsUsed: 0 } : {}),
+          ...(limits.minutes ? { minuteLimit: limits.minutes, activeMs: 0 } : {}),
+          createdAt: this.now(),
+        };
         this.store.data.goals.push(goal);
         this.store.markDirty();
         this.emit({ type: 'goal.upsert', goal: { ...goal } });

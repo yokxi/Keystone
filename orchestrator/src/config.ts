@@ -32,6 +32,8 @@ export interface OrchestratorConfig {
   sim: { stepDelayMs: number };
   /** conserva il branch dell'agente dopo un merge riuscito (default: eliminato) */
   keepMergedBranches?: boolean;
+  /** limiti per obiettivo: turni degli agenti e minuti di lavoro (senza le attese di una tua risposta) */
+  goalLimits?: { turns?: number; minutes?: number };
   /** tetto di spesa predefinito per obiettivo in dollari (0 = nessun tetto) */
   budgetUsdPerGoal: number;
   claude: {
@@ -99,6 +101,21 @@ export function applyLoginBudget(cfg: OrchestratorConfig, explicit: boolean): st
     return 'login personale: la spesa mostrata è una stima, nessun tetto in dollari (--budget per usarla come freno)';
   }
   return cfg.budgetUsdPerGoal > 0 ? `login personale: tetto di $${cfg.budgetUsdPerGoal} applicato alla spesa stimata` : 'login personale: nessun tetto';
+}
+
+/** Limiti predefiniti per obiettivo con il login personale, al posto del tetto in dollari. */
+export const LOGIN_GOAL_LIMITS = { turns: 30, minutes: 60 } as const;
+
+/**
+ * Con il login personale ogni obiettivo ha un limite di turni e di minuti di lavoro, salvo valori
+ * espliciti (--goal-turns / --goal-minutes; 0 = nessun limite). Restituisce la riga da mostrare.
+ */
+export function applyLoginLimits(cfg: OrchestratorConfig, explicit: { turns?: number; minutes?: number }): string {
+  const turns = explicit.turns ?? LOGIN_GOAL_LIMITS.turns;
+  const minutes = explicit.minutes ?? LOGIN_GOAL_LIMITS.minutes;
+  cfg.goalLimits = { ...(turns > 0 ? { turns } : {}), ...(minutes > 0 ? { minutes } : {}) };
+  const parts = [turns > 0 ? `${turns} turni` : 'turni senza limite', minutes > 0 ? `${minutes} minuti di lavoro` : 'tempo senza limite'];
+  return `login personale: limite per obiettivo ${parts.join(', ')}`;
 }
 
 export function dataDir(cfg: Pick<OrchestratorConfig, 'home' | 'profile'>): string {

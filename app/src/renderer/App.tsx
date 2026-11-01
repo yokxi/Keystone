@@ -10,7 +10,7 @@ import { Memory } from './components/Memory.js';
 import { RegisterRepoDialog, Repos } from './components/Repos.js';
 import { Review, type ReviewTarget } from './components/Review.js';
 import { completeAgent, HELP, parseConsole } from './lib/console.js';
-import { money, spendLabel, time, tokens } from './lib/format.js';
+import { goalLimitsText, money, spendLabel, time, tokens } from './lib/format.js';
 
 type View = 'board' | 'agents' | 'decisions' | 'review' | 'memory' | 'repos';
 type Theme = 'system' | 'light' | 'dark';
@@ -318,6 +318,7 @@ function GoalSpend({ state }: { state: ViewState }) {
       {goal.budgetUsd ? ` / ${money(goal.budgetUsd)}` : ' · senza tetto'}
       {label.suffix}
       {goal.costUnreconciledUsd ? ` (≤ ${money(goal.costUnreconciledUsd)} prudenziali)` : ''}
+      {goalLimitsText(goal)}
       {goal.status === 'paused' ? ' · in pausa' : ''}
     </span>
   );

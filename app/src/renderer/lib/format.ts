@@ -32,6 +32,14 @@ export function spendLabel(billing: 'api' | 'subscription' | undefined): { word:
   return { word: 'costo', suffix: '', title: 'Costo totale (i motori che riportano solo token non contribuiscono)' };
 }
 
+/** Limiti di turni e di tempo di un obiettivo, se ci sono: " · turni 3/30 · 2/60 min". */
+export function goalLimitsText(goal: { turnLimit?: number; turnsUsed?: number; minuteLimit?: number; activeMs?: number }): string {
+  const parts: string[] = [];
+  if (goal.turnLimit !== undefined) parts.push(`turni ${goal.turnsUsed ?? 0}/${goal.turnLimit}`);
+  if (goal.minuteLimit !== undefined) parts.push(`${Math.floor((goal.activeMs ?? 0) / 60_000)}/${goal.minuteLimit} min`);
+  return parts.map((p) => ` · ${p}`).join('');
+}
+
 export function money(usd: number): string {
   if (usd === 0) return '$0';
   if (usd < 0.01) return '<$0.01';

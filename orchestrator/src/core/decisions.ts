@@ -36,7 +36,20 @@ export class DecisionQueue {
   /** risposte registrate ma con effetti non ancora completati */
   private pending = new Set<string>();
 
+  /** tempo già passato ad aspettare una risposta, per agente (ms), e attese in corso */
+  private waitedDone = new Map<string, number>();
+  private waitingSince = new Map<string, number[]>();
+
   constructor(private ctx: Ctx) {}
+
+  /**
+   * Quanto l'agente ha aspettato finora una risposta dell'utente (permessi, domande), comprese le
+   * attese in corso. Serve a escludere le attese dal limite di tempo di un obiettivo.
+   */
+  waitedMs(agentId: string): number {
+    const now = this.ctx.now();
+    return (this.waitedDone.get(agentId) ?? 0) + (this.waitingSince.get(agentId) ?? []).reduce((s, t) => s + (now - t), 0);
+  }
 
   private get all(): Decision[] {
     return this.ctx.store.data.decisions;
@@ -155,9 +168,20 @@ export class DecisionQueue {
     const d = this.get(id);
     if (!d) return Promise.reject(new DecisionError(`la decisione ${id} non esiste`));
     if (d.status !== 'open' && !this.pending.has(id)) return Promise.resolve(d);
+    const agentId = d.agentId;
+    const start = this.ctx.now();
+    const since = this.waitingSince.get(agentId) ?? [];
+    since.push(start);
+    this.waitingSince.set(agentId, since);
     return new Promise((resolve) => {
       const ws = this.waiters.get(id) ?? [];
-      ws.push(resolve);
+      ws.push((v) => {
+        const list = this.waitingSince.get(agentId) ?? [];
+        const i = list.indexOf(start);
+        if (i >= 0) list.splice(i, 1);
+        this.waitedDone.set(agentId, (this.waitedDone.get(agentId) ?? 0) + (this.ctx.now() - start));
+        resolve(v);
+      });
       this.waiters.set(id, ws);
     });
   }

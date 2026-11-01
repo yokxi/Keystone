@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { isTrustedSender, validateCommand } from '../src/main/ipc-validate.js';
 import { completeAgent, parseConsole } from '../src/renderer/lib/console.js';
 import { collapseContext, diffLogLines } from '../src/renderer/lib/diff-view.js';
-import { spendLabel } from '../src/renderer/lib/format.js';
+import { goalLimitsText, spendLabel } from '../src/renderer/lib/format.js';
 
 const agents = [
   { id: 'ada', name: 'Ada' },
@@ -109,5 +109,10 @@ describe('spesa', () => {
     expect(spendLabel('subscription')).toMatchObject({ word: 'stima', suffix: ' · abbonamento' });
     expect(spendLabel('api')).toMatchObject({ word: 'costo', suffix: '' });
     expect(spendLabel(undefined)).toMatchObject({ word: 'costo', suffix: '' });
+  });
+
+  it("limiti di turni e di tempo dell'obiettivo", () => {
+    expect(goalLimitsText({})).toBe('');
+    expect(goalLimitsText({ turnLimit: 30, turnsUsed: 3, minuteLimit: 60, activeMs: 125_000 })).toBe(' · turni 3/30 · 2/60 min');
   });
 });

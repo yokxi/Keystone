@@ -118,6 +118,12 @@ export const Goal = z.object({
   costUnreconciledUsd: z.number().nonnegative().optional(),
   /** tetto di spesa in dollari; assente = nessun tetto */
   budgetUsd: z.number().positive().optional(),
+  /** limite di turni degli agenti per l'obiettivo (assente = nessun limite) e turni avviati */
+  turnLimit: z.number().int().positive().optional(),
+  turnsUsed: z.number().int().nonnegative().optional(),
+  /** limite di minuti di lavoro degli agenti (senza le attese di una tua risposta) e tempo usato */
+  minuteLimit: z.number().positive().optional(),
+  activeMs: z.number().nonnegative().optional(),
   /** lo stato da ripristinare quando un obiettivo in pausa riprende */
   pausedFrom: GoalStatus.optional(),
   createdAt: Ts,
