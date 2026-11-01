@@ -1,4 +1,4 @@
-import { emptyViewState, type Decision, type Task, type ViewState } from '@keystone/shared';
+import { emptyViewState, ENGINE_EXPERIMENTAL, ENGINE_LABELS, type Decision, type Task, type ViewState } from '@keystone/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ConnectionInfo, UiEvent } from '../main/api.js';
 import type { ValidatedCommand } from '../main/ipc-validate.js';
@@ -285,6 +285,13 @@ function StatusBar({ state, theme, setTheme, decisions }: { state: ViewState; th
       <div className="status-items">
         {decisions > 0 && <span className="badge bad">{decisions} {decisions === 1 ? 'decisione' : 'decisioni'}</span>}
         <GoalSpend state={state} />
+        {[...new Set(state.agents.filter((a) => a.active).map((a) => a.engine))]
+          .filter((e) => ENGINE_EXPERIMENTAL[e])
+          .map((e) => (
+            <span key={e} className="badge warn" data-testid={`status-experimental-${e}`} title="La prova con un modello vero non è ancora stata fatta: usalo solo per prove.">
+              {ENGINE_LABELS[e]}: {ENGINE_EXPERIMENTAL[e]}
+            </span>
+          ))}
         <span title={spendLabel(s?.billing, !!s?.costIncomplete).title} data-testid="total-spend">
           {spendLabel(s?.billing, !!s?.costIncomplete).word} <b style={{ color: 'var(--text)' }}>{money(s?.costUsd ?? 0)}</b>
           {spendLabel(s?.billing, !!s?.costIncomplete).suffix}
@@ -308,7 +315,7 @@ function GoalSpend({ state }: { state: ViewState }) {
   if (!goal) return null;
   const ratio = goal.budgetUsd ? goal.costUsd / goal.budgetUsd : 0;
   const label = spendLabel(state.status?.billing, !!state.status?.costIncomplete);
-  const estimate = state.status?.billing === 'subscription';
+  const estimate = state.status?.billing === 'subscription' || state.status?.billing === 'estimate';
   const cls = goal.status === 'paused' || ratio >= 1 ? 'bad' : ratio >= 0.8 ? 'warn' : '';
   return (
     <span

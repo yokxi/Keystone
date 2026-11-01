@@ -224,8 +224,8 @@ export const OrchestratorStatus = z.object({
   userNameSource: z.enum(['settings', 'cli', 'git', 'system']).optional(),
   /** il profilo dell'orchestratore (l'app avvisa se è diverso dal suo) */
   profile: z.string().optional(),
-  /** subscription: un motore usa l'abbonamento, la spesa mostrata è una stima */
-  billing: z.enum(['api', 'subscription']).optional(),
+  /** subscription: un motore usa l'abbonamento; estimate: la spesa di un motore è stimata dai token con i prezzi indicati */
+  billing: z.enum(['api', 'subscription', 'estimate']).optional(),
   /** almeno un motore riporta solo token (Codex): la spesa mostrata non comprende il suo consumo */
   costIncomplete: z.boolean().optional(),
 });

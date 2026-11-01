@@ -10,6 +10,8 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { parseArgs } from 'node:util';
 import { buildOrchestrator } from './bootstrap.js';
+import { ENGINE_EXPERIMENTAL } from '@keystone/shared';
+import { parseCodexPrices } from './engines/codex/codex-engine.js';
 import { applyLoginBudget, applyLoginLimits, dataDir, defaultAgents, defaultConfig } from './config.js';
 import { consoleLogger } from './core/context.js';
 import { VERSION } from './core/orchestrator.js';
@@ -32,9 +34,13 @@ const HELP = `Keystone orchestratore ${VERSION}
   --reset              cancella lo stato del profilo prima di partire
   --ci "<comando>"     comando dei test del repository (default: rilevato, es. npm test)
   --engine sim|claude|codex  motore degli agenti (default sim, senza API)
+                       codex: ${ENGINE_EXPERIMENTAL.codex}
   --lead-engine <m>    motore del lead (team misto); --worker-engine <m> motore dei worker
   --use-codex-login    Codex con il login ChatGPT fatto nella cartella di Keystone (solo uso personale)
   --codex-path <file>  binario codex da usare (default: quello del pacchetto @openai/codex)
+  --codex-prices "input=<$>,cached=<$>,output=<$>"  stima della spesa di Codex dai token, in
+                       dollari per milione di token (dal listino del modello che usi). Senza:
+                       Codex mostra solo token
   --lead-model <id>    modello del lead (claude: default claude-opus-5-5)
   --worker-model <id>  modello dei worker (claude: default claude-sonnet-5-5)
   --effort <livello>   low | medium | high | xhigh | max
@@ -95,6 +101,7 @@ async function main(): Promise<void> {
       'worker-engine': { type: 'string' },
       'use-codex-login': { type: 'boolean' },
       'codex-path': { type: 'string' },
+      'codex-prices': { type: 'string' },
       'lead-model': { type: 'string' },
       'worker-model': { type: 'string' },
       effort: { type: 'string' },
@@ -123,6 +130,7 @@ async function main(): Promise<void> {
   const leadEngine = engineOf(values['lead-engine'] ?? engine, 'motore del lead');
   const workerEngine = engineOf(values['worker-engine'] ?? engine, 'motore dei worker');
   cfg.agents = defaultAgents({ lead: leadEngine, worker: workerEngine }, values.workers ? Number(values.workers) : 3);
+  for (const e of new Set([leadEngine, workerEngine])) if (ENGINE_EXPERIMENTAL[e]) log.warn(`motore ${e}: ${ENGINE_EXPERIMENTAL[e]}. Usalo solo per prove.`);
   // --lead-model / --worker-model valgono per il motore di quel ruolo
   if (values['lead-model']) cfg[leadEngine === 'codex' ? 'codex' : 'claude'].leadModel = values['lead-model'];
   if (values['worker-model']) cfg[workerEngine === 'codex' ? 'codex' : 'claude'].workerModel = values['worker-model'];
@@ -135,6 +143,7 @@ async function main(): Promise<void> {
   }
   if (values['use-codex-login']) cfg.codex.useCodexLogin = true;
   if (values['codex-path']) cfg.codex.binPath = path.resolve(values['codex-path']);
+  if (values['codex-prices']) cfg.codex.prices = parseCodexPrices(values['codex-prices']);
   if (values.budget !== undefined) {
     const b = Number(values.budget);
     if (!Number.isFinite(b) || b < 0) throw new Error(`tetto di spesa non valido: ${values.budget}`);
@@ -155,7 +164,7 @@ async function main(): Promise<void> {
   } else if (leadEngine === 'codex' || workerEngine === 'codex') {
     // Codex riporta solo token, non dollari: il freno sono i turni e il tempo
     log.info(applyLoginLimits(cfg, explicitLimits).replace('login personale', 'Codex'));
-    if (leadEngine === 'codex' && workerEngine === 'codex' && values.budget === undefined && !process.env.KEYSTONE_BUDGET_USD?.trim()) {
+    if (leadEngine === 'codex' && workerEngine === 'codex' && !cfg.codex.prices && values.budget === undefined && !process.env.KEYSTONE_BUDGET_USD?.trim()) {
       cfg.budgetUsdPerGoal = 0;
       log.info('Codex riporta token, non dollari: nessun tetto di spesa');
     }

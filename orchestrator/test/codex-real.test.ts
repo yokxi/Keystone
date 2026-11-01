@@ -129,6 +129,20 @@ describe('motore Codex sulla CLI vera (modello locale, senza rete)', () => {
   }, 180_000);
 });
 
+describe('stima della spesa dai token (CLI vera)', () => {
+  it('con i prezzi indicati, ogni richiesta al modello diventa una spesa stimata', async () => {
+    const model = await mockModel([{ call: 'exec_command', args: { cmd: 'ls' } }, { message: 'ok' }]);
+    const repo = tmpDir('keystone-codex-repo-');
+    await git(repo, ['init', '-q']);
+    const engine = new CodexEngine({ codexHome: path.join(tmpDir('keystone-codex-home-'), 'codex-home'), extraEnv: NO_NET, extraConfig: model.config, prices: { inputPerMTok: 2, outputPerMTok: 8 } });
+    const events = await drain(engine.startSession(spec(repo, 'lead')), () => false);
+    const cost = events.filter((e) => e.type === 'usage').reduce((s, e) => s + ((e as { costUsd?: number }).costUsd ?? 0), 0);
+    // il modello locale riporta 100 token in ingresso e 20 in uscita per richiesta; le richieste sono 2
+    expect(model.requests).toHaveLength(2);
+    expect(cost).toBeCloseTo((2 * (100 * 2 + 20 * 8)) / 1_000_000, 9);
+  }, 180_000);
+});
+
 describe('isolamento dalla configurazione utente di Codex (CLI vera, senza rete)', () => {
   function userCodexHome(): string {
     const home = path.join(tmpDir('keystone-codex-utente-'), '.codex');

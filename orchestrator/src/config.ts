@@ -57,6 +57,8 @@ export interface OrchestratorConfig {
     useCodexLogin: boolean;
     /** percorso del binario codex (default: quello del pacchetto installato) */
     binPath?: string;
+    /** prezzi per la stima della spesa dai token (--codex-prices); assenti = nessuna stima */
+    prices?: { inputPerMTok: number; cachedInputPerMTok?: number; outputPerMTok: number };
     recordDir?: string;
   };
 }

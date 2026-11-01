@@ -26,11 +26,13 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
  * Come chiamare la spesa. Con l'abbonamento (login personale) si paga il piano, non i token: la
  * cifra è una stima di quanto costerebbe via API.
  */
-export function spendLabel(billing: 'api' | 'subscription' | undefined, costIncomplete = false): { word: string; suffix: string; title: string } {
+export function spendLabel(billing: 'api' | 'subscription' | 'estimate' | undefined, costIncomplete = false): { word: string; suffix: string; title: string } {
   const partial = costIncomplete ? ' · Codex: solo token' : '';
   const partialTitle = costIncomplete ? '. Codex riporta solo token: il suo consumo non è compreso nella cifra (vedi i token)' : '';
   if (billing === 'subscription')
     return { word: 'stima', suffix: ` · abbonamento${partial}`, title: `Stima di quanto costerebbe via API: con l'abbonamento non si paga a consumo${partialTitle}` };
+  if (billing === 'estimate')
+    return { word: 'stima', suffix: ` · Codex: token × prezzi indicati${partial}`, title: `Stima: la spesa di Codex è calcolata dai token con i prezzi che hai indicato (--codex-prices), non riportata da Codex${partialTitle}` };
   return { word: 'costo', suffix: partial, title: `Costo totale${partialTitle}` };
 }
 

@@ -76,7 +76,7 @@ export interface EngineAdapter {
   /** nome visualizzato, es. "Claude" */
   readonly label: string;
   /** come si paga: api = la spesa è reale; subscription = abbonamento, la spesa è una stima */
-  readonly billing?: 'api' | 'subscription';
+  readonly billing?: 'api' | 'subscription' | 'estimate';
   /** false: il motore riporta solo token, non dollari (Codex) */
   readonly reportsCost?: boolean;
   /** modello predefinito per un ruolo (se la configurazione non ne indica uno) */

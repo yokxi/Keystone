@@ -66,9 +66,10 @@ export function sanitizeUserName(raw: string): string {
 }
 
 /** subscription se almeno un agente usa un abbonamento (la spesa è allora una stima), api se tutti pagano a consumo. */
-function billingOf(members: Array<{ engine: { billing?: 'api' | 'subscription'; reportsCost?: boolean } }>): { billing?: 'api' | 'subscription'; costIncomplete?: true } {
+function billingOf(members: Array<{ engine: { billing?: 'api' | 'subscription' | 'estimate'; reportsCost?: boolean } }>): { billing?: 'api' | 'subscription' | 'estimate'; costIncomplete?: true } {
   const incomplete = members.some((m) => m.engine.reportsCost === false) ? { costIncomplete: true as const } : {};
   if (members.some((m) => m.engine.billing === 'subscription')) return { billing: 'subscription', ...incomplete };
+  if (members.some((m) => m.engine.billing === 'estimate')) return { billing: 'estimate', ...incomplete };
   if (members.some((m) => m.engine.billing === 'api')) return { billing: 'api', ...incomplete };
   return incomplete;
 }

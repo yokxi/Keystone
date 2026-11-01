@@ -1,5 +1,9 @@
 # Motore Codex
 
+> **Stato: sperimentale · non ancora verificato con un modello reale.** L'etichetta compare
+> nell'interfaccia accanto agli agenti Codex, nella barra di stato, nell'aiuto e all'avvio
+> dell'orchestratore. Si toglie solo dopo la prova reale (`docs/piano.md`).
+
 Adattatore per **`codex app-server`** (JSON-RPC su stdio) del pacchetto `@openai/codex`, versione
 fissata **0.163.0** (pubblicata il 15 ottobre 2026). Codice: `orchestrator/src/engines/codex/`.
 
@@ -27,6 +31,7 @@ npm run orchestrator -- --demo --lead-engine claude --worker-engine codex --work
 | `--use-codex-login` | disattivato | login ChatGPT, solo per uso personale |
 | `--codex-path <file>` | il binario del pacchetto | un altro binario `codex` |
 | `--goal-turns`, `--goal-minutes` | 30 e 60 | il freno per obiettivo (vedi sotto) |
+| `--codex-prices "input=…,cached=…,output=…"` | nessuna stima | stima della spesa dai token, in dollari per milione di token |
 
 Il modello predefinito è quello di Codex: Keystone non scrive nomi di modello nel codice e mostra
 quello che Codex riporta all'avvio del thread.
@@ -123,11 +128,23 @@ Per interrompere: `turn/interrupt`, poi il processo viene chiuso.
 
 ## Spesa e limiti
 
-- Codex riporta **token, non dollari**. L'interfaccia lo dice ("Codex: solo token"): il consumo di
-  Codex non è compreso nella cifra in dollari.
-- Il tetto in dollari quindi non frena Codex. Con Codex ogni obiettivo ha un limite di **30 turni**
-  e **60 minuti di lavoro** (`--goal-turns`, `--goal-minutes`, `0` = nessun limite). Con un team
-  tutto Codex il tetto in dollari è disattivato, salvo `--budget` esplicito.
+- Codex riporta **token, non dollari**. Senza prezzi l'interfaccia lo dice ("Codex: solo token"):
+  il consumo di Codex non è compreso nella cifra in dollari.
+- **Stima opzionale.** Con `--codex-prices "input=<$>,cached=<$>,output=<$>"` (dollari per milione
+  di token, presi dal listino del modello che usi) Keystone stima la spesa:
+  - per ogni richiesta al modello moltiplica i token in ingresso non in cache, quelli in cache e
+    quelli in uscita, compresi quelli di ragionamento, per i prezzi indicati;
+  - l'interfaccia la mostra come "stima · Codex: token × prezzi indicati";
+  - la stima conta per il tetto di spesa, come freno.
+
+  Nel codice non c'è nessun prezzo: cambiano e dipendono dal modello. `cached` è facoltativo: se
+  manca vale come `input`. Il tetto si controlla quando arriva una richiesta completata, quindi può
+  essere superato al massimo di una richiesta per turno in corso. La stima è verificata sulla CLI
+  vera con il modello locale.
+- Il tetto in dollari non frena Codex senza stima. Con Codex ogni obiettivo ha un limite di
+  **30 turni** e **60 minuti di lavoro** (`--goal-turns`, `--goal-minutes`, `0` = nessun limite).
+  Con un team tutto Codex e senza `--codex-prices` il tetto in dollari è disattivato, salvo
+  `--budget` esplicito.
 - Token: `thread/tokenUsage/updated` porta il totale del thread, compresi i turni precedenti, e
   l'ultima richiesta. Si conta solo l'incremento dall'inizio del turno, verificato con il modello
   locale.

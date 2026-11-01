@@ -1,9 +1,19 @@
-import type { ViewState } from '@keystone/shared';
+import { ENGINE_EXPERIMENTAL, ENGINE_LABELS, type ViewState } from '@keystone/shared';
 import { useState } from 'react';
 import { money, spendLabel, tokens } from '../lib/format.js';
 import { Avatar, LogView, StateBadge } from './common.js';
 
-const ENGINE_LABEL = { sim: 'Sim', claude: 'Claude', codex: 'Codex' } as const;
+const ENGINE_LABEL = ENGINE_LABELS;
+
+/** Etichetta dei motori non ancora verificati con un modello reale. */
+function Experimental({ engine }: { engine: keyof typeof ENGINE_LABELS }) {
+  const text = ENGINE_EXPERIMENTAL[engine];
+  return text ? (
+    <span className="badge warn" data-testid={`experimental-${engine}`} title={`Il motore ${ENGINE_LABELS[engine]} non è ancora stato provato con un modello vero: usalo solo per prove.`}>
+      {text}
+    </span>
+  ) : null;
+}
 
 interface Props {
   state: ViewState;
@@ -39,7 +49,7 @@ export function Agents({ state, selected, select, send }: Props) {
                     {a.name} <span className="faint" style={{ fontWeight: 400, fontSize: 12 }}>{a.role === 'lead' ? 'lead' : 'worker'}</span>
                   </div>
                   <div className="agent-model">
-                    {ENGINE_LABEL[a.engine]} · <b>{a.model}</b>
+                    {ENGINE_LABEL[a.engine]} · <b>{a.model}</b> <Experimental engine={a.engine} />
                   </div>
                 </div>
                 <StateBadge state={a.state} />
@@ -60,7 +70,7 @@ export function Agents({ state, selected, select, send }: Props) {
               </h2>
               <div className="kv" style={{ marginTop: 4 }}>
                 <span>
-                  motore <b>{ENGINE_LABEL[agent.engine]}</b>
+                  motore <b>{ENGINE_LABEL[agent.engine]}</b> <Experimental engine={agent.engine} />
                 </span>
                 <span>
                   modello <b>{agent.model}</b>

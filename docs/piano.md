@@ -2,6 +2,21 @@
 
 Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fasi ancora da fare.
 
+## Da fare prima della pubblicazione
+
+- [ ] **Prova reale del motore Codex con una chiave API OpenAI.** Su un repository di prova:
+  piano, lavoro, review e merge; permessi, sandbox, commit e conteggio dei token, con
+  `--record` per le trascrizioni.
+- [ ] **Prova reale del motore Codex con il login ChatGPT** (`--use-codex-login`, login fatto nella
+  cartella di Keystone).
+- [ ] **Prova con un team misto**, per esempio lead Claude e worker Codex (`--lead-engine claude
+  --worker-engine codex`): sessioni separate per motore, spesa e limiti, review e merge.
+- [ ] **Confronto dei costi con la Console Anthropic** usando una chiave API: spesa mostrata da
+  Keystone e spesa nella Console per lo stesso obiettivo, compresa una sessione ripresa.
+
+Solo dopo le due prove reali di Codex si toglie l'etichetta "sperimentale · non ancora verificato
+con un modello reale" (`shared/src/engines.ts` e README).
+
 ## Fase 6 — Motore Codex (fatta)
 
 Adattatore per `codex app-server` accanto a quelli di Claude e del motore sim, con le stesse

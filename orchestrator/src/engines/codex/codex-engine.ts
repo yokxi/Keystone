@@ -50,10 +50,47 @@ export interface CodexEngineConfig {
   useCodexLogin?: boolean;
   /** se impostata, ogni turno viene registrato qui (righe JSON-RPC) */
   recordDir?: string;
+  /**
+   * prezzi in dollari per milione di token, indicati dall'utente: se ci sono, Keystone stima la spesa
+   * dai token (Codex non riporta dollari). Nessun prezzo nel codice: cambiano e vanno presi dal listino.
+   */
+  prices?: CodexPrices;
   /** solo test: variabili aggiunte all'ambiente del processo (es. il proxy) */
   extraEnv?: Record<string, string>;
   /** solo test: configurazione aggiunta a ogni thread (es. un provider di modelli locale) */
   extraConfig?: Record<string, unknown>;
+}
+
+export interface CodexPrices {
+  /** dollari per milione di token in ingresso (non in cache) */
+  inputPerMTok: number;
+  /** dollari per milione di token in ingresso letti dalla cache (default: come inputPerMTok) */
+  cachedInputPerMTok?: number;
+  /** dollari per milione di token in uscita (compresi quelli di ragionamento) */
+  outputPerMTok: number;
+}
+
+/** "input=1.25,cached=0.125,output=10" -> prezzi; errore chiaro se manca qualcosa. */
+export function parseCodexPrices(text: string): CodexPrices {
+  const kv = Object.fromEntries(
+    text.split(',').map((p) => {
+      const [k, v] = p.split('=').map((x) => x.trim());
+      const n = Number(v);
+      if (!k || !Number.isFinite(n) || n < 0) throw new Error(`prezzo non valido: "${p}" (formato: input=<$/Mtok>,cached=<$/Mtok>,output=<$/Mtok>)`);
+      return [k.toLowerCase(), n];
+    }),
+  );
+  for (const k of Object.keys(kv)) if (!['input', 'cached', 'output'].includes(k)) throw new Error(`prezzo sconosciuto: ${k} (input, cached, output)`);
+  if (kv.input === undefined || kv.output === undefined) throw new Error('servono almeno input=… e output=… (dollari per milione di token)');
+  return { inputPerMTok: kv.input, outputPerMTok: kv.output, ...(kv.cached !== undefined ? { cachedInputPerMTok: kv.cached } : {}) };
+}
+
+/** La spesa stimata di una richiesta al modello (i token in ingresso comprendono quelli in cache). */
+export function estimateCodexCost(u: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number }, p: CodexPrices): number {
+  const cached = Math.max(0, u.cachedInputTokens ?? 0);
+  const fresh = Math.max(0, (u.inputTokens ?? 0) - cached);
+  const usd = (fresh * p.inputPerMTok + cached * (p.cachedInputPerMTok ?? p.inputPerMTok) + Math.max(0, u.outputTokens ?? 0) * p.outputPerMTok) / 1_000_000;
+  return Math.round(usd * 1e6) / 1e6;
 }
 
 /** Variabili di credenziali tolte dall'ambiente del processo di Codex (la chiave passa da login/start). */
@@ -155,11 +192,14 @@ export class CodexEngine implements EngineAdapter {
 
   constructor(private cfg: CodexEngineConfig) {}
 
-  /** Codex riporta token, non dollari */
-  readonly reportsCost = false;
+  /** Codex riporta token, non dollari: la spesa c'è solo come stima, se l'utente ha indicato i prezzi */
+  get reportsCost(): boolean {
+    return !!this.cfg.prices;
+  }
 
-  get billing(): 'api' | 'subscription' {
-    return this.cfg.useCodexLogin ? 'subscription' : 'api';
+  get billing(): 'api' | 'subscription' | 'estimate' {
+    if (this.cfg.useCodexLogin) return 'subscription';
+    return this.cfg.prices ? 'estimate' : 'api';
   }
 
   defaultModel(role: Role): string {
@@ -399,7 +439,7 @@ export class CodexEngine implements EngineAdapter {
           return;
         }
         case 'thread/tokenUsage/updated': {
-          const u = (p.tokenUsage ?? {}) as { total?: { totalTokens?: number; inputTokens?: number; outputTokens?: number }; last?: { totalTokens?: number; inputTokens?: number; outputTokens?: number } };
+          const u = (p.tokenUsage ?? {}) as { total?: { totalTokens?: number; inputTokens?: number; outputTokens?: number }; last?: { totalTokens?: number; inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } };
           const total = u.total?.totalTokens ?? 0;
           // il totale è del thread (anche dei turni precedenti): si conta l'incremento da quando il turno è partito
           if (usageBase === undefined) usageBase = Math.max(0, total - (u.last?.totalTokens ?? 0));
@@ -407,7 +447,9 @@ export class CodexEngine implements EngineAdapter {
           usageBase = total;
           if (delta > 0) {
             const out = Math.min(delta, u.last?.outputTokens ?? 0);
-            emit({ type: 'usage', inputTokens: delta - out, outputTokens: out });
+            // stima in dollari dai token dell'ultima richiesta (verificato: l'incremento del totale è proprio quella)
+            const costUsd = this.cfg.prices && u.last ? estimateCodexCost(u.last, this.cfg.prices) * Math.min(1, delta / Math.max(1, u.last.totalTokens ?? delta)) : 0;
+            emit({ type: 'usage', inputTokens: delta - out, outputTokens: out, ...(costUsd > 0 ? { costUsd: Math.round(costUsd * 1e6) / 1e6 } : {}) });
           }
           return;
         }

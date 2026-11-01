@@ -257,3 +257,39 @@ describe('motore Codex nel team (app-server finto)', () => {
     await o.team.idle();
   });
 });
+
+describe('motore Codex: stima della spesa dai token (opzionale)', () => {
+  it('prezzi indicati dall\'utente: formato, errori chiari, calcolo con la cache', async () => {
+    const { parseCodexPrices, estimateCodexCost } = await import('../src/engines/codex/codex-engine.js');
+    expect(parseCodexPrices('input=2,cached=0.5,output=8')).toEqual({ inputPerMTok: 2, cachedInputPerMTok: 0.5, outputPerMTok: 8 });
+    expect(parseCodexPrices(' input = 2 , output = 8 ')).toEqual({ inputPerMTok: 2, outputPerMTok: 8 });
+    expect(() => parseCodexPrices('input=2')).toThrow(/output/);
+    expect(() => parseCodexPrices('input=-1,output=8')).toThrow(/non valido/);
+    expect(() => parseCodexPrices('input=1,output=2,extra=3')).toThrow(/sconosciuto/);
+    // 1M in ingresso di cui 400k in cache, 100k in uscita
+    expect(estimateCodexCost({ inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 100_000 }, { inputPerMTok: 2, cachedInputPerMTok: 0.5, outputPerMTok: 8 })).toBeCloseTo(0.6 * 2 + 0.4 * 0.5 + 0.1 * 8, 6);
+    // senza prezzo della cache: come l'ingresso normale
+    expect(estimateCodexCost({ inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 0 }, { inputPerMTok: 2, outputPerMTok: 8 })).toBeCloseTo(2, 6);
+  });
+
+  it('senza prezzi: solo token (come prima); con i prezzi: costUsd stimato per ogni richiesta, billing "estimate"', async () => {
+    const steps = [
+      { notify: 'thread/tokenUsage/updated', params: { threadId: '$THREAD', turnId: '$TURN', tokenUsage: { total: { totalTokens: 1200 }, last: { totalTokens: 1200, inputTokens: 1000, cachedInputTokens: 500, outputTokens: 200 } } } },
+    ];
+    const plain = fake({ account: { type: 'apiKey' }, steps });
+    const a = await drain(plain.engine.startSession(spec(tmpDir())));
+    expect(a.filter((e) => e.type === 'usage').some((e) => (e as { costUsd?: number }).costUsd)).toBe(false);
+    expect(plain.engine.billing).toBe('api');
+    expect(plain.engine.reportsCost).toBe(false);
+
+    const dir = tmpDir();
+    const scen = path.join(dir, 's.json');
+    fs.writeFileSync(scen, JSON.stringify({ account: { type: 'apiKey' }, steps }));
+    const priced = new CodexEngine({ codexHome: path.join(dir, 'h'), binPath: FAKE, extraEnv: { FAKE_CODEX_SCENARIO: scen, FAKE_CODEX_LOG: path.join(dir, 'l') }, prices: { inputPerMTok: 2, cachedInputPerMTok: 0.5, outputPerMTok: 8 } });
+    const b = await drain(priced.startSession(spec(tmpDir())));
+    const cost = b.filter((e) => e.type === 'usage').reduce((s, e) => s + ((e as { costUsd?: number }).costUsd ?? 0), 0);
+    expect(cost).toBeCloseTo((500 * 2 + 500 * 0.5 + 200 * 8) / 1_000_000, 9);
+    expect(priced.billing).toBe('estimate');
+    expect(priced.reportsCost).toBe(true);
+  });
+});
