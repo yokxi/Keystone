@@ -57,7 +57,7 @@ describe('flusso con il motore sim', () => {
     const { o, repo } = await setup();
     await submit(o, 'Aggiungi un saluto');
     const m1 = await waitFor(() => openDecision(o, (d) => d.kind === 'merge' && d.taskId === 't1'), 'merge di t1');
-    expect(m1.context).toMatch(/Test: superati \(npm test/);
+    expect(m1.context).toMatch(/Test eseguiti da Keystone[^\n]*\n- comando: npm test\n- esito: superati/);
     await answer(o, m1.id, 'Merge');
     expect(o.tasks.get('t1')?.status).toBe('done');
     expect(await gitOut(repo, ['status', '--porcelain'])).toBe('');
@@ -123,7 +123,7 @@ describe('flusso con il motore sim', () => {
     expect(o.tasks.get('t1')?.ci).toBe('pass');
     expect(o.store.data.team.ciFixes.t1).toBe(1);
     expect(o.store.logTail('bruno').some((l) => l.text.startsWith('test FALLITI'))).toBe(true);
-    expect(m.context).toMatch(/Test: superati/);
+    expect(m.context).toMatch(/- esito: superati/);
   });
 
   it('test che falliscono anche dopo la correzione: in review con il fallimento annotato', async () => {
@@ -133,7 +133,7 @@ describe('flusso con il motore sim', () => {
     const t = o.tasks.get('t1')!;
     expect(t.ci).toBe('fail');
     expect(t.summary).toMatch(/i test falliscono ancora/);
-    expect(m.context).toMatch(/Test: FALLITI/);
+    expect(m.context).toMatch(/- esito: FALLITI \(codice di uscita \d+\)/);
     expect(o.store.data.team.ciFixes.t1).toBe(1); // rimandato al worker una sola volta
   });
 

@@ -1,7 +1,30 @@
 // Prompt e istruzioni per gli agenti (uguali per ogni motore).
 import type { Goal, Task, Worktree } from '@keystone/shared';
 import type { DiffFile } from '@keystone/shared';
+import { lastLines } from '../util/text.js';
 import { diffToText } from './diff.js';
+import type { TestResult } from './repos.js';
+
+/** Righe finali dell'output dei test mostrate al lead e nella decisione di merge. */
+export const CI_TAIL_LINES = 20;
+
+/**
+ * L'esito dei test che Keystone ha eseguito nel worktree dopo il turno del worker: comando, esito,
+ * durata e output finale. È quello che il lead deve citare, non quanto riporta il worker.
+ */
+export function ciReport(res: TestResult | undefined): string {
+  if (!res) return 'Test eseguiti da Keystone: nessuno (nessun comando di test riconosciuto nel repository).';
+  const outcome = res.pass ? 'superati' : res.timedOut ? 'FALLITI (tempo massimo superato)' : `FALLITI (codice di uscita ${res.code ?? '?'})`;
+  const tail = lastLines(res.output.trimEnd(), CI_TAIL_LINES);
+  return [
+    'Test eseguiti da Keystone nel worktree dopo il turno del worker (non riportati dal worker):',
+    `- comando: ${res.command}`,
+    `- esito: ${outcome}`,
+    `- durata: ${(res.durationMs / 1000).toFixed(1)} s`,
+    `- output finale (ultime ${CI_TAIL_LINES} righe):`,
+    tail ? tail.split('\n').map((l) => `    ${l}`).join('\n') : '    (nessun output)',
+  ].join('\n');
+}
 
 export interface PromptEnv {
   userName: string;
@@ -70,13 +93,15 @@ export function workPrompt(env: PromptEnv, t: Task, wt: Worktree, continuesFrom?
 export function reviewPrompt(env: PromptEnv, t: Task, files: DiffFile[], ciNote: string): string {
   return [
     `Rivedi ${t.id} — ${t.title} (worker: ${t.assignee ? env.nameOf(t.assignee) : '?'}).`,
-    t.summary ? `Riassunto del worker: ${t.summary}` : '',
-    `Test: ${ciNote}`,
+    t.summary ? `Riassunto del worker (quello che dice lui): ${t.summary}` : '',
+    '',
+    ciNote,
     '',
     'Diff:',
     diffToText(files),
     '',
     `Se va bene: request_merge("${t.id}", summary per ${env.userName}). Altrimenti: update_task("${t.id}", status "doing", summary con le modifiche richieste).`,
+    `Nel summary cita l'esito dei test eseguiti da Keystone qui sopra (comando ed esito). Se il riassunto del worker dice altro, vale l'esito di Keystone: non fidarti di quanto riporta il worker.`,
   ]
     .filter((l) => l !== '')
     .join('\n');

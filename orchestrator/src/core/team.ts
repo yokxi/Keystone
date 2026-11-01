@@ -21,7 +21,7 @@ import { agentEnv } from './agent-env.js';
 import { guardActive } from './gitsafety.js';
 import type { Orchestrator } from './orchestrator.js';
 import { classify, describeCall, describeRuleKey } from './policy.js';
-import { leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, workerInstructions, workPrompt } from './prompts.js';
+import { ciReport, leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, workerInstructions, workPrompt } from './prompts.js';
 import type { InflightJob, JobKind } from './store.js';
 import { teamTools, type ToolHooks } from './tools.js';
 
@@ -882,7 +882,7 @@ export class Team {
         this.o.tasks.update(t.id, { summary: `${t.summary ? `${t.summary}\n` : ''}ATTENZIONE: i test falliscono ancora (${ci.command}).` });
         this.o.bus.feed('ci', `${t.id}: i test falliscono anche dopo la correzione: va in review con il fallimento annotato`, worker ? { agentId: worker } : {});
       }
-      const ciNote = !ci ? 'nessun comando di test riconosciuto nel repository' : ci.pass ? `superati (${ci.command}, ${(ci.durationMs / 1000).toFixed(1)} s)` : `FALLITI (${ci.command}):\n${ci.output}`;
+      const ciNote = ciReport(ci);
       this.lastCi.set(t.id, ciNote);
       if (worker) this.o.setAgent(worker, { state: 'idle', activity: `${t.id} in review` });
 

@@ -334,7 +334,7 @@ export class Orchestrator {
       kind: 'merge',
       question: `Unire ${t.id} "${t.title}" (${wt.branch}) in ${wt.base}?`,
       options: MERGE_OPTIONS,
-      context: [summary, `${wt.files} file, +${wt.additions} -${wt.deletions}`, `Test: ${this.team.ciNoteOf(t.id) ?? (t.ci === 'unknown' ? 'non eseguiti' : t.ci)}`].join('\n'),
+      context: [summary, `${wt.files} file, +${wt.additions} -${wt.deletions}`, this.team.ciNoteOf(t.id) ?? `Test eseguiti da Keystone: ${t.ci === 'unknown' ? 'nessuno' : t.ci}`].join('\n'),
       taskId: t.id,
       repoId: t.repoId,
       worktree: wt.id,
