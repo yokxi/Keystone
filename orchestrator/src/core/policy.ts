@@ -19,10 +19,20 @@
 //   tutto ciò che tocca un percorso .git, `git -c ...` e le altre opzioni globali che cambiano
 //   la configurazione o il repository (--git-dir, --work-tree, --exec-path, --config-env).
 //
+// Chiede SEMPRE anche il codice che arriva dalla rete o dai pacchetti (packageFetch): installazioni
+//   e aggiornamenti di dipendenze (npm/pnpm/yarn/bun install|ci|add, pip install, uv, pipx,
+//   poetry, cargo install, go get, gem, composer, brew, apt, winget, ...) ed esecuzione di pacchetti
+//   scaricati al volo (pnpm/yarn dlx, uvx, bunx, go run pkg@versione, npx di un tool non
+//   installato). npx/npm exec/pnpm exec di un tool già installato nel progetto chiede, con
+//   "consenti sempre" limitato a quel tool.
+//
 // Chiede, con "consenti sempre" limitato all'ambito mostrato:
 //   percorsi fuori dal worktree (.., assoluti, ~, link simbolici che portano fuori, cd fuori),
-//   rete (curl, npm install, git fetch, URL, ...), comandi distruttivi (rm, git reset --hard,
+//   rete (curl, git fetch, URL, ...), comandi distruttivi (rm, git reset --hard,
 //   git clean, find -delete, ...), programmi sconosciuti, codice inline, comandi di sistema.
+//
+// NON è una sandbox: gli script del repository che un comando consentito esegue (npm test, i suoi
+// pre/post script, un Makefile, i test stessi) non passano dalla policy. Vedi docs/sicurezza.md.
 //
 // Negato sempre: git push in ogni forma visibile (anche dentro bash -c, $(...), alias via -c),
 // firma con le chiavi dell'utente, modifiche ai file da parte del lead, sub-agenti.
@@ -162,6 +172,78 @@ const LEAD_PROGRAMS = new Set([...READERS, ...PATTERN_FIRST, ...NO_PATHS, ...WRA
 
 /** Script npm che si eseguono senza chiedere (sono comandi di sviluppo del repository). */
 const SAFE_SCRIPTS = new Set(['test', 'build', 'lint', 'typecheck', 'check', 'format', 'fmt', 'compile', 'tsc', 'vitest', 'coverage', 'test:unit', 'test:watch']);
+
+/** Sottocomandi che installano, aggiornano o scaricano pacchetti, per gestore. */
+const PKG_FETCH: Record<string, string[]> = {
+  npm: ['install', 'i', 'in', 'ins', 'inst', 'isntall', 'ci', 'clean-install', 'install-test', 'it', 'install-ci-test', 'cit', 'add', 'update', 'up', 'upgrade', 'udpate', 'create', 'init', 'rebuild', 'rb', 'dedupe', 'ddp'],
+  pnpm: ['install', 'i', 'add', 'update', 'up', 'upgrade', 'dlx', 'create', 'rebuild', 'rb', 'import', 'install-test', 'it', 'fetch', 'dedupe'],
+  yarn: ['', 'install', 'add', 'up', 'upgrade', 'upgrade-interactive', 'dlx', 'create', 'global', 'import', 'set'],
+  bun: ['install', 'i', 'add', 'a', 'update', 'upgrade', 'create', 'c', 'x', 'link', 'pm'],
+  pip: ['install', 'download', 'wheel'],
+  pip3: ['install', 'download', 'wheel'],
+  pipx: ['install', 'run', 'inject', 'upgrade', 'upgrade-all', 'reinstall', 'reinstall-all'],
+  uv: ['add', 'sync', 'run', 'tool', 'pip', 'lock', 'python', 'init', 'self'],
+  poetry: ['install', 'add', 'update', 'lock', 'sync', 'self'],
+  pdm: ['install', 'add', 'update', 'sync', 'lock'],
+  conda: ['install', 'create', 'update', 'upgrade', 'env'],
+  mamba: ['install', 'create', 'update', 'upgrade', 'env'],
+  gem: ['install', 'update', 'fetch'],
+  bundle: ['install', 'update', 'add', 'exec'],
+  bundler: ['install', 'update', 'add', 'exec'],
+  composer: ['install', 'require', 'update', 'create-project', 'global', 'upgrade'],
+  brew: ['install', 'upgrade', 'reinstall', 'tap', 'update'],
+  apt: ['install', 'upgrade', 'update', 'full-upgrade', 'source'],
+  'apt-get': ['install', 'upgrade', 'update', 'dist-upgrade', 'source'],
+  dnf: ['install', 'upgrade', 'update'],
+  yum: ['install', 'upgrade', 'update'],
+  apk: ['add', 'upgrade', 'update'],
+  pacman: ['-s', '-sy', '-syu', '-u'],
+  winget: ['install', 'upgrade', 'import'],
+  choco: ['install', 'upgrade'],
+  scoop: ['install', 'update'],
+  cargo: ['install', 'binstall', 'add', 'fetch', 'update'],
+  go: ['get', 'install', 'mod'],
+  deno: ['install', 'add', 'cache'],
+  dotnet: ['add', 'restore', 'tool', 'new', 'nuget'],
+};
+/** Programmi che eseguono un pacchetto scaricato al volo, sempre. */
+const PKG_RUNNERS_REMOTE = new Set(['uvx', 'bunx']);
+
+/**
+ * Codice dalla rete o dai pacchetti: installazioni, aggiornamenti, esecuzioni al volo. Chiede
+ * sempre (senza "consenti sempre"), tranne l'esecuzione di un tool già installato nel progetto
+ * (npx/npm exec/pnpm exec/yarn exec), che chiede con "consenti sempre" per quel tool.
+ */
+function packageFetch(scope: Scope, prog: string, a: string[], raw: string): Finding | undefined {
+  const sub = (a.find((x) => !x.startsWith('-')) ?? '').toLowerCase();
+  const flag = (a.find((x) => x.startsWith('-')) ?? '').toLowerCase();
+  if (PKG_RUNNERS_REMOTE.has(prog)) return ask(`${prog}: esegue un pacchetto scaricato dalla rete`, exactKey('Bash', raw), false);
+  // esecuzione di un pacchetto: npx / pnpx / npm exec|x / pnpm exec / yarn exec
+  const runner = prog === 'npx' || prog === 'pnpx' ? { tool: sub, args: a.slice(a.findIndex((x) => !x.startsWith('-')) + 1) } : (prog === 'npm' && (sub === 'exec' || sub === 'x')) || ((prog === 'pnpm' || prog === 'yarn') && sub === 'exec') ? { tool: (a.slice(a.indexOf(sub) + 1).find((x) => !x.startsWith('-')) ?? '').toLowerCase(), args: [] } : undefined;
+  if (runner) {
+    if (!runner.tool) return ask(`${prog} senza comando`, exactKey('Bash', raw), false);
+    const bin = path.join(scope.cwd ?? scope.root, 'node_modules', '.bin', runner.tool);
+    const remote = !(prog === 'pnpm' || prog === 'yarn') && (a.includes('-y') || a.includes('--yes') || a.some((x) => x.startsWith('--package') || x === '-p') || runner.tool.includes('@'));
+    const installed = [bin, `${bin}.cmd`].some((x) => fs.existsSync(x));
+    if (remote || !installed) return ask(`${prog} ${runner.tool}: il pacchetto non è installato nel progetto e verrebbe scaricato ed eseguito`, exactKey('Bash', raw), false);
+    return ask(`${prog} ${runner.tool}: esegue il codice di un pacchetto installato nel progetto`, `Bash:pkg-exec:${runner.tool}`, true);
+  }
+  if (prog === 'go' && sub === 'run' && a.some((x) => /@[\w.-]+$/.test(x))) return ask('go run pacchetto@versione: scarica ed esegue codice', exactKey('Bash', raw), false);
+  if (prog === 'deno' && sub === 'run' && a.some((x) => /^(https?:|npm:|jsr:)/i.test(x))) return ask('deno run di codice remoto', exactKey('Bash', raw), false);
+  if ((prog === 'python' || prog === 'python3' || prog === 'py') && a[0] === '-m' && ['pip', 'pipx', 'uv', 'ensurepip', 'venv'].includes(a[1] ?? '')) {
+    const inner = (a.slice(2).find((x) => !x.startsWith('-')) ?? '').toLowerCase();
+    if (a[1] === 'ensurepip' || a[1] === 'venv' || (PKG_FETCH[a[1] === 'pip' ? 'pip' : a[1]!] ?? []).includes(inner)) return ask(`python -m ${a[1]} ${inner}: installa pacchetti`, exactKey('Bash', raw), false);
+    return undefined;
+  }
+  const subs = PKG_FETCH[prog];
+  if (!subs) return undefined;
+  const key = prog === 'pacman' ? flag : sub;
+  if (prog === 'yarn' && sub === '' && a.length > 0) return undefined; // yarn --version e simili
+  if (subs.includes(key) || (prog === 'npm' && sub === 'audit' && a.includes('fix'))) {
+    return ask(`${prog} ${key || '(install)'}: installa, aggiorna o scarica pacchetti, che possono eseguire codice`, exactKey('Bash', raw), false);
+  }
+  return undefined;
+}
 
 function urlFinding(prog: string, words: Word[]): Finding | undefined {
   for (const w of words) {
@@ -431,6 +513,8 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
   if (NETWORK.has(prog)) return [...out, ask(`${prog}: accesso alla rete`, net?.kind === 'ask' ? net.key : `Bash:net:${prog}`)];
   if (net) out.push(net);
   if (SYSTEM.has(prog)) return [...out, ask(`${prog}: comando di sistema o di gestione dei processi`, exactKey('Bash', raw), prog === 'setx' ? false : true)];
+  const pkg = packageFetch(scope, prog, a, raw);
+  if (pkg) return [...out, pkg];
 
   const paths = (mode: 'r' | 'w', from = 0) => {
     for (let k = from; k < rest.length; k++) {

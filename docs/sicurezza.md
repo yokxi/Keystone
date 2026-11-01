@@ -172,7 +172,20 @@ troppo intraprendente, ma **non sono un isolamento del sistema operativo**:
   procurarsi credenziali che nei worktree non ci sono. La policy chiede approvazione per ciascuno
   di questi passi quando li vede, ma non vede dentro gli script;
 - il codice che gli agenti scrivono ed eseguono (test, build) ha accesso alla rete come qualunque
-  programma lanciato da te.
+  programma lanciato da te;
+- **gli script del repository non passano dalla policy.** La policy guarda il comando che l'agente
+  scrive, non quello che quel comando esegue. Quando un comando consentito lancia codice del
+  repository, quel codice gira senza altri controlli:
+  - `npm test` esegue lo script `test` di `package.json` e anche `pretest` e `posttest`;
+  - `npm run build` esegue `prebuild`, `build` e `postbuild`;
+  - `make` esegue le regole del `Makefile` (questo chiede, ma una volta approvato il resto no);
+  - i test stessi (`vitest`, `pytest`, `cargo test`) eseguono il codice dei test e delle
+    dipendenze già installate, compresi i plugin di configurazione (`vitest.config.*`,
+    `conftest.py`, `build.rs`).
+
+  Un agente può modificare questi file nel suo worktree e poi lanciare `npm test`: la modifica è
+  visibile nel diff della review, ma viene eseguita prima che tu la veda. È il limite principale
+  del "non è una sandbox".
 
 **Raccomandazione.** Per repository sensibili (codice di lavoro, segreti, accessi a produzione)
 usa Keystone in un ambiente separato: una **macchina virtuale**, oppure un **utente Windows
@@ -189,8 +202,8 @@ Principio: **tutto ciò che non è esplicitamente consentito diventa una richies
 - modifiche ai file (`Edit`/`Write`, `mkdir`, `cp`, `mv`, redirezioni);
 - git locale: `status`, `diff`, `log`, `add`, `commit`, `merge`, `branch` in sola lettura,
   `config --get`;
-- comandi di sviluppo: `npm test`, `npm run build/lint/typecheck/…`, `npx <tool installato>`,
-  `node <file>`, `tsc`, `vitest`, `pytest`, `cargo test`, `go test`.
+- comandi di sviluppo: `npm test`, `npm run build/lint/typecheck/…`, `node <file>`, `tsc`,
+  `vitest`, `pytest`, `cargo test` (vedi sopra: gli script che lanciano non sono controllati).
 
 Il lead lavora in sola lettura nel tuo checkout: legge e usa git in lettura, tutto il resto chiede,
 e non può modificare file.
@@ -203,15 +216,25 @@ e non può modificare file.
 - variabili d'ambiente (`X=1 cmd`, `export`, `set`, `setx`, `unset`, `env X=… / -u / -i`,
   `$env:X`);
 - hook e qualunque scrittura in un percorso `.git` (compreso il collegamento `.git` del worktree);
-- `git hook`, `git worktree`, `gc`, `update-ref`, `filter-branch` e simili.
+- `git hook`, `git worktree`, `gc`, `update-ref`, `filter-branch` e simili;
+- **codice dalla rete o dai pacchetti**: installazioni e aggiornamenti di dipendenze
+  (`npm/pnpm/yarn/bun install|ci|add|update`, `npm init <pacchetto>`, `npm audit fix`,
+  `pip install`, `python -m pip`, `uv add|sync|run`, `pipx`, `poetry`, `pdm`, `conda`, `gem`,
+  `bundle`, `composer`, `cargo install|add`, `go get|install`, `deno install`, `dotnet add|restore`,
+  `brew`, `apt`, `winget`, `choco`, `scoop`) ed esecuzione di pacchetti scaricati al volo
+  (`npx` o `npm exec` di un tool non installato o con `-y`/`@versione`, `pnpm dlx`, `yarn dlx`,
+  `bunx`, `uvx`, `go run pacchetto@versione`, `deno run https://…`). Un'installazione può eseguire
+  script dei pacchetti (`postinstall`), quindi ogni volta decidi tu.
 
 **Chiede, con "Consenti sempre" limitato all'ambito mostrato:**
 
 - percorsi fuori dal worktree: `..`, percorsi assoluti, `~`, `$HOME`, `%USERPROFILE%`, link
   simbolici e junction che portano fuori, `cd` fuori, `git -C` fuori. "Consenti sempre" vale per
   quel programma in quella cartella;
-- rete: `curl`, `wget`, `ssh`, `npm install`, `pip install`, `git fetch/pull/clone`, `npx` di un
-  tool non installato, URL negli argomenti. Vale per quel programma e quell'host;
+- rete: `curl`, `wget`, `ssh`, `git fetch/pull/clone`, URL negli argomenti. Vale per quel
+  programma e quell'host;
+- `npx`, `npm exec`, `pnpm exec` di un tool già installato nel progetto (in `node_modules/.bin`):
+  esegue il codice di quel pacchetto. Vale per quel tool;
 - comandi distruttivi: `rm`, `git reset --hard`, `git clean`, `git checkout -- .`,
   `find -delete`, `Remove-Item`, … Vale solo dentro il worktree, mai fuori;
 - programmi sconosciuti, codice inline (`node -e`, `python -c`), script di shell, comandi di

@@ -68,7 +68,6 @@ describe('consentito senza chiedere (worker, dentro il worktree)', () => {
     'npm test',
     'npm run build',
     'pnpm test',
-    'npx vitest run',
     'node src/a.ts',
     'python -m pytest -q',
     'cargo test',
@@ -133,6 +132,80 @@ describe('percorsi fuori dal worktree: chiede', () => {
     expect(v.sticky).toBe(true);
     expectAction(classify('Bash', { command: 'cat ../fuori/segreto.txt' }, { ...worker(), alwaysAllow: v.ruleKeys }), 'allow', 'stessa cartella');
     expectAction(classify('Bash', { command: 'cat ../../altro.txt' }, { ...worker(), alwaysAllow: v.ruleKeys }), 'ask', 'altra cartella');
+  });
+});
+
+describe('codice dalla rete o dai pacchetti: chiede sempre', () => {
+  it.each([
+    'npm install',
+    'npm i lodash',
+    'npm ci',
+    'npm add left-pad',
+    'npm update',
+    'npm audit fix',
+    'npm init vite',
+    'npm exec cowsay',
+    'npx cowsay ciao',
+    'npx -y vitest',
+    'npx vitest@latest run',
+    'pnpm install',
+    'pnpm add zod',
+    'pnpm dlx create-vite',
+    'yarn',
+    'yarn add react',
+    'yarn dlx create-vite',
+    'bun install',
+    'bun add zod',
+    'bun x cowsay',
+    'bunx cowsay',
+    'pip install requests',
+    'pip3 install -r requirements.txt',
+    'python -m pip install requests',
+    'py -m pip install requests',
+    'pipx run black',
+    'uv add httpx',
+    'uv sync',
+    'uv run pytest',
+    'uvx ruff check',
+    'poetry install',
+    'cargo install ripgrep',
+    'go get example.com/x',
+    'go install example.com/x@latest',
+    'go run example.com/x@v1.2.3',
+    'gem install rails',
+    'bundle install',
+    'composer require x/y',
+    'brew install jq',
+    'apt-get install jq',
+    'winget install jq',
+    'choco install jq',
+    'deno run https://example.com/x.ts',
+    'npm test && npm install',
+  ])('%s', (cmd) => expectAskAlways(bash(cmd), cmd));
+
+  it('PowerShell', () => expectAskAlways(ps('npm install; npm test'), 'npm install in PowerShell'));
+
+  it('npx di un tool installato nel progetto: chiede, con "consenti sempre" limitato a quel tool', () => {
+    const v = bash('npx vitest run');
+    expectAction(v, 'ask', 'npx vitest');
+    if (v.action !== 'ask') return;
+    expect(v.sticky).toBe(true);
+    expect(v.ruleKeys).toEqual(['Bash:pkg-exec:vitest']);
+    expectAction(classify('Bash', { command: 'npx vitest run --coverage' }, { ...worker(), alwaysAllow: v.ruleKeys }), 'allow', 'npx vitest dopo consenti sempre');
+    expectAskAlways(classify('Bash', { command: 'npx cowsay' }, { ...worker(), alwaysAllow: v.ruleKeys }), 'altro pacchetto');
+  });
+
+  it('"consenti sempre" non esiste per le installazioni: ogni npm install chiede', () => {
+    const v = bash('npm install lodash');
+    expectAskAlways(v, 'npm install');
+    expectAskAlways(classify('Bash', { command: 'npm install lodash' }, { ...worker(), alwaysAllow: v.action === 'ask' ? v.ruleKeys : [] }), 'npm install ripetuto');
+  });
+
+  it('i comandi di sviluppo restano consentiti', () => {
+    for (const cmd of ['npm test', 'npm run build', 'pnpm test', 'yarn test', 'python -m pytest -q', 'cargo test', 'go run ./cmd/x', 'npm ls', 'pip --version']) {
+      if (cmd === 'pip --version') expectAction(bash(cmd), 'ask', cmd); // programma non riconosciuto: chiede (con consenti sempre)
+      else expectAction(bash(cmd), 'allow', cmd);
+    }
   });
 });
 
