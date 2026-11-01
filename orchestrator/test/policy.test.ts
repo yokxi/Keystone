@@ -195,6 +195,11 @@ describe('codice dalla rete o dai pacchetti: chiede sempre', () => {
     expectAskAlways(classify('Bash', { command: 'npx cowsay' }, { ...worker(), alwaysAllow: v.ruleKeys }), 'altro pacchetto');
   });
 
+  it('go: gli schemi di pacchetti fuori dal worktree chiedono ancora', () => {
+    expectAction(bash('go test ../...'), 'ask', 'go test ../...');
+    expectAction(bash('go test ../../altro/...'), 'ask', 'go test ../../altro/...');
+  });
+
   it('"consenti sempre" non esiste per le installazioni: ogni npm install chiede', () => {
     const v = bash('npm install lodash');
     expectAskAlways(v, 'npm install');
@@ -202,7 +207,7 @@ describe('codice dalla rete o dai pacchetti: chiede sempre', () => {
   });
 
   it('i comandi di sviluppo restano consentiti', () => {
-    for (const cmd of ['npm test', 'npm run build', 'pnpm test', 'yarn test', 'python -m pytest -q', 'cargo test', 'go run ./cmd/x', 'npm ls', 'pip --version']) {
+    for (const cmd of ['npm test', 'npm run build', 'pnpm test', 'yarn test', 'python -m pytest -q', 'cargo test', 'go test ./...', 'go test -v ./internal/...', 'go vet ./...', 'go run ./cmd/x', 'npm ls', 'pip --version']) {
       if (cmd === 'pip --version') expectAction(bash(cmd), 'ask', cmd); // programma non riconosciuto: chiede (con consenti sempre)
       else expectAction(bash(cmd), 'allow', cmd);
     }

@@ -688,7 +688,10 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
     if (prog === 'go' && sub === 'run') return out;
     if (prog === 'dotnet' && ['add', 'restore', 'tool', 'nuget', 'new'].includes(sub)) return [...out, ask(`dotnet ${sub}: rete`, `Bash:net:dotnet ${sub}`)];
     if ((prog === 'mvn' || prog === 'gradle' || prog === 'gradlew') && /deploy|publish|release/.test(a.join(' '))) return [...out, ask(`${prog}: pubblicazione`, `Bash:net:${prog}`)];
-    for (const w of rest) {
+    for (const raw of rest) {
+      // go: "./..." e "pkg/..." sono schemi di pacchetti ("tutti i sottopacchetti"), non percorsi:
+      // si controlla la cartella che coprono ("./..." -> ".", "./internal/..." -> "./internal")
+      const w = prog === 'go' && !raw.dynamic && /(^|[\\/])\.\.\.$/.test(raw.text) ? { ...raw, text: raw.text.replace(/[\\/]?\.\.\.$/, '') || '.' } : raw;
       if (!w.text.startsWith('-') && (w.dynamic || /[\\/]/.test(w.text) || w.text.startsWith('..') || /^[A-Za-z]:/.test(w.text))) {
         const f = checkPath(scope, w, 'w', prog);
         if (f) out.push(f);
