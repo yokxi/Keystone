@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { isTrustedSender, validateCommand } from '../src/main/ipc-validate.js';
 import { completeAgent, parseConsole } from '../src/renderer/lib/console.js';
 import { collapseContext, diffLogLines } from '../src/renderer/lib/diff-view.js';
+import { spendLabel } from '../src/renderer/lib/format.js';
 
 const agents = [
   { id: 'ada', name: 'Ada' },
@@ -100,5 +101,13 @@ describe('validazione IPC nel processo main', () => {
     expect(isTrustedSender('https://evil.example/index.html', app)).toBe(false);
     expect(isTrustedSender('file:///C:/altro/index.html', app)).toBe(false);
     expect(isTrustedSender(undefined, app)).toBe(false);
+  });
+});
+
+describe('spesa', () => {
+  it('con l\'abbonamento la spesa è una stima, a consumo è un costo', () => {
+    expect(spendLabel('subscription')).toMatchObject({ word: 'stima', suffix: ' · abbonamento' });
+    expect(spendLabel('api')).toMatchObject({ word: 'costo', suffix: '' });
+    expect(spendLabel(undefined)).toMatchObject({ word: 'costo', suffix: '' });
   });
 });

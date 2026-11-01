@@ -212,6 +212,8 @@ export const OrchestratorStatus = z.object({
   userName: z.string(),
   /** il profilo dell'orchestratore (l'app avvisa se è diverso dal suo) */
   profile: z.string().optional(),
+  /** subscription: un motore usa l'abbonamento, la spesa mostrata è una stima */
+  billing: z.enum(['api', 'subscription']).optional(),
 });
 export type OrchestratorStatus = z.infer<typeof OrchestratorStatus>;
 

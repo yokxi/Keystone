@@ -10,7 +10,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { parseArgs } from 'node:util';
 import { buildOrchestrator } from './bootstrap.js';
-import { dataDir, defaultAgents, defaultConfig } from './config.js';
+import { applyLoginBudget, dataDir, defaultAgents, defaultConfig } from './config.js';
 import { consoleLogger } from './core/context.js';
 import { VERSION } from './core/orchestrator.js';
 import { createDemoRepo, isKeystoneDemo } from './demo.js';
@@ -108,7 +108,10 @@ async function main(): Promise<void> {
     if (!Number.isFinite(b) || b < 0) throw new Error(`tetto di spesa non valido: ${values.budget}`);
     cfg.budgetUsdPerGoal = b;
   }
-  if (values['use-claude-login']) cfg.claude.useClaudeLogin = true;
+  if (values['use-claude-login']) {
+    cfg.claude.useClaudeLogin = true;
+    log.info(applyLoginBudget(cfg, values.budget !== undefined || !!process.env.KEYSTONE_BUDGET_USD?.trim()));
+  }
   if (values.record) cfg.claude.recordDir = path.resolve(values.record);
   if (values['sim-delay']) cfg.sim.stepDelayMs = Number(values['sim-delay']);
   if (values.ci) cfg.ciCommand = values.ci;

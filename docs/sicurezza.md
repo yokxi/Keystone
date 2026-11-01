@@ -241,6 +241,8 @@ Dettagli in `docs/motore-claude.md`. In sintesi:
 - gli agenti non ereditano la configurazione di Claude Code dell'utente: niente impostazioni, hook,
   server MCP, comandi, skill o `CLAUDE.md` globale. Lo verifica un test sulla CLI vera;
 - di default si autentica solo via API (chiave o provider cloud); il login personale di Claude Code
-  si abilita esplicitamente;
+  si abilita esplicitamente e usa solo il token di `claude setup-token`, mai i file di `~/.claude`;
+- chiave API e token restano alla CLI: i comandi degli agenti, i server MCP stdio e gli hook non li
+  vedono (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, verificato sulla CLI vera);
 - ogni obiettivo ha un tetto di spesa: al raggiungimento gli agenti si fermano, il lavoro resta
   salvato e la decisione su come proseguire spetta a te.

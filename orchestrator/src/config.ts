@@ -86,6 +86,19 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): Orchestrato
   };
 }
 
+/**
+ * Con il login personale (abbonamento) la spesa riportata è una stima, non quello che si paga:
+ * nessun tetto in dollari, a meno che l'utente non ne chieda uno esplicitamente (--budget o
+ * KEYSTONE_BUDGET_USD), che allora fa da freno sulla stima. Restituisce la riga da mostrare.
+ */
+export function applyLoginBudget(cfg: OrchestratorConfig, explicit: boolean): string {
+  if (!explicit) {
+    cfg.budgetUsdPerGoal = 0;
+    return 'login personale: la spesa mostrata è una stima, nessun tetto in dollari (--budget per usarla come freno)';
+  }
+  return cfg.budgetUsdPerGoal > 0 ? `login personale: tetto di $${cfg.budgetUsdPerGoal} applicato alla spesa stimata` : 'login personale: nessun tetto';
+}
+
 export function dataDir(cfg: Pick<OrchestratorConfig, 'home' | 'profile'>): string {
   return path.join(cfg.home, cfg.profile);
 }

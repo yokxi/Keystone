@@ -75,6 +75,8 @@ export interface EngineAdapter {
   readonly id: EngineId;
   /** nome visualizzato, es. "Claude" */
   readonly label: string;
+  /** come si paga: api = la spesa è reale; subscription = abbonamento, la spesa è una stima */
+  readonly billing?: 'api' | 'subscription';
   /** modello predefinito per un ruolo (se la configurazione non ne indica uno) */
   defaultModel(role: Role): string;
   /** nome del modello come lo mostra l'interfaccia (es. "claude-opus-5-5" -> "Opus 5.5") */

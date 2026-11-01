@@ -22,6 +22,16 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   cancelled: 'Annullati',
 };
 
+/**
+ * Come chiamare la spesa. Con l'abbonamento (login personale) si paga il piano, non i token: la
+ * cifra è una stima di quanto costerebbe via API.
+ */
+export function spendLabel(billing: 'api' | 'subscription' | undefined): { word: string; suffix: string; title: string } {
+  if (billing === 'subscription')
+    return { word: 'stima', suffix: ' · abbonamento', title: "Stima di quanto costerebbe via API: con l'abbonamento non si paga a consumo" };
+  return { word: 'costo', suffix: '', title: 'Costo totale (i motori che riportano solo token non contribuiscono)' };
+}
+
 export function money(usd: number): string {
   if (usd === 0) return '$0';
   if (usd < 0.01) return '<$0.01';

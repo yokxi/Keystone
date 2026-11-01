@@ -20,6 +20,7 @@ interface InitInfo {
   commands: string[];
   skills: string[];
   permissionMode: string;
+  autoMemory?: string;
 }
 
 async function readInit(options: Options): Promise<InitInfo> {
@@ -35,6 +36,7 @@ async function readInit(options: Options): Promise<InitInfo> {
           commands: msg.slash_commands as string[],
           skills: (msg.skills as string[]) ?? [],
           permissionMode: String(msg.permissionMode),
+          autoMemory: (msg.memory_paths as { auto?: string } | undefined)?.auto,
         };
       }
     }
@@ -128,4 +130,95 @@ describe('isolamento dalla configurazione utente di Claude Code (CLI vera, senza
     await new Promise((r) => setTimeout(r, 500));
     expect(fs.existsSync(marker)).toBe(false);
   }, 240_000);
+
+  it('con il login personale: la CLI non legge ~/.claude (solo il token), e la configurazione dell\'utente resta invisibile', async () => {
+    const { home, marker } = fakeUserHome();
+    // credenziali del login nella home finta: Keystone non deve usarle né copiarle
+    fs.writeFileSync(path.join(home, '.claude', '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'finto-da-file', refreshToken: 'finto' } }));
+    const repo = tmpDir('keystone-repo-');
+    const configDir = path.join(tmpDir(), 'claude-config');
+    const engine = new ClaudeEngine({ configDir, useClaudeLogin: true });
+    const env: Record<string, string | undefined> = { ...baseEnv(home), ...LOGIN_ENV };
+    delete env.ANTHROPIC_API_KEY;
+    const options = keystoneOptions(engine, repo, env);
+
+    expect(options.env?.CLAUDE_CONFIG_DIR).toBe(configDir);
+    expect(options.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe(LOGIN_ENV.CLAUDE_CODE_OAUTH_TOKEN);
+    expect(options.env?.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(options.settingSources).toEqual([]);
+
+    if (fs.existsSync(marker)) fs.rmSync(marker);
+    const init = await readInit(options);
+    expect(init.permissionMode).toBe('default');
+    expect(init.commands).not.toContain('comando-utente');
+    expect(init.skills).not.toContain('skill-utente');
+    expect(init.mcp).toEqual(['keystone']);
+    expect(init.autoMemory, 'memoria automatica della CLI disattivata').toBeUndefined();
+    expect(init.tools.filter((t) => !t.startsWith('mcp__')).sort()).toEqual([...LEAD_TOOLS].sort());
+    await new Promise((r) => setTimeout(r, 500));
+    expect(fs.existsSync(marker)).toBe(false);
+    // il file delle credenziali dell'utente non è stato copiato nella cartella isolata
+    expect(fs.existsSync(path.join(configDir, '.credentials.json'))).toBe(false);
+  }, 240_000);
+
+  for (const mode of ['api', 'login'] as const) {
+    it(`i sottoprocessi della CLI non vedono la credenziale (${mode === 'api' ? 'chiave API' : 'token di login'})`, async () => {
+      const { home } = fakeUserHome();
+      const repo = tmpDir('keystone-repo-');
+      const out = path.join(tmpDir(), 'env-sonda.json');
+      // sonda: un server MCP stdio, quindi un sottoprocesso della CLI come Bash, che scrive quali
+      // variabili vede e poi resta in attesa
+      const probe = path.join(tmpDir(), 'sonda.cjs');
+      fs.writeFileSync(
+        probe,
+        `const fs=require('fs');const k=['ANTHROPIC_API_KEY','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_OAUTH_TOKEN','VARIABILE_INNOCUA'];` +
+          `fs.writeFileSync(${JSON.stringify(out)},JSON.stringify(Object.fromEntries(k.map(x=>[x,process.env[x]!==undefined]))));setTimeout(()=>{},60000);`,
+      );
+      const engine = new ClaudeEngine({ configDir: path.join(tmpDir(), 'claude-config'), useClaudeLogin: mode === 'login' });
+      const env: Record<string, string | undefined> = { ...baseEnv(home), VARIABILE_INNOCUA: '1', ...(mode === 'login' ? LOGIN_ENV : {}) };
+      if (mode === 'login') delete env.ANTHROPIC_API_KEY;
+      const options = keystoneOptions(engine, repo, env);
+      expect(options.env?.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('1');
+      // solo per la prova: un server in più accanto a quello di Keystone
+      options.mcpServers = { ...options.mcpServers, sonda: { type: 'stdio', command: process.execPath, args: [probe] } };
+      const q = query({ prompt: 'ciao', options });
+      const timer = setTimeout(() => q.close(), 90_000);
+      try {
+        const it = (q as AsyncIterable<SDKMessage>)[Symbol.asyncIterator]();
+        void it.next();
+        const start = Date.now();
+        while (!fs.existsSync(out) && Date.now() - start < 60_000) await new Promise((r) => setTimeout(r, 100));
+      } finally {
+        clearTimeout(timer);
+        q.close();
+      }
+      const seen = JSON.parse(fs.readFileSync(out, 'utf8')) as Record<string, boolean>;
+      expect(seen.VARIABILE_INNOCUA, 'controprova: le variabili normali arrivano').toBe(true);
+      expect(seen).toMatchObject({ ANTHROPIC_API_KEY: false, ANTHROPIC_AUTH_TOKEN: false, CLAUDE_CODE_OAUTH_TOKEN: false });
+    }, 240_000);
+  }
 });
+
+/** Login personale finto, senza rete: anche le chiamate di servizio della CLI vanno su un proxy inesistente. */
+const LOGIN_ENV = { CLAUDE_CODE_OAUTH_TOKEN: 'token-di-login-finto', HTTPS_PROXY: 'http://127.0.0.1:9', HTTP_PROXY: 'http://127.0.0.1:9' };
+
+function keystoneOptions(engine: ClaudeEngine, repo: string, env: Record<string, string | undefined>): Options {
+  const spec: TurnSpec = {
+    agentId: 'ada',
+    agentName: 'Ada',
+    role: 'lead',
+    cwd: repo,
+    prompt: 'ciao',
+    instructions: 'istruzioni di Keystone',
+    model: 'claude-sonnet-5-5',
+    env,
+    writableRoots: [],
+    tools: [{ name: 'list_tasks', description: 'tabellone', schema: z.object({}), run: async () => ({ text: 'nessun task' }) }],
+    job: { kind: 'plan' },
+  };
+  return engine.buildOptions(spec, {
+    preToolUse: [{ hooks: [async () => ({ continue: true })] }],
+    canUseTool: async () => ({ behavior: 'deny', message: 'test' }),
+    abort: new AbortController(),
+  });
+}

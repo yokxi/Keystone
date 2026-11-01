@@ -44,6 +44,13 @@ export interface OrchestratorOptions {
 
 type Listener = (msg: Outbound) => void;
 
+/** subscription se almeno un agente usa un abbonamento (la spesa è allora una stima), api se tutti pagano a consumo. */
+function billingOf(members: Array<{ engine: { billing?: 'api' | 'subscription' } }>): { billing?: 'api' | 'subscription' } {
+  if (members.some((m) => m.engine.billing === 'subscription')) return { billing: 'subscription' };
+  if (members.some((m) => m.engine.billing === 'api')) return { billing: 'api' };
+  return {};
+}
+
 export class Orchestrator {
   readonly store: Store;
   readonly tasks: TaskGraph;
@@ -78,7 +85,7 @@ export class Orchestrator {
     });
     const costUsd = this.store.data.agents.reduce((s, a) => s + a.costUsd, 0);
     const tokens = this.store.data.agents.reduce((s, a) => s + a.tokens, 0);
-    this.status = { version: VERSION, auth: 'unknown', message: 'avvio…', costUsd, tokens, userName: this.userName, profile: path.basename(path.resolve(opts.dataDir)) };
+    this.status = { version: VERSION, auth: 'unknown', message: 'avvio…', costUsd, tokens, userName: this.userName, profile: path.basename(path.resolve(opts.dataDir)), ...billingOf(opts.members) };
     this.team = new Team(this, opts.members, opts.team);
   }
 

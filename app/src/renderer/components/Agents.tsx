@@ -1,6 +1,6 @@
 import type { ViewState } from '@keystone/shared';
 import { useState } from 'react';
-import { money, tokens } from '../lib/format.js';
+import { money, spendLabel, tokens } from '../lib/format.js';
 import { Avatar, LogView, StateBadge } from './common.js';
 
 const ENGINE_LABEL = { sim: 'Sim', claude: 'Claude', codex: 'Codex' } as const;
@@ -66,7 +66,7 @@ export function Agents({ state, selected, select, send }: Props) {
                   modello <b>{agent.model}</b>
                 </span>
                 <span>
-                  costo <b>{money(agent.costUsd)}</b>
+                  {spendLabel(state.status?.billing).word} <b>{money(agent.costUsd)}</b>
                 </span>
                 <span>
                   token <b>{tokens(agent.tokens)}</b>

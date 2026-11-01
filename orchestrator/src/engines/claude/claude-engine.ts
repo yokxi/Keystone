@@ -10,8 +10,11 @@
 //    Keystone (niente ~/.claude: impostazioni, hook, comandi, agenti, skill, CLAUDE.md globale, MCP
 //    di ~/.claude.json), settingSources: [] (niente impostazioni da file), strictMcpConfig (solo il
 //    server MCP di Keystone), skills: [] e nessun plugin. Il test di isolamento lo verifica sulla
-//    CLI vera. Con il login personale (opzionale) la cartella di configurazione resta quella
-//    dell'utente, perché lì vivono le credenziali: valgono comunque le altre barriere.
+//    CLI vera. Vale anche con il login personale (opzionale): la credenziale arriva solo come
+//    CLAUDE_CODE_OAUTH_TOKEN, mai dai file di ~/.claude.
+//  - Le credenziali (chiave API o token di login) servono alla CLI, non agli agenti:
+//    CLAUDE_CODE_SUBPROCESS_ENV_SCRUB le toglie dall'ambiente dei sottoprocessi (Bash, server MCP
+//    stdio, hook). Il test di isolamento lo verifica.
 //  - Tool: solo quelli di base per ruolo (il lead non ha Edit/Write) più i tool del team; niente
 //    sub-agenti, web, skill.
 //  - Spesa: maxBudgetUsd = la quota riservata al turno dal team (mai più del residuo
@@ -26,7 +29,7 @@ import { ensureDir } from '../../util/fsx.js';
 import { truncate } from '../../util/text.js';
 import { EventChannel, PermissionBroker } from '../channel.js';
 import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TurnSpec } from '../types.js';
-import { detectApiAuth, envForAuth, NO_API_AUTH_MESSAGE } from './auth.js';
+import { detectApiAuth, detectClaudeLogin, envForAuth, NO_API_AUTH_MESSAGE, NO_LOGIN_TOKEN_MESSAGE } from './auth.js';
 import { DEFAULT_LEAD_MODEL, DEFAULT_WORKER_MODEL, displayClaudeModel } from './models.js';
 
 export const MCP_SERVER = 'keystone';
@@ -155,6 +158,11 @@ export class ClaudeEngine implements EngineAdapter {
   readonly id = 'claude' as const;
   readonly label = 'Claude';
 
+  /** con il login personale la spesa riportata è una stima: si paga l'abbonamento */
+  get billing(): 'api' | 'subscription' {
+    return this.cfg.useClaudeLogin ? 'subscription' : 'api';
+  }
+
   constructor(
     private cfg: ClaudeEngineConfig,
     private queryFn: QueryFn = realQuery,
@@ -169,7 +177,10 @@ export class ClaudeEngine implements EngineAdapter {
   }
 
   async checkAuth(): Promise<AuthCheck> {
-    if (this.cfg.useClaudeLogin) return { ok: true, account: 'login personale di Claude Code (abilitato esplicitamente)' };
+    if (this.cfg.useClaudeLogin) {
+      const login = detectClaudeLogin(process.env);
+      return login.ok ? { ok: true, account: login.source } : { ok: false, message: NO_LOGIN_TOKEN_MESSAGE };
+    }
     const api = detectApiAuth(process.env);
     return api.ok ? { ok: true, account: api.source } : { ok: false, message: NO_API_AUTH_MESSAGE };
   }
@@ -189,8 +200,12 @@ export class ClaudeEngine implements EngineAdapter {
     const env: Record<string, string | undefined> = {
       ...spec.env,
       CLAUDE_AGENT_SDK_CLIENT_APP: 'keystone/0.1.0',
-      // la CLI non legge ~/.claude dell'utente (con il login personale le credenziali stanno lì)
-      ...(this.cfg.useClaudeLogin ? {} : { CLAUDE_CONFIG_DIR: configDir }),
+      // la CLI non legge ~/.claude dell'utente, in nessuna modalità
+      CLAUDE_CONFIG_DIR: configDir,
+      // chiave API e token di login restano alla CLI: Bash, server MCP stdio e hook non li vedono
+      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1',
+      // niente memoria automatica della CLI: la memoria del team è quella di Keystone (read/write_memory)
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       DISABLE_AUTOUPDATER: '1',
     };
     const effort = role === 'lead' ? (this.cfg.leadEffort ?? this.cfg.effort) : this.cfg.effort;

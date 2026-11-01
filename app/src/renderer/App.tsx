@@ -10,7 +10,7 @@ import { Memory } from './components/Memory.js';
 import { RegisterRepoDialog, Repos } from './components/Repos.js';
 import { Review, type ReviewTarget } from './components/Review.js';
 import { completeAgent, HELP, parseConsole } from './lib/console.js';
-import { money, time, tokens } from './lib/format.js';
+import { money, spendLabel, time, tokens } from './lib/format.js';
 
 type View = 'board' | 'agents' | 'decisions' | 'review' | 'memory' | 'repos';
 type Theme = 'system' | 'light' | 'dark';
@@ -282,8 +282,9 @@ function StatusBar({ state, theme, setTheme, decisions }: { state: ViewState; th
       <div className="status-items">
         {decisions > 0 && <span className="badge bad">{decisions} {decisions === 1 ? 'decisione' : 'decisioni'}</span>}
         <GoalSpend state={state} />
-        <span title="Costo totale (i motori che riportano solo token non contribuiscono)">
-          costo <b style={{ color: 'var(--text)' }}>{money(s?.costUsd ?? 0)}</b>
+        <span title={spendLabel(s?.billing).title} data-testid="total-spend">
+          {spendLabel(s?.billing).word} <b style={{ color: 'var(--text)' }}>{money(s?.costUsd ?? 0)}</b>
+          {spendLabel(s?.billing).suffix}
         </span>
         <span>
           token <b style={{ color: 'var(--text)' }}>{tokens(s?.tokens ?? 0)}</b>
@@ -303,15 +304,19 @@ function GoalSpend({ state }: { state: ViewState }) {
   const goal = [...state.goals].reverse().find((g) => g.status === 'planning' || g.status === 'active' || g.status === 'paused') ?? state.goals[state.goals.length - 1];
   if (!goal) return null;
   const ratio = goal.budgetUsd ? goal.costUsd / goal.budgetUsd : 0;
+  const label = spendLabel(state.status?.billing);
+  const estimate = state.status?.billing === 'subscription';
   const cls = goal.status === 'paused' || ratio >= 1 ? 'bad' : ratio >= 0.8 ? 'warn' : '';
   return (
     <span
       className={`badge ${cls}`}
-      title={`Spesa dell'obiettivo ${goal.id}${goal.budgetUsd ? ' rispetto al tetto' : ' (nessun tetto)'}${goal.costUnreconciledUsd ? `. Di questa, ${money(goal.costUnreconciledUsd)} è contata per prudenza: una sessione ripresa potrebbe non aver ritrovato la spesa precedente, che quindi potrebbe essere contata due volte.` : ''}`}
+      title={`${estimate ? `${label.title}. ` : ''}Spesa dell'obiettivo ${goal.id}${goal.budgetUsd ? (estimate ? ' rispetto al tetto sulla stima' : ' rispetto al tetto') : ' (nessun tetto)'}${goal.costUnreconciledUsd ? `. Di questa, ${money(goal.costUnreconciledUsd)} è contata per prudenza: una sessione ripresa potrebbe non aver ritrovato la spesa precedente, che quindi potrebbe essere contata due volte.` : ''}`}
       data-testid="goal-spend"
     >
-      obiettivo {money(goal.costUsd)}
+      obiettivo {estimate ? `${label.word} ` : ''}
+      {money(goal.costUsd)}
       {goal.budgetUsd ? ` / ${money(goal.budgetUsd)}` : ' · senza tetto'}
+      {label.suffix}
       {goal.costUnreconciledUsd ? ` (≤ ${money(goal.costUnreconciledUsd)} prudenziali)` : ''}
       {goal.status === 'paused' ? ' · in pausa' : ''}
     </span>

@@ -284,15 +284,53 @@ describe('motore Claude: autenticazione', () => {
     expect(envForAuth({ ANTHROPIC_API_KEY: 'k', ANTHROPIC_AUTH_TOKEN: 'a', CLAUDE_CODE_OAUTH_TOKEN: 't' }, true)).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 't' });
   });
 
-  it('con il login personale abilitato la CLI usa la configurazione dell\'utente (dove stanno le credenziali), senza chiavi API', async () => {
+  it('con il login personale la CLI resta nella cartella isolata: credenziale solo dal token, niente chiavi API', async () => {
     const records: ReplayRecord[] = [];
-    const engine = new ClaudeEngine({ configDir: tmpDir(), useClaudeLogin: true }, replayQuery([[{ t: 'msg', msg: { type: 'result', subtype: 'success', total_cost_usd: 0 } }]], records));
-    await drain(engine.startSession(spec(tmpDir())));
+    const configDir = tmpDir();
+    const engine = new ClaudeEngine({ configDir, useClaudeLogin: true }, replayQuery([[{ t: 'msg', msg: { type: 'result', subtype: 'success', total_cost_usd: 0 } }]], records));
+    await drain(engine.startSession(spec(tmpDir(), { env: { ANTHROPIC_API_KEY: 'sk-ant-finta', CLAUDE_CODE_OAUTH_TOKEN: 'token-finto' } })));
     const env = records[0]!.options!.env!;
-    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(env.CLAUDE_CONFIG_DIR).toBe(configDir); // mai ~/.claude
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('token-finto');
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-    expect(records[0]!.options!.settingSources).toEqual([]); // le altre barriere restano
+    expect(env.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB).toBe('1');
+    expect(records[0]!.options!.settingSources).toEqual([]);
     expect(records[0]!.options!.permissionMode).toBe('default');
+    expect(engine.billing).toBe('subscription');
+    expect(new ClaudeEngine({ configDir }).billing).toBe('api');
+  });
+
+  it('il login personale senza token non parte, e spiega come ottenerlo', async () => {
+    const saved = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    try {
+      delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      const engine = new ClaudeEngine({ configDir: tmpDir(), useClaudeLogin: true });
+      expect(await engine.checkAuth()).toMatchObject({ ok: false, message: expect.stringMatching(/claude setup-token/) });
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = 'token-finto';
+      expect(await engine.checkAuth()).toMatchObject({ ok: true });
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = saved;
+    }
+  });
+
+  it('con il login personale: nessun tetto in dollari, salvo richiesta esplicita (freno sulla stima)', async () => {
+    const { applyLoginBudget, defaultConfig } = await import('../src/config.js');
+    const a = defaultConfig({});
+    expect(a.budgetUsdPerGoal).toBe(5);
+    expect(applyLoginBudget(a, false)).toMatch(/stima/);
+    expect(a.budgetUsdPerGoal).toBe(0);
+    const b = { ...defaultConfig({}), budgetUsdPerGoal: 2 };
+    expect(applyLoginBudget(b, true)).toMatch(/\$2 applicato alla spesa stimata/);
+    expect(b.budgetUsdPerGoal).toBe(2);
+  });
+
+  it('la barra di stato dice se la spesa è una stima (abbonamento)', async () => {
+    const engines = new Map<EngineId, EngineAdapter>([['claude', new ClaudeEngine({ configDir: tmpDir(), useClaudeLogin: true }, replayQuery([[]]))]]);
+    const { o } = testOrchestrator({ workers: 1, engines, cfg: { agents: defaultAgents('claude', 1) } });
+    expect(o.status.billing).toBe('subscription');
+    const { o: sim } = testOrchestrator({ workers: 1 });
+    expect(sim.status.billing).toBeUndefined();
   });
 
   it('senza credenziali il team non avvia turni e lo dice nella barra di stato', async () => {

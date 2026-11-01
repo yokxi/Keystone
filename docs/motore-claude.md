@@ -36,9 +36,24 @@ come "Opus 5.5" e "Sonnet 5.5" accanto a ogni agente.
 - Senza credenziali, la barra di stato lo dice chiaramente e nessun turno parte. Il motore sim
   funziona comunque.
 - **Il login personale di Claude Code è disattivato di default.** Anthropic non consente agli
-  strumenti di terze parti di offrire il login claude.ai. Con `--use-claude-login` lo si usa per sé:
-  in quel caso le chiavi API non vengono passate alla CLI. In modalità API, invece, il token di
-  login (`CLAUDE_CODE_OAUTH_TOKEN`) non viene passato.
+  strumenti di terze parti di offrire il login claude.ai. Con `--use-claude-login` lo si usa per sé,
+  con il proprio abbonamento:
+  - la credenziale è solo il token di `claude setup-token` (serve un abbonamento), passato come
+    `CLAUDE_CODE_OAUTH_TOKEN` nel terminale dell'orchestratore. Senza token nessun turno parte e la
+    barra di stato spiega come ottenerlo;
+  - la CLI **non legge `~/.claude`**: resta nella cartella isolata come in modalità API. Il file
+    `~/.claude/.credentials.json` non viene né letto né copiato, perché la CLI rinnova i token e una
+    copia potrebbe invalidare il tuo login di Claude Code;
+  - le chiavi API non vengono passate alla CLI. In modalità API, invece, il token di login non
+    viene passato.
+- **Le credenziali restano alla CLI.** `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` le toglie dall'ambiente
+  dei sottoprocessi: i comandi Bash degli agenti, i server MCP stdio e gli hook non vedono né la
+  chiave API né il token. Il test di isolamento lo verifica con un sottoprocesso sonda.
+- **Spesa con l'abbonamento.** `total_cost_usd` è una stima di quanto costerebbe via API: con il
+  piano non si paga a consumo. L'interfaccia la mostra come "stima … · abbonamento" e, di default,
+  non c'è un tetto in dollari: i turni non si fermano per la spesa stimata. Con `--budget <n>`
+  esplicito il tetto si applica alla stima, come freno. I limiti di utilizzo del piano restano
+  quelli dell'abbonamento: se si raggiungono, il turno finisce in errore.
 
 ## Ogni tool passa dalla policy di Keystone
 
@@ -73,9 +88,9 @@ come "Opus 5.5" e "Sonnet 5.5" accanto a ogni agente.
     parta;
   - come controprova, verifica che la stessa CLI senza isolamento veda comando e server MCP
     dell'utente.
-- Eccezione: con `--use-claude-login` la cartella di configurazione resta quella dell'utente,
-  perché lì stanno le credenziali. Restano comunque `settingSources: []`, `strictMcpConfig`,
-  `skills: []` e la policy.
+- Vale anche con `--use-claude-login`: stessa cartella isolata, credenziale solo dal token. Il test
+  di isolamento ha un caso apposta, con un finto `~/.claude/.credentials.json` nella home, e
+  verifica anche che il file non venga copiato.
 
 ## Tetto di spesa per obiettivo
 
@@ -156,6 +171,25 @@ npm run app
 profilo `demo`. L'app usa il profilo di `KEYSTONE_PROFILE` (default `default`). Se
 l'orchestratore collegato ne usa un altro, l'app lo segnala. Il pulsante "Avvia orchestratore"
 avvia il motore sim con il profilo dell'app, oppure con uno scelto tra quelli esistenti.
+
+### Con il login personale (abbonamento)
+
+```powershell
+# una volta: genera il token (apre il browser per il login; serve un abbonamento Claude)
+claude setup-token
+
+# terminale 1: il token vale solo per questo terminale
+Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+$env:CLAUDE_CODE_OAUTH_TOKEN = "<token di setup-token>"
+npm run orchestrator -- --demo --reset --engine claude --use-claude-login --lead-model claude-sonnet-5-5 --workers 1 --record "$env:USERPROFILE\.keystone\trascrizioni-prova"
+
+# terminale 2
+$env:KEYSTONE_PROFILE = "demo"
+npm run app
+```
+
+Senza `--budget` non c'è tetto: la spesa è una stima. Il confronto con la Console si fa solo con una
+chiave API.
 
 Obiettivo suggerito: qualcosa di piccolo, per esempio "Aggiungi una funzione saluta_en con un test".
 Verificheremo insieme:
