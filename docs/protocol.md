@@ -45,7 +45,7 @@ documentato qui.
 | `MemoryEntry` | `id` (`shared/<slug>` o `<agente>/<slug>`), `scope`, `title`, `body` (markdown), `author?`, `updated` |
 | `FeedItem` | `ts`, `kind`, `text`, `agentId?`, `to?` |
 | `LogEntry` | `ts`, `kind` (`text`/`tool`/`result`/`error`/`diff`/`test`/`permission`), `text` |
-| `OrchestratorStatus` | `version`, `auth` (`ok`/`failed`/`unknown`), `message`, `costUsd`, `tokens`, `userName` |
+| `OrchestratorStatus` | `version`, `auth` (`ok`/`failed`/`unknown`), `message`, `costUsd`, `tokens`, `userName`, `userNameSource`, `profile`, `billing` |
 | `DiffFile` | `path`, `oldPath?`, `status` (`added`/`modified`/`deleted`/`renamed`), `binary`, `additions`, `deletions`, `hunks[]` {`header`, `oldStart`, `newStart`, `lines[]` {`kind`: `add`/`del`/`ctx`, `text`, `oldNo?`, `newNo?`}} |
 
 **Stati di un agente:** `idle`, `thinking`, `reading`, `editing`, `running`, `testing`,
@@ -188,6 +188,19 @@ senza conferma la registrazione viene rifiutata e il `.git/config` non cambia. R
 `{ goalId, budgetUsd }`: cambia il tetto di spesa di un obiettivo. Se l'obiettivo era in pausa per il
 tetto e ora c'è margine, riprende: i turni fermati ripartono con la stessa sessione. Risultato:
 `{ goalId, budgetUsd, status }`.
+
+### `settings.set`
+`{ userName }`: il tuo nome come lo usano gli agenti (prompt, domande, richieste di merge) e il
+registro. Viene ripulito da a capo e caratteri di controllo (massimo 60 caratteri). `null` o vuoto
+torna al predefinito: `--user-name`, poi `git config user.name`, poi il nome utente del sistema.
+Vale dai turni successivi. Risultato: `{ userName, userNameSource }`.
+
+### `repo.config`
+`{ repoId, mergeTarget }`: il branch in cui fare i merge di un repository. `null` = il branch aperto
+nel tuo checkout. Il branch deve esistere e non può essere `Keystone/*`. I nuovi worktree partono
+da quel branch. Se non è estratto nel tuo checkout, il merge sposta solo il riferimento con
+`update-ref` e il controllo del valore precedente: il tuo checkout non cambia. Risultato:
+`{ repoId, mergeTarget }`.
 
 ### `worktrees.prune`
 `{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o

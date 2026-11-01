@@ -25,7 +25,8 @@ avviarlo dai sorgenti.
 | **Decisioni** | Domande, permessi e merge, dalla più vecchia. I permessi che **richiedono sempre approvazione** (configurazione git, variabili d'ambiente, hook, `.git`, `git -c`) hanno bordo e fondo rossi, l'avviso "Richiede sempre la tua approvazione", il **comando completo** e solo `Consenti una volta` / `Nega`. Gli altri permessi offrono anche "Consenti sempre" e spiegano cosa copre. |
 | **Review** | Elenco dei file con le righe aggiunte e tolte, diff con i numeri di riga vecchi e nuovi e il contesto invariato compresso (clic per espanderlo), riassunto del worker, note della review del lead ed esito dei test. Pulsanti `Merge`, `Richiedi modifiche` (con il testo) e `Rifiuta`. |
 | **Memoria** | Le note condivise e private degli agenti (piano, decisioni, convenzioni), in markdown. |
-| **Repository** | Repository registrati, branch, stato del checkout, worktree attivi e pulizia dei worktree orfani. **Registra repository** mostra prima la riga che verrà aggiunta al `.git/config` (il guardiano git) e registra solo dopo la conferma. |
+| **Repository** | Repository registrati, branch, stato del checkout, worktree attivi e pulizia dei worktree orfani. **Registra repository** mostra prima la riga che verrà aggiunta al `.git/config` (il guardiano git) e registra solo dopo la conferma. Per ogni repository, **merge in** sceglie il branch in cui vanno i merge (default: il branch aperto); se è un altro branch, il merge non tocca il tuo checkout. |
+| **Impostazioni** | Il tuo nome come lo usano gli agenti (default: `git config user.name`), con la sua provenienza e il ritorno al predefinito. |
 | **Barra di stato** | Connessione, stato dell'autenticazione dei motori, decisioni in attesa, costo e token totali, tema (sistema, chiaro, scuro). |
 
 Quando una decisione aspetta te e l'app non è in primo piano, arriva una notifica di Windows.

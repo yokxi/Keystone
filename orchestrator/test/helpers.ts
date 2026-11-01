@@ -55,6 +55,8 @@ export interface TestOrchestratorOptions {
   script?: SimScript;
   engines?: Map<EngineId, EngineAdapter>;
   cfg?: Partial<OrchestratorConfig>;
+  /** git user.name simulato (default: nessuno, così i test non dipendono dalla macchina) */
+  gitUserName?: string;
 }
 
 export function testOrchestrator(opts: TestOrchestratorOptions = {}): { o: Orchestrator; cfg: OrchestratorConfig } {
@@ -68,7 +70,7 @@ export function testOrchestrator(opts: TestOrchestratorOptions = {}): { o: Orche
     ...opts.cfg,
   };
   const engines = opts.engines ?? new Map<EngineId, EngineAdapter>([['sim', new SimEngine({ stepDelayMs: 0, ...(opts.script ? { script: opts.script } : {}) })]]);
-  const o = buildOrchestrator(cfg, { logger: silentLogger, engines, storeDebounceMs: 5 });
+  const o = buildOrchestrator(cfg, { logger: silentLogger, engines, storeDebounceMs: 5, resolveGitUserName: () => opts.gitUserName });
   onCleanup(() => o.stop());
   return { o, cfg };
 }

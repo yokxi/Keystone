@@ -180,6 +180,10 @@ export const Repo = z.object({
   path: z.string(),
   /** branch attualmente estratto nel checkout dell'utente */
   branch: z.string(),
+  /** branch in cui si fanno i merge (e da cui partono i worktree); assente = il branch aperto */
+  mergeTarget: z.string().optional(),
+  /** branch locali tra cui scegliere la destinazione (esclusi quelli degli agenti) */
+  branches: z.array(z.string()).optional(),
   dirty: z.boolean(),
   ci: CiStatus,
   worktrees: z.array(Worktree),
@@ -216,6 +220,8 @@ export const OrchestratorStatus = z.object({
   costUsd: z.number().nonnegative(),
   tokens: z.number().int().nonnegative(),
   userName: z.string(),
+  /** da dove viene il tuo nome: impostazioni, --user-name, git user.name o nome utente del sistema */
+  userNameSource: z.enum(['settings', 'cli', 'git', 'system']).optional(),
   /** il profilo dell'orchestratore (l'app avvisa se è diverso dal suo) */
   profile: z.string().optional(),
   /** subscription: un motore usa l'abbonamento, la spesa mostrata è una stima */
@@ -376,6 +382,10 @@ export const RepoPreview = z.object({
 });
 export type RepoPreview = z.infer<typeof RepoPreview>;
 export const WorktreesPruneMsg = z.object({ ...envelope('worktrees.prune') });
+/** Il tuo nome come lo usano gli agenti e i log; null o vuoto = torna al predefinito (git user.name). */
+export const SettingsSetMsg = z.object({ ...envelope('settings.set'), userName: z.string().max(200).nullable() });
+/** Il branch in cui fare i merge di un repository; null = il branch aperto nel tuo checkout. */
+export const RepoConfigMsg = z.object({ ...envelope('repo.config'), repoId: Id, mergeTarget: z.string().max(250).nullable() });
 
 export const ClientMessage = z.discriminatedUnion('type', [
   HelloMsg,
@@ -389,6 +399,8 @@ export const ClientMessage = z.discriminatedUnion('type', [
   RepoAddMsg,
   WorktreesPruneMsg,
   GoalBudgetMsg,
+  SettingsSetMsg,
+  RepoConfigMsg,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 

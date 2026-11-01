@@ -1,7 +1,7 @@
 // Esecuzione di git per l'orchestratore. Le chiamate dell'orchestratore stesso usano l'ambiente
 // normale; i processi degli agenti ricevono un ambiente dedicato (identità dell'agente, e in
 // Fase 3 il blocco del push), costruito in core/agent-env.ts.
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { capitalize } from './text.js';
 
 export interface GitResult {
@@ -26,6 +26,19 @@ export class GitError extends Error {
     super(`git ${args.join(' ')} è fallito (${result.code}): ${(result.stderr || result.stdout).trim().split('\n').slice(-3).join(' ')}`);
     this.name = 'GitError';
   }
+}
+
+/** user.name della configurazione git globale (o di sistema) dell'utente, se c'è. */
+export function readGitUserName(): string | undefined {
+  for (const scope of ['--global', '--system']) {
+    try {
+      const out = execFileSync('git', ['config', scope, '--get', 'user.name'], { encoding: 'utf8', timeout: 5_000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      if (out) return out;
+    } catch {
+      /* non impostato o git assente */
+    }
+  }
+  return undefined;
 }
 
 export function git(cwd: string, args: string[], opts: GitOptions = {}): Promise<GitResult> {

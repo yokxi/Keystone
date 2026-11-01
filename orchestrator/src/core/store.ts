@@ -78,6 +78,8 @@ export interface StateData {
   permissionRules: Record<string, string[]>;
   team: TeamState;
   worktreeMeta: Record<string, WorktreeMeta>;
+  /** impostazioni modificabili dall'interfaccia */
+  settings: { userName?: string };
 }
 
 export const FEED_LIMIT = 300;
@@ -103,6 +105,7 @@ export function emptyState(now: number): StateData {
     permissionRules: {},
     team: { inflight: {}, nudges: {}, ciFixes: {} },
     worktreeMeta: {},
+    settings: {},
   };
 }
 
@@ -111,6 +114,7 @@ function normalize(raw: Partial<StateData>, now: number): StateData {
   const base = emptyState(now);
   const out = { ...base, ...raw } as StateData;
   out.team = { ...base.team, ...(raw.team ?? {}) };
+  out.settings = { ...base.settings, ...(raw.settings ?? {}) };
   // obiettivi salvati da versioni precedenti, senza spesa
   for (const g of out.goals) g.costUsd ??= 0;
   return out;

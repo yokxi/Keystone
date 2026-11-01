@@ -82,6 +82,11 @@ describe('validazione IPC nel processo main', () => {
   it('accetta solo comandi ammessi e conformi allo schema', () => {
     expect(validateCommand({ type: 'goal.submit', text: 'x' })).toEqual({ ok: true, msg: { type: 'goal.submit', text: 'x' } });
     expect(validateCommand({ type: 'repo.add', path: 'C:\\r', confirmGuard: true })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'settings.set', userName: 'Aurora' })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'settings.set', userName: null })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'settings.set', userName: 42 })).toMatchObject({ ok: false });
+    expect(validateCommand({ type: 'repo.config', repoId: 'r1', mergeTarget: 'sviluppo' })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'repo.config', repoId: 'r1' })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'hello', client: 'x', protocol: 1 })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'snapshot' })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'task.action', taskId: 't1', action: 'rm -rf' })).toMatchObject({ ok: false });

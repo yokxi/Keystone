@@ -221,6 +221,7 @@ export class RepoManager {
     const r = this.require(repoId);
     r.branch = await this.currentBranch(r.path);
     r.dirty = await this.isDirty(r.path);
+    r.branches = await this.localBranches(r.path);
     for (const w of r.worktrees) {
       if (w.status !== 'active' || !fs.existsSync(w.path)) continue;
       try {
@@ -258,8 +259,12 @@ export class RepoManager {
       const id = `${agentId}-${task.id}`;
       const existing = r.worktrees.find((w) => w.id === id && w.status === 'active');
       if (existing && fs.existsSync(existing.path)) return existing;
-      const base = await this.currentBranch(r.path);
+      // il worktree parte dal branch in cui verrà unito: quello configurato o il branch aperto
+      const base = r.mergeTarget ?? (await this.currentBranch(r.path));
       if (base === 'HEAD') throw new RepoError(`il checkout di ${r.name} non è su un branch (HEAD staccato)`, 'refused');
+      if (r.mergeTarget && !(await this.branchExists(r.path, r.mergeTarget))) {
+        throw new RepoError(`il branch di destinazione ${r.mergeTarget} di ${r.name} non esiste più: sceglilo di nuovo nella pagina Repository`, 'refused');
+      }
       // il guardiano si installa solo con la conferma dell'utente (add): qui si verifica soltanto
       writeGuardFile(this.opts.guardFile);
       if (!(await guardInstalled(r.path, this.opts.guardFile))) {
@@ -583,6 +588,42 @@ export class RepoManager {
         }),
       ),
     ).then((x) => x.flat());
+  }
+
+  /** I branch locali del repository, esclusi quelli degli agenti (al massimo 200). */
+  private async localBranches(repoPath: string): Promise<string[]> {
+    const out = await git(repoPath, ['for-each-ref', '--format=%(refname:short)', '--count=400', 'refs/heads/'], { allowFail: true });
+    return out.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((b) => b && !b.startsWith(`${BRANCH_PREFIX}/`))
+      .slice(0, 200);
+  }
+
+  private async branchExists(repoPath: string, branch: string): Promise<boolean> {
+    return (await git(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFail: true })).code === 0;
+  }
+
+  /**
+   * Il branch in cui fare i merge del repository (null = il branch aperto nel tuo checkout). Deve
+   * esistere e non può essere un branch degli agenti. Vale per i task che partono da ora: i
+   * worktree già aperti restano sulla loro base.
+   */
+  setMergeTarget(repoId: string, target: string | null): Promise<Repo> {
+    return this.serial(repoId, async () => {
+      const r = this.require(repoId);
+      if (target === null) delete r.mergeTarget;
+      else {
+        if (target.startsWith(`${BRANCH_PREFIX}/`) || target.toLowerCase().startsWith(`${BRANCH_PREFIX.toLowerCase()}/`)) throw new RepoError(`${target} è un branch degli agenti: non può essere la destinazione dei merge`, 'refused');
+        const fmt = await git(r.path, ['check-ref-format', '--branch', target], { allowFail: true });
+        if (fmt.code !== 0 || target.startsWith('-')) throw new RepoError(`nome di branch non valido: ${target}`, 'refused');
+        if (!(await this.branchExists(r.path, target))) throw new RepoError(`il branch ${target} non esiste in ${r.name}`, 'refused');
+        r.mergeTarget = target;
+      }
+      await this.refresh(r.id);
+      this.changed(r);
+      return r;
+    });
   }
 
   /** Rimuove la cartella di un worktree con retry (Windows) e poi `git worktree prune`. */

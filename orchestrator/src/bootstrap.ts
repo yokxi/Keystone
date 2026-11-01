@@ -16,6 +16,8 @@ export interface BuildOptions {
   engineOptions?: EngineFactoryOptions;
   repoFaults?: RepoManagerOptions['faults'];
   storeDebounceMs?: number;
+  /** legge git user.name (test) */
+  resolveGitUserName?: () => string | undefined;
 }
 
 export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = {}): Orchestrator {
@@ -45,6 +47,7 @@ export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = 
       ciTimeoutMs: cfg.ciTimeoutMs,
     },
     ...(cfg.userName ? { userName: cfg.userName } : {}),
+    ...(opts.resolveGitUserName ? { resolveGitUserName: opts.resolveGitUserName } : {}),
     defaultBudgetUsd: cfg.budgetUsdPerGoal,
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(opts.repoFaults ? { repoFaults: opts.repoFaults } : {}),

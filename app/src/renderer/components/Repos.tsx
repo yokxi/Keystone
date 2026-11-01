@@ -34,6 +34,25 @@ export function Repos({ state, openRegister, send }: Props) {
           <div className="mono faint" style={{ fontSize: 12, marginBottom: 8 }}>
             {r.path}
           </div>
+          <label className="row" style={{ gap: 8, marginBottom: 8, fontSize: 13 }} title="I worktree degli agenti partono da questo branch e i merge approvati vanno qui. Se non è il branch aperto nel tuo checkout, il tuo checkout non viene toccato.">
+            <span className="muted">merge in</span>
+            <select
+              className="input small"
+              style={{ width: 'auto' }}
+              data-testid={`merge-target-${r.id}`}
+              value={r.mergeTarget ?? ''}
+              onChange={(e) => void send({ type: 'repo.config', repoId: r.id, mergeTarget: e.target.value || null })}
+            >
+              <option value="">{`branch aperto (${r.branch})`}</option>
+              {(r.branches ?? []).map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+              {r.mergeTarget && !(r.branches ?? []).includes(r.mergeTarget) && <option value={r.mergeTarget}>{`${r.mergeTarget} (non trovato)`}</option>}
+            </select>
+            {r.mergeTarget && r.mergeTarget !== r.branch && <span className="faint">diverso dal branch aperto: il merge sposta solo il riferimento, il tuo checkout resta com'è</span>}
+          </label>
           {r.worktrees.filter((w) => w.status === 'active').length === 0 && <div className="faint">Nessun worktree attivo.</div>}
           {r.worktrees
             .filter((w) => w.status === 'active')

@@ -9,10 +9,11 @@ import { Decisions } from './components/Decisions.js';
 import { Memory } from './components/Memory.js';
 import { RegisterRepoDialog, Repos } from './components/Repos.js';
 import { Review, type ReviewTarget } from './components/Review.js';
+import { Settings } from './components/Settings.js';
 import { completeAgent, HELP, parseConsole } from './lib/console.js';
 import { goalLimitsText, money, spendLabel, time, tokens } from './lib/format.js';
 
-type View = 'board' | 'agents' | 'decisions' | 'review' | 'memory' | 'repos';
+type View = 'board' | 'agents' | 'decisions' | 'review' | 'memory' | 'repos' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
 interface FeedLine {
   ts: number;
@@ -156,6 +157,7 @@ export function App() {
         <NavItem icon="±" label="Review" active={view === 'review'} onClick={() => setView('review')} />
         <NavItem icon="❐" label="Memoria" active={view === 'memory'} onClick={() => setView('memory')} />
         <NavItem icon="⎇" label="Repository" active={view === 'repos'} onClick={() => setView('repos')} />
+        <NavItem icon="⚙" label="Impostazioni" active={view === 'settings'} onClick={() => setView('settings')} />
         <div className="side-section">Team</div>
         {state.agents.map((a) => (
           <button
@@ -212,6 +214,7 @@ export function App() {
         {view === 'review' && <Review state={state} target={review} answer={answer} close={() => setView('decisions')} />}
         {view === 'memory' && <Memory state={state} />}
         {view === 'repos' && <Repos state={state} send={sendVoid} openRegister={(p) => setRegister({ ...(p ? { path: p } : {}) })} />}
+        {view === 'settings' && <Settings state={state} send={sendVoid} />}
       </main>
       <ConsoleBar
         agents={agentsRef}

@@ -4,6 +4,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { MERGE_OPTIONS, type Agent, type ClientMessage, type Decision, type Goal, type LogKind, type NotifyLevel, type OrchestratorStatus, type Outbound, type Task } from '@keystone/shared';
+import { readGitUserName } from '../util/git.js';
 import { truncate } from '../util/text.js';
 import { MessageBus } from './bus.js';
 import { consoleLogger, type Ctx, type Logger } from './context.js';
@@ -30,7 +31,10 @@ export interface OrchestratorOptions {
   dataDir: string;
   members: TeamMember[];
   team: TeamOptions;
+  /** nome da riga di comando (--user-name); le impostazioni hanno la precedenza */
   userName?: string;
+  /** legge git user.name (sostituibile nei test) */
+  resolveGitUserName?: () => string | undefined;
   logger?: Logger;
   now?: () => number;
   /** solo test: guasti simulati durante il merge */
@@ -48,6 +52,19 @@ export interface OrchestratorOptions {
 
 type Listener = (msg: Outbound) => void;
 
+/**
+ * Un nome accettabile per l'utente: senza caratteri di controllo né a capo (finisce nei prompt),
+ * spazi compattati, al massimo 60 caratteri. Stringa vuota se non resta niente.
+ */
+export function sanitizeUserName(raw: string): string {
+  return raw
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+    .trim();
+}
+
 /** subscription se almeno un agente usa un abbonamento (la spesa è allora una stima), api se tutti pagano a consumo. */
 function billingOf(members: Array<{ engine: { billing?: 'api' | 'subscription' } }>): { billing?: 'api' | 'subscription' } {
   if (members.some((m) => m.engine.billing === 'subscription')) return { billing: 'subscription' };
@@ -64,7 +81,8 @@ export class Orchestrator {
   readonly repos: RepoManager;
   readonly team: Team;
   readonly log: Logger;
-  readonly userName: string;
+  private readonly cliUserName: string | undefined;
+  private readonly gitUserName: string | undefined;
   readonly now: () => number;
   readonly defaultBudgetUsd: number | undefined;
   readonly defaultGoalLimits: { turns?: number; minutes?: number };
@@ -79,7 +97,8 @@ export class Orchestrator {
       ...(opts.defaultGoalLimits?.turns && opts.defaultGoalLimits.turns > 0 ? { turns: Math.floor(opts.defaultGoalLimits.turns) } : {}),
       ...(opts.defaultGoalLimits?.minutes && opts.defaultGoalLimits.minutes > 0 ? { minutes: opts.defaultGoalLimits.minutes } : {}),
     };
-    this.userName = opts.userName ?? (os.userInfo().username || 'utente');
+    this.cliUserName = opts.userName ? sanitizeUserName(opts.userName) : undefined;
+    this.gitUserName = sanitizeUserName((opts.resolveGitUserName ?? readGitUserName)() ?? '');
     this.store = new Store(opts.dataDir, { now: this.now, onWarn: (m) => this.log.warn(m), ...(opts.storeDebounceMs !== undefined ? { debounceMs: opts.storeDebounceMs } : {}) });
     const ctx: Ctx = { store: this.store, now: this.now, emit: (m) => this.emit(m), log: this.log };
     this.tasks = new TaskGraph(ctx);
@@ -95,7 +114,7 @@ export class Orchestrator {
     });
     const costUsd = this.store.data.agents.reduce((s, a) => s + a.costUsd, 0);
     const tokens = this.store.data.agents.reduce((s, a) => s + a.tokens, 0);
-    this.status = { version: VERSION, auth: 'unknown', message: 'avvio…', costUsd, tokens, userName: this.userName, profile: path.basename(path.resolve(opts.dataDir)), ...billingOf(opts.members) };
+    this.status = { version: VERSION, auth: 'unknown', message: 'avvio…', costUsd, tokens, userName: this.userName, userNameSource: this.userNameSource, profile: path.basename(path.resolve(opts.dataDir)), ...billingOf(opts.members) };
     this.team = new Team(this, opts.members, opts.team);
   }
 
@@ -218,6 +237,27 @@ export class Orchestrator {
    * Somma la spesa all'obiettivo. Restituisce true se il tetto è stato raggiunto con questa spesa
    * (il team allora ferma gli agenti dell'obiettivo).
    */
+  /** Il tuo nome: impostazioni, poi --user-name, poi git user.name, poi il nome utente del sistema. */
+  get userName(): string {
+    return this.store.data.settings.userName || this.cliUserName || this.gitUserName || os.userInfo().username || 'utente';
+  }
+
+  get userNameSource(): 'settings' | 'cli' | 'git' | 'system' {
+    return this.store.data.settings.userName ? 'settings' : this.cliUserName ? 'cli' : this.gitUserName ? 'git' : 'system';
+  }
+
+  /** Cambia il tuo nome (vuoto: torna al predefinito). Vale dai prossimi turni degli agenti. */
+  setUserName(raw: string | null): string {
+    const name = raw === null ? '' : sanitizeUserName(raw);
+    if (raw !== null && raw.trim() && !name) throw new ClientError('nome non valido');
+    if (name) this.store.data.settings.userName = name;
+    else delete this.store.data.settings.userName;
+    this.store.markDirty();
+    this.setStatus({ userName: this.userName, userNameSource: this.userNameSource });
+    this.bus.feed('system', `Il tuo nome per gli agenti ora è "${this.userName}"${name ? '' : ' (predefinito)'}`);
+    return this.userName;
+  }
+
   addGoalCost(goalId: string, costUsd: number): boolean {
     const g = this.goal(goalId);
     if (!g || costUsd <= 0) return false;
@@ -526,6 +566,13 @@ export class Orchestrator {
       case 'worktrees.prune': {
         const report = await this.pruneWorktrees();
         return { report };
+      }
+      case 'settings.set':
+        return { userName: this.setUserName(msg.userName), userNameSource: this.userNameSource };
+      case 'repo.config': {
+        const r = await this.repos.setMergeTarget(msg.repoId, msg.mergeTarget && msg.mergeTarget.trim() ? msg.mergeTarget.trim() : null);
+        this.bus.feed('system', `${r.name}: i merge vanno in ${r.mergeTarget ?? `${r.branch} (il branch aperto)`}`);
+        return { repoId: r.id, mergeTarget: r.mergeTarget ?? null };
       }
     }
   }

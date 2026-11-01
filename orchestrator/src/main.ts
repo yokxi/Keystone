@@ -39,6 +39,8 @@ const HELP = `Keystone orchestratore ${VERSION}
   --use-claude-login   usa il login personale di Claude Code invece della chiave API (solo uso personale)
   --record <cartella>  registra le trascrizioni dei turni Claude (per i test di replay)
   --keep-branches      conserva il branch dell'agente dopo un merge (default: eliminato)
+  --user-name "<nome>" il tuo nome per gli agenti (default: git user.name; si cambia anche
+                       dalla pagina Impostazioni, che ha la precedenza)
   --goal-turns <n>     limite di turni degli agenti per obiettivo (0 = nessuno; login: default 30)
   --goal-minutes <n>   limite di minuti di lavoro per obiettivo, senza le attese di una tua risposta
                        (0 = nessuno; login: default 60)
@@ -82,6 +84,7 @@ async function main(): Promise<void> {
       'confirm-guard': { type: 'boolean' },
       'confirm-branches': { type: 'boolean' },
       'keep-branches': { type: 'boolean' },
+      'user-name': { type: 'string' },
       'goal-turns': { type: 'string' },
       'goal-minutes': { type: 'string' },
       engine: { type: 'string' },
@@ -136,6 +139,7 @@ async function main(): Promise<void> {
   }
   if (values.record) cfg.claude.recordDir = path.resolve(values.record);
   if (values['keep-branches']) cfg.keepMergedBranches = true;
+  if (values['user-name']?.trim()) cfg.userName = values['user-name'].trim();
   if (values['sim-delay']) cfg.sim.stepDelayMs = Number(values['sim-delay']);
   if (values.ci) cfg.ciCommand = values.ci;
   if (values.port !== undefined && (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535)) throw new Error(`porta non valida: ${values.port}`);

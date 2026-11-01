@@ -4,7 +4,7 @@
 import { ClientMessage, type ClientPayload } from '@keystone/shared';
 
 /** Tipi che il renderer può mandare (hello lo gestisce il main). */
-const ALLOWED = new Set<string>(['goal.submit', 'user.message', 'decision.answer', 'task.action', 'agent.action', 'diff.request', 'repo.preview', 'repo.add', 'worktrees.prune', 'goal.budget']);
+const ALLOWED = new Set<string>(['goal.submit', 'user.message', 'decision.answer', 'task.action', 'agent.action', 'diff.request', 'repo.preview', 'repo.add', 'worktrees.prune', 'goal.budget', 'settings.set', 'repo.config']);
 
 export type ValidatedCommand = ClientPayload extends infer M ? (M extends { id?: string } ? Omit<M, 'id'> : never) : never;
 
