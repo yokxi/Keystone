@@ -82,8 +82,20 @@ come "Opus 5.5" e "Sonnet 5.5" accanto a ogni agente.
 - Ogni obiettivo ha un tetto, configurabile con `--budget`, `KEYSTONE_BUDGET_USD`, nel comando
   `goal.submit` o dal tabellone con "tetto …". La barra di stato mostra la spesa dell'obiettivo
   rispetto al tetto.
-- La CLI riceve come `maxBudgetUsd` la spesa residua dell'obiettivo, quindi si ferma da sola al
-  tetto anche a metà turno.
+- **Quote per turno.** Ogni turno parte con una quota riservata, che la CLI riceve come
+  `maxBudgetUsd` e non supera (si ferma da sola anche a metà turno):
+  - la quota è al massimo una fetta del tetto: tetto / posti, dove i posti sono il lead più i
+    worker che possono lavorare insieme, con un minimo di $0.25;
+  - e mai più del residuo dell'obiettivo meno le quote dei turni in corso dello stesso obiettivo;
+  - se quello che resta non basta (meno del minimo), il turno **aspetta** in coda e parte quando
+    un altro turno finisce e libera la sua quota. L'agente lo mostra ("aspetta: la spesa residua è
+    riservata ad altri turni").
+- Un turno che esaurisce la sua quota, ma non il tetto dell'obiettivo, non è un errore: riprende
+  la stessa sessione appena c'è spesa disponibile.
+- **Sforamento massimo.** La CLI si ferma *dopo* aver superato la quota, quindi l'ultima chiamata
+  al modello di ogni turno può andare oltre. Con turni in parallelo la spesa dell'obiettivo resta
+  entro il tetto più una chiamata per turno in corso. L'unico limite rigido è il limite di spesa
+  del workspace nella Console Anthropic.
 - Raggiunto il tetto:
   - l'obiettivo passa in **pausa** e i turni dei suoi agenti vengono fermati;
   - il lavoro resta salvato: i file sono sul branch dell'agente e la sessione viene conservata per
@@ -92,8 +104,18 @@ come "Opus 5.5" e "Sonnet 5.5" accanto a ogni agente.
     raddoppia) oppure **Lascia in pausa**;
   - alzando il tetto i turni riprendono con la stessa sessione. La pausa sopravvive anche ai
     riavvii.
-- Costi: si usa `total_cost_usd` riportato dalla CLI, cumulativo per sessione, e si somma solo
-  l'incremento rispetto al valore già registrato.
+- **Costi.** Si usa `total_cost_usd` riportato dalla CLI. In una sessione ripresa la CLI riparte
+  dal totale salvato nella trascrizione *quando c'è*: allora conta solo l'incremento; se non lo
+  ritrova, `total_cost_usd` è solo la spesa del turno. Keystone salva l'ultimo totale della CLI per
+  ogni sessione (`engineTotalUsd`) e distingue i due casi così:
+  - totale minore del precedente: certamente non ritrovato, si conta tutto;
+  - altrimenti si confrontano i token visti nel turno con quelli di `modelUsage`, che segue lo
+    stesso ciclo di vita del totale. Molti di più: ritrovato, si conta l'incremento. Quasi uguali:
+    non ritrovato, si conta tutto;
+  - se non si può dire (niente `modelUsage`, una compattazione nel turno, valori a metà strada) si
+    conta in modo **prudente**: tutta la spesa, e la parte forse già contata resta segnata come
+    "prudenziale" sull'obiettivo (`costUnreconciledUsd`, visibile accanto alla spesa) finché non
+    viene riconciliata. Mai di meno.
 
 ## Test senza consumare API: trascrizioni registrate
 
@@ -103,17 +125,37 @@ come "Opus 5.5" e "Sonnet 5.5" accanto a ogni agente.
 - Durante il replay gli hook passano **davvero** dalla policy (anche le richieste a te) e i tool del
   team vengono eseguiti davvero sull'orchestratore. Se un tool viene negato, il suo risultato
   registrato è sostituito da un errore, come farebbe la CLI.
-- Le trascrizioni attuali sono costruite a mano sul formato dell'SDK. Durante la prima prova reale
-  registreremo trascrizioni vere con `--record` e le aggiungeremo ai test.
+- Le trascrizioni attuali sono costruite a mano sul formato dell'SDK. Quelle vere, registrate con
+  `--record`, vanno pulite prima di entrare nel repository:
+
+  ```powershell
+  npx tsx orchestrator/scripts/sanitize-transcripts.ts "$env:USERPROFILE\.keystone\trascrizioni-prova"          # anteprima
+  npx tsx orchestrator/scripts/sanitize-transcripts.ts "$env:USERPROFILE\.keystone\trascrizioni-prova" --write  # copia in fixtures/claude/real
+  ```
+
+  Lo script sostituisce home e nome utente con `<HOME>` e `<USER>` e rifiuta di copiare se resta
+  qualcosa che sembra un segreto. Il test `fixtures-secrets.test.ts` fallisce se una trascrizione
+  contiene chiavi, token, intestazioni di autenticazione, variabili di credenziali, un dump
+  dell'ambiente, percorsi della home o il nome utente.
 
 ## Prima prova con il motore reale (da fare insieme)
 
 Su un repository di prova e con un tetto basso:
 
 ```powershell
-npm run orchestrator -- --demo --engine claude --budget 1 --workers 1 --record .\trascrizioni
+# terminale 1: la chiave vale solo per questo terminale
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+npm run orchestrator -- --demo --reset --engine claude --budget 1 --workers 1 --record "$env:USERPROFILE\.keystone\trascrizioni-prova"
+
+# terminale 2
+$env:KEYSTONE_PROFILE = "demo"
 npm run app
 ```
+
+`--reset` evita che l'orchestratore riprenda con Claude obiettivi lasciati dal motore sim nel
+profilo `demo`. L'app usa il profilo di `KEYSTONE_PROFILE` (default `default`). Se
+l'orchestratore collegato ne usa un altro, l'app lo segnala. Il pulsante "Avvia orchestratore"
+avvia il motore sim con il profilo dell'app, oppure con uno scelto tra quelli esistenti.
 
 Obiettivo suggerito: qualcosa di piccolo, per esempio "Aggiungi una funzione saluta_en con un test".
 Verificheremo insieme:
