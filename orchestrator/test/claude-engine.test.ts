@@ -1,6 +1,7 @@
 // Motore Claude con trascrizioni registrate: nessuna chiamata API. Gli hook passano davvero dalla
 // policy di Keystone e i tool del team vengono eseguiti davvero sull'orchestratore.
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { EngineEvent, EngineId } from '@keystone/shared';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -344,5 +345,44 @@ describe('motore Claude: autenticazione', () => {
     await o.handle({ v: 1, type: 'goal.submit', text: 'qualcosa' }, noReply);
     await new Promise((r) => setTimeout(r, 300));
     expect(records).toHaveLength(0);
+  });
+});
+
+describe('trascrizioni vere (prova con il login, CLI 2.1.302)', () => {
+  const real = (f: string) => loadTranscript(path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'claude', 'real', f));
+
+  it('total_cost_usd: il piano conta tutto, la review (stessa sessione ripresa) solo l\'incremento', async () => {
+    const plan = real('ada-plan-g1.jsonl');
+    const review = real('ada-review-t1.jsonl');
+    const sessionOf = (t: TranscriptEntry[]) => t.flatMap((e) => (e.t === 'msg' && e.msg.type === 'result' ? [e.msg.session_id] : []))[0];
+    expect(sessionOf(review)).toBe(sessionOf(plan)); // la review riprende la sessione del piano
+
+    const first = await drain(new ClaudeEngine({ configDir: tmpDir(), useClaudeLogin: true }, replayQuery([plan])).startSession(spec(tmpDir(), { role: 'lead' })));
+    const c1 = first.find((e) => e.type === 'usage' && e.sessionTotalUsd !== undefined) as Extract<EngineEvent, { type: 'usage' }>;
+    expect(c1.costUsd).toBeCloseTo(0.0629525, 5);
+
+    const second = await drain(new ClaudeEngine({ configDir: tmpDir(), useClaudeLogin: true }, replayQuery([review])).resumeSession('13dec756', spec(tmpDir(), { role: 'lead', sessionCostUsd: c1.sessionTotalUsd! })));
+    const c2 = second.find((e) => e.type === 'usage' && e.sessionTotalUsd !== undefined) as Extract<EngineEvent, { type: 'usage' }>;
+    // la CLI ha ritrovato il totale (0.0629525 -> 0.0769877): si conta solo la differenza, senza parte prudenziale
+    expect(c2.sessionTotalUsd).toBeCloseTo(0.0769877, 5);
+    expect(c2.costUsd).toBeCloseTo(0.0140352, 5);
+    expect(c2.unreconciledUsd).toBeUndefined();
+    expect(second.at(-1)).toMatchObject({ type: 'turn_end', status: 'success' });
+  });
+
+  it('formato reale: modelUsage cumulativo (con le chiamate di servizio a Haiku), usage del risultato solo del turno', () => {
+    const resultOf = (f: string) => real(f).flatMap((e) => (e.t === 'msg' && e.msg.type === 'result' ? [e.msg as Record<string, any>] : []))[0]!;
+    const plan = resultOf('ada-plan-g1.jsonl');
+    const review = resultOf('ada-review-t1.jsonl');
+    // le chiamate di servizio (Haiku) del piano ricompaiono identiche nella review: totale ripreso dalla trascrizione
+    expect(review.modelUsage['claude-haiku-5-5']).toMatchObject({ inputTokens: 1237, outputTokens: 212, costUSD: plan.modelUsage['claude-haiku-5-5'].costUSD });
+    // usage del risultato: solo questo turno (molto meno dei token cumulativi di modelUsage)
+    const turnTokens = review.usage.input_tokens + review.usage.output_tokens + review.usage.cache_read_input_tokens + review.usage.cache_creation_input_tokens;
+    const cumulative = Object.values(review.modelUsage as Record<string, any>).reduce((s, u) => s + u.inputTokens + u.outputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens, 0);
+    expect(turnTokens / cumulative).toBeLessThan(0.5);
+    // con l'abbonamento il costo è a listino (una stima), e nessuna chiave API
+    expect(plan.modelUsage['claude-sonnet-5-5'].costBasis).toBe('list');
+    const init = real('ada-plan-g1.jsonl').find((e) => e.t === 'msg' && e.msg.subtype === 'init') as { msg: Record<string, unknown> };
+    expect(init.msg.apiKeySource).toBe('none');
   });
 });
