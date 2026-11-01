@@ -75,7 +75,7 @@ Principi chiave:
      <base>` nel tuo worktree, risolvi tenendo entrambi i lati, testa, committa". Il task rifà CI e
      review e arriva una nuova decisione.
    - `Request changes`: un follow-up al worker con il testo dell'utente.
-   - `Reject`: il worktree viene abbandonato e il branch conservato.
+   - `Reject`: il worktree viene abbandonato e il branch conservato (la pulizia lo elimina dopo conferma).
 8. **Fine goal.** Quando tutti i task non cancellati sono `done` il goal è completo e gli agenti
    passano allo stato `done`.
 
@@ -176,7 +176,7 @@ cartelle che non sono la radice di un repository e conserva sempre i branch dopo
    con l'identità git **dell'utente** (ha approvato lui) e firmato se la sua configurazione firma.
 5. Applicazione: `git merge --ff-only <sha>` nel checkout, oppure `update-ref` se la base non è in
    uso in nessun checkout. Se qualcosa fallisce, il working tree dell'utente resta intatto.
-6. Il worktree passa a `merged`, la cartella viene rimossa e il branch resta.
+6. Il worktree passa a `merged`, la cartella viene rimossa e il branch dell'agente eliminato (salvo `--keep-branches`).
 
 Esiste anche una variante `--merge-style squash`.
 

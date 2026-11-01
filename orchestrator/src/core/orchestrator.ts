@@ -35,6 +35,8 @@ export interface OrchestratorOptions {
   now?: () => number;
   /** solo test: guasti simulati durante il merge */
   repoFaults?: RepoManagerOptions['faults'];
+  /** conserva il branch dell'agente dopo un merge riuscito */
+  keepMergedBranches?: boolean;
   /** file di regole del guardiano git (default: <home>/git/agent-guard.gitconfig) */
   guardFile?: string;
   /** tetto di spesa predefinito per obiettivo in dollari (0 o assente = nessun tetto) */
@@ -82,6 +84,7 @@ export class Orchestrator {
       // fuori da repository e worktree: ~/.keystone/git/ (percorso protetto dalla policy)
       guardFile: opts.guardFile ?? path.join(path.dirname(path.resolve(opts.dataDir)), 'git', 'agent-guard.gitconfig'),
       ...(opts.repoFaults ? { faults: opts.repoFaults } : {}),
+      ...(opts.keepMergedBranches ? { keepMergedBranches: true } : {}),
     });
     const costUsd = this.store.data.agents.reduce((s, a) => s + a.costUsd, 0);
     const tokens = this.store.data.agents.reduce((s, a) => s + a.tokens, 0);
@@ -358,7 +361,7 @@ export class Orchestrator {
           agentIdentity: { name: `Keystone ${this.nameOf(agentId)}`, email: `${agentId}@keystone.local` },
         });
         if (t) this.tasks.setStatus(t.id, 'done', { merged: true });
-        this.bus.feed('merge', `Unito ${res.branch} in ${res.base} (${res.sha}, ${res.files} file)`);
+        this.bus.feed('merge', `Unito ${res.branch} in ${res.base} (${res.sha}, ${res.files} file); branch ${res.branchDeleted ? 'eliminato' : `conservato: ${res.branchKeptReason ?? ''}`}`);
         if (t?.assignee && this.agent(t.assignee)?.taskId === t.id) this.setAgent(t.assignee, { state: 'idle', activity: `${t.id} unito`, taskId: undefined, worktree: undefined });
         this.team.tick();
       } catch (e) {
@@ -390,7 +393,7 @@ export class Orchestrator {
         if (wt?.status === 'active') await this.repos.abandon(t.repoId, wt.id, `${t.id}: rifiutato`, { name: `Keystone ${this.nameOf(wt.agentId)}`, email: `${wt.agentId}@keystone.local` });
       }
       this.tasks.setStatus(t.id, 'cancelled', { force: true, summary: `rifiutato da ${this.userName}${d.answer?.text ? `: ${d.answer.text}` : ''}` });
-      this.bus.feed('merge', `${t.id} rifiutato (il branch resta per un eventuale recupero)`);
+      this.bus.feed('merge', `${t.id} rifiutato (il branch resta per un eventuale recupero; la pulizia lo elimina dopo conferma)`);
       if (t.assignee && this.agent(t.assignee)?.taskId === t.id) this.setAgent(t.assignee, { state: 'idle', activity: `${t.id} rifiutato`, taskId: undefined, worktree: undefined });
       this.team.tick();
     }

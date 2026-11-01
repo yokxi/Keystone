@@ -19,7 +19,8 @@
 //        checkout viene riportato esattamente al commit di partenza.
 //      - se la base non è estratta da nessuna parte: `git update-ref <base> <nuovo> <vecchio>`,
 //        che è atomico e fallisce se nel frattempo la base è cambiata.
-//   5. il worktree viene chiuso, il branch dell'agente resta.
+//   5. il worktree viene chiuso e il branch dell'agente viene eliminato (core/branches.ts: solo se
+//      punta ancora al commit unito), salvo keepMergedBranches.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,6 +29,7 @@ import type { Decision, DiffFile, Repo, Worktree } from '@keystone/shared';
 import { MERGE_OPTIONS } from '@keystone/shared';
 import { ensureDir, samePath } from '../util/fsx.js';
 import { git, gitOut, identityEnv } from '../util/git.js';
+import { deleteKeystoneBranch, listKeystoneBranches, type KeystoneBranch } from './branches.js';
 import { runShell } from '../util/proc.js';
 import { lastLines, slugify } from '../util/text.js';
 import type { Ctx } from './context.js';
@@ -55,6 +57,19 @@ export interface MergeResult {
   base: string;
   branch: string;
   files: number;
+  /** il branch dell'agente è stato eliminato dopo il merge */
+  branchDeleted: boolean;
+  /** perché il branch è rimasto (se è rimasto) */
+  branchKeptReason?: string;
+}
+
+/** Un branch di un task finito (rifiutato, annullato o completato) che la pulizia può eliminare. */
+export interface StaleBranch extends KeystoneBranch {
+  repoId: string;
+  repoPath: string;
+  worktree: string;
+  taskId?: string;
+  why: string;
 }
 
 export interface TestResult {
@@ -75,6 +90,8 @@ export interface RepoManagerOptions {
   signMerges?: boolean;
   removeAttempts?: number;
   removeDelayMs?: number;
+  /** conserva il branch dell'agente dopo un merge riuscito (default: eliminato) */
+  keepMergedBranches?: boolean;
   /** solo test: punti in cui simulare un guasto durante il merge */
   faults?: { afterApply?: () => void | Promise<void>; beforeApply?: () => void | Promise<void> };
 }
@@ -291,12 +308,15 @@ export class RepoManager {
   async diff(repoId: string, worktreeId: string): Promise<DiffFile[]> {
     const w = this.requireWorktree(repoId, worktreeId);
     if (w.status !== 'active' || !fs.existsSync(w.path)) {
-      // worktree chiuso: diff tra il punto di partenza e il branch conservato
+      // worktree chiuso: diff tra il punto di partenza e il lavoro dell'agente (il commit salvato al
+      // merge, perché il branch può essere stato eliminato; altrimenti il branch conservato)
       const r = this.require(repoId);
       const meta = this.ctx.store.data.worktreeMeta?.[`${repoId}/${w.id}`];
-      const fork = meta?.forkSha ?? (await git(r.path, ['merge-base', w.base, w.branch], { allowFail: true })).stdout.trim();
+      const tip = meta?.branchSha ?? w.branch;
+      const fork = meta?.forkSha ?? (await git(r.path, ['merge-base', w.base, tip], { allowFail: true })).stdout.trim();
       if (!fork) return [];
-      return parseUnifiedDiff(await gitOut(r.path, ['-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '-M', fork, w.branch]));
+      const d = await git(r.path, ['-c', 'core.quotePath=false', 'diff', '--no-color', '--no-ext-diff', '-M', fork, tip], { allowFail: true });
+      return d.code === 0 ? parseUnifiedDiff(d.stdout) : [];
     }
     return this.diffWorktree(w);
   }
@@ -429,14 +449,23 @@ export class RepoManager {
       }
     }
 
-    // 5. chiusura: il branch resta, il worktree si chiude, il diff unito resta consultabile
+    // 5. chiusura: il worktree si chiude, il diff unito resta consultabile (dai commit salvati),
+    // il branch dell'agente si elimina solo se punta ancora al commit unito
     const files = (await gitOut(r.path, ['diff', '--name-only', baseSha, mergeSha])).split('\n').filter(Boolean).length;
     const meta = (this.ctx.store.data.worktreeMeta ??= {});
-    meta[`${r.id}/${w.id}`] = { forkSha: await gitOut(r.path, ['merge-base', baseSha, branchSha]), mergedSha: mergeSha };
+    meta[`${r.id}/${w.id}`] = { forkSha: await gitOut(r.path, ['merge-base', baseSha, branchSha]), mergedSha: mergeSha, branchSha };
     w.status = 'merged';
     await this.removeWorktree(r, w);
+    let branchDeleted = false;
+    let branchKeptReason: string | undefined;
+    if (this.opts.keepMergedBranches) branchKeptReason = 'conservato per configurazione (--keep-branches)';
+    else {
+      const del = await deleteKeystoneBranch(r.path, w.branch, branchSha);
+      branchDeleted = del.ok;
+      if (!del.ok) branchKeptReason = del.reason;
+    }
     await this.refresh(r.id);
-    return { sha: mergeSha.slice(0, 7), base: w.base, branch: w.branch, files };
+    return { sha: mergeSha.slice(0, 7), base: w.base, branch: w.branch, files, branchDeleted, ...(branchKeptReason ? { branchKeptReason } : {}) };
   }
 
   /**
@@ -509,6 +538,51 @@ export class RepoManager {
       });
     }
     return report;
+  }
+
+  /**
+   * I branch che la pulizia può eliminare (dopo conferma): branch Keystone/* di un worktree chiuso
+   * di questo profilo, il cui task è annullato/rifiutato, completato o sparito. Non compaiono: i
+   * branch di task che possono ancora riprendere (todo, doing, review, blocked), quelli conservati
+   * dopo un merge per scelta, e quelli che questo profilo non conosce (di un altro profilo o creati
+   * a mano), che non vengono mai toccati.
+   */
+  async staleBranches(taskStatus: (taskId: string) => string | undefined): Promise<StaleBranch[]> {
+    const out: StaleBranch[] = [];
+    for (const r of this.list()) {
+      const branches = new Map((await listKeystoneBranches(r.path)).map((b) => [b.name, b]));
+      for (const w of r.worktrees) {
+        if (w.status !== 'abandoned') continue;
+        const b = branches.get(w.branch);
+        if (!b) continue;
+        // lo stesso branch è ancora usato da un worktree attivo (task ripreso): non è da pulire
+        if (r.worktrees.some((x) => x.status === 'active' && x.branch === w.branch)) continue;
+        const st = w.taskId ? taskStatus(w.taskId) : undefined;
+        if (st !== undefined && st !== 'cancelled' && st !== 'done') continue;
+        const why = st === 'cancelled' ? 'task rifiutato o annullato' : st === 'done' ? 'task completato senza merge' : 'task non più presente';
+        out.push({ ...b, repoId: r.id, repoPath: r.path, worktree: w.id, ...(w.taskId ? { taskId: w.taskId } : {}), why });
+        branches.delete(w.branch);
+      }
+    }
+    return out;
+  }
+
+  /** Elimina i branch confermati dall'utente, ciascuno solo se punta ancora al commit mostrato. */
+  deleteStaleBranches(list: StaleBranch[]): Promise<string[]> {
+    const byRepo = new Map<string, StaleBranch[]>();
+    for (const b of list) byRepo.set(b.repoId, [...(byRepo.get(b.repoId) ?? []), b]);
+    return Promise.all(
+      [...byRepo].map(([repoId, items]) =>
+        this.serial(repoId, async () => {
+          const report: string[] = [];
+          for (const b of items) {
+            const r = await deleteKeystoneBranch(b.repoPath, b.name, b.sha);
+            report.push(r.ok ? `branch ${b.name} eliminato (${b.why})` : `branch ${b.name} conservato: ${r.reason}`);
+          }
+          return report;
+        }),
+      ),
+    ).then((x) => x.flat());
   }
 
   /** Rimuove la cartella di un worktree con retry (Windows) e poi `git worktree prune`. */

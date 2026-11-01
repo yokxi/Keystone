@@ -48,6 +48,7 @@ export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = 
     defaultBudgetUsd: cfg.budgetUsdPerGoal,
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(opts.repoFaults ? { repoFaults: opts.repoFaults } : {}),
+    ...(cfg.keepMergedBranches ? { keepMergedBranches: true } : {}),
     ...(opts.storeDebounceMs !== undefined ? { storeDebounceMs: opts.storeDebounceMs } : {}),
   });
 }

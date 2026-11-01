@@ -17,7 +17,19 @@ funziona il merge approvato. Il codice è in `orchestrator/src/core/` (`repos.ts
 - Pulizia: le cartelle di worktree rimaste occupate (succede su Windows) vengono rimosse con più
   tentativi e poi con `git worktree prune`. Si possono ripulire a mano i worktree orfani con
   `npm run orchestrator -- --prune-worktrees` oppure con il messaggio `worktrees.prune`
-  dall'interfaccia. I branch restano sempre.
+  dall'interfaccia.
+- **Branch degli agenti** (`Keystone/<agente>/<task>-…`). Keystone elimina solo branch il cui nome
+  inizia con `Keystone/` (questa esatta grafia), mai uno estratto in un checkout o worktree, e
+  sempre con `git update-ref -d <ref> <commit>`: se il branch non punta più al commit atteso resta
+  dov'è. Tutto passa da `orchestrator/src/core/branches.ts`.
+  - dopo un merge riuscito il branch dell'agente viene eliminato (`--keep-branches` per
+    conservarlo); il diff unito resta consultabile dai commit salvati;
+  - un task rifiutato conserva il branch, per recuperarlo. `--prune-worktrees` elenca i branch dei
+    task rifiutati, annullati o completati senza merge e li elimina solo dopo conferma
+    (`--confirm-branches` per confermare senza chiedere). Non compaiono i branch di task che
+    possono ancora riprendere né quelli che il profilo non conosce;
+  - `--reset` con `--demo` elimina tutti i `Keystone/*` del solo repository di prova creato da
+    Keystone.
 
 ## 2. Merge approvato: come viene aggiornato il tuo checkout
 
@@ -51,8 +63,8 @@ Il merge avviene **solo** quando rispondi `Merge` a una decisione di merge.
 6. **Se la base non è estratta da nessuna parte** (sei su un altro branch), si sposta solo il
    riferimento con `git update-ref <base> <nuovo> <vecchio>`. È un'operazione atomica e fallisce
    se nel frattempo la base è cambiata.
-7. **Chiusura.** Il worktree viene rimosso, il branch dell'agente resta e il diff unito resta
-   consultabile.
+7. **Chiusura.** Il worktree viene rimosso e il branch dell'agente eliminato, solo se punta ancora
+   al commit unito (`--keep-branches` per conservarlo). Il diff unito resta consultabile.
 
 Le operazioni che cambiano worktree e branch di un repository sono serializzate, cioè eseguite una
 alla volta.

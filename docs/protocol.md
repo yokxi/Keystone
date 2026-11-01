@@ -167,7 +167,8 @@ priorità (intero); per `reassign`, `arg` è il worker.
 
 ### `diff.request`
 `{ requestId, repoId, worktree }`: chiede il diff di un worktree (anche chiuso: in quel caso si usa
-il branch conservato). La risposta è un messaggio `diff`.
+il commit del branch salvato al merge, perché il branch può essere stato eliminato). La risposta è
+un messaggio `diff`.
 
 ### `repo.preview`
 `{ path }`: anteprima della registrazione, senza modificare nulla. Verifica che sia la radice di
@@ -192,7 +193,9 @@ tetto e ora c'è margine, riprende: i turni fermati ripartono con la stessa sess
 `{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o
 scomparsi (il lavoro viene salvato sul branch, che resta), rimuove le cartelle orfane ed esegue
 `git worktree prune`. I worktree su cui un agente sta lavorando non vengono toccati. Risultato:
-`{ report: string[] }`. Da riga di comando: `npm run orchestrator -- --prune-worktrees`.
+`{ report: string[] }`. Non elimina branch. Da riga di comando: `npm run orchestrator --
+--prune-worktrees`, che in più elenca i branch dei task rifiutati o abbandonati e li elimina dopo
+conferma.
 
 ---
 

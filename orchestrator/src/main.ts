@@ -15,6 +15,7 @@ import { consoleLogger } from './core/context.js';
 import { VERSION } from './core/orchestrator.js';
 import { createDemoRepo, isKeystoneDemo } from './demo.js';
 import { removeGuard } from './core/gitsafety.js';
+import { deleteAllKeystoneBranches } from './core/branches.js';
 import { claimProfile, readRunInfo, releaseProfile } from './runfile.js';
 import { OrchestratorServer } from './server.js';
 
@@ -37,9 +38,12 @@ const HELP = `Keystone orchestratore ${VERSION}
   --budget <dollari>   tetto di spesa per obiettivo (default 5, 0 = nessun tetto; o KEYSTONE_BUDGET_USD)
   --use-claude-login   usa il login personale di Claude Code invece della chiave API (solo uso personale)
   --record <cartella>  registra le trascrizioni dei turni Claude (per i test di replay)
+  --keep-branches      conserva il branch dell'agente dopo un merge (default: eliminato)
 
 manutenzione (non avviano l'orchestratore):
-  --prune-worktrees    chiude i worktree di task finiti e rimuove quelli orfani del profilo
+  --prune-worktrees    chiude i worktree di task finiti e rimuove quelli orfani del profilo; poi
+                       elenca i branch Keystone/* dei task rifiutati o abbandonati e li elimina
+                       dopo conferma (--confirm-branches per confermare senza chiedere)
   --remove-git-guard <repo>  toglie dal .git/config del repository il guardiano di Keystone
 
   --confirm-guard      conferma senza chiedere la riga da aggiungere al .git/config dei repository
@@ -73,6 +77,8 @@ async function main(): Promise<void> {
       'prune-worktrees': { type: 'boolean' },
       'remove-git-guard': { type: 'string' },
       'confirm-guard': { type: 'boolean' },
+      'confirm-branches': { type: 'boolean' },
+      'keep-branches': { type: 'boolean' },
       engine: { type: 'string' },
       'lead-model': { type: 'string' },
       'worker-model': { type: 'string' },
@@ -113,6 +119,7 @@ async function main(): Promise<void> {
     log.info(applyLoginBudget(cfg, values.budget !== undefined || !!process.env.KEYSTONE_BUDGET_USD?.trim()));
   }
   if (values.record) cfg.claude.recordDir = path.resolve(values.record);
+  if (values['keep-branches']) cfg.keepMergedBranches = true;
   if (values['sim-delay']) cfg.sim.stepDelayMs = Number(values['sim-delay']);
   if (values.ci) cfg.ciCommand = values.ci;
   if (values.port !== undefined && (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535)) throw new Error(`porta non valida: ${values.port}`);
@@ -134,9 +141,19 @@ async function main(): Promise<void> {
   if (values['prune-worktrees']) {
     const o = buildOrchestrator(cfg, { logger: log });
     const report = await o.pruneWorktrees();
-    o.store.close();
     for (const line of report) log.info(line);
     log.info(report.length ? `pulizia completata (${report.length} operazioni)` : 'nessun worktree orfano');
+    // branch dei task rifiutati o abbandonati: si mostrano e si eliminano solo dopo conferma
+    const stale = await o.repos.staleBranches((id) => o.tasks.get(id)?.status);
+    if (!stale.length) log.info('nessun branch da eliminare');
+    else {
+      process.stdout.write(['', 'Branch dei task rifiutati o abbandonati:', ...stale.map((b) => `    ${b.name}  ${b.sha.slice(0, 7)}  (${b.why}${b.taskId ? `, ${b.taskId}` : ''})`), ''].join('\n') + '\n');
+      let ok = !!values['confirm-branches'];
+      if (!ok && process.stdin.isTTY) ok = await askYesNo(`Elimino questi ${stale.length} branch? [s/N] `);
+      if (!ok) log.info('branch conservati (per eliminarli: rispondi "s" oppure usa --confirm-branches)');
+      else for (const line of await o.repos.deleteStaleBranches(stale)) log.info(line);
+    }
+    o.store.close();
     return;
   }
 
@@ -169,6 +186,9 @@ async function main(): Promise<void> {
   if (values.demo) {
     const demoDir = path.join(cfg.home, 'demo-repo');
     const created = await createDemoRepo(demoDir);
+    // con --reset il repository di prova (creato da Keystone) perde anche i branch degli agenti:
+    // solo Keystone/*, mai altri
+    if (values.reset && isKeystoneDemo(created, demoDir)) for (const line of await deleteAllKeystoneBranches(created)) log.info(`reset del repository di prova: ${line}`);
     // conferma automatica solo per il repository di prova creato da Keystone (marcatore + percorso)
     repos.unshift({ path: created, demo: isKeystoneDemo(created, demoDir) });
   }

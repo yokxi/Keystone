@@ -52,6 +52,7 @@ describe('merge approvato', () => {
     const s = await setup();
     // un file non tracciato dell'utente che il merge non tocca deve restare
     fs.writeFileSync(path.join(s.repo, 'appunti-utente.txt'), 'miei appunti\n');
+    const branchTip = await gitOut(s.repo, ['rev-parse', s.wt.branch]);
     const res = await s.merge();
     const head = await gitOut(s.repo, ['rev-parse', 'HEAD']);
     expect(await gitOut(s.repo, ['rev-parse', 'main'])).toBe(head);
@@ -65,15 +66,16 @@ describe('merge approvato', () => {
     // commit di merge: due genitori (base, branch dell'agente), con l'identità dell'utente
     const [p1, p2] = (await gitOut(s.repo, ['log', '-1', '--format=%P'])).split(' ');
     expect(p1).toBe(s.baseSha);
-    expect(p2).toBe(await gitOut(s.repo, ['rev-parse', s.wt.branch]));
+    expect(p2).toBe(branchTip);
     expect(await gitOut(s.repo, ['log', '-1', '--format=%an <%ae>'])).toBe('Utente Test <utente@example.com>');
     expect(await gitOut(s.repo, ['log', '-1', '--format=%B'])).toContain('Approvato in Keystone (decisione d1, task t1)');
     // i commit dell'agente restano con la sua identità
-    expect(await gitOut(s.repo, ['log', '-1', '--format=%an', s.wt.branch])).toBe('Keystone Bruno');
-    // il worktree è chiuso, il branch resta
+    expect(await gitOut(s.repo, ['log', '-1', '--format=%an', 'HEAD^2'])).toBe('Keystone Bruno');
+    // il worktree è chiuso e il branch dell'agente eliminato (di default)
     expect(fs.existsSync(s.wt.path)).toBe(false);
     expect(s.repos.findWorktree('repo', s.wt.id)?.status).toBe('merged');
-    expect(await gitOut(s.repo, ['branch', '--list', s.wt.branch])).toContain(s.wt.branch);
+    expect(res.branchDeleted).toBe(true);
+    expect(await gitOut(s.repo, ['branch', '--list', s.wt.branch])).toBe('');
     // il diff unito resta consultabile
     expect((await s.repos.diff('repo', s.wt.id)).map((f) => f.path).sort()).toEqual(['README.md', 'nuovo.txt']);
   });
@@ -92,7 +94,7 @@ describe('merge approvato', () => {
     const s = await setup();
     fs.writeFileSync(path.join(s.wt.path, 'ultimo.txt'), 'dimenticato\n');
     await s.merge();
-    expect(await gitOut(s.repo, ['log', '-1', '--format=%an|%s', s.wt.branch])).toBe('Keystone Bruno|t1: saluto');
+    expect(await gitOut(s.repo, ['log', '-1', '--format=%an|%s', 'HEAD^2'])).toBe('Keystone Bruno|t1: saluto');
     expect(readText(path.join(s.repo, 'ultimo.txt'))).toBe('dimenticato\n');
   });
 

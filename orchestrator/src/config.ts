@@ -30,6 +30,8 @@ export interface OrchestratorConfig {
   ciTimeoutMs: number;
   userName?: string;
   sim: { stepDelayMs: number };
+  /** conserva il branch dell'agente dopo un merge riuscito (default: eliminato) */
+  keepMergedBranches?: boolean;
   /** tetto di spesa predefinito per obiettivo in dollari (0 = nessun tetto) */
   budgetUsdPerGoal: number;
   claude: {

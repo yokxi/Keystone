@@ -57,6 +57,8 @@ export interface TeamState {
 export interface WorktreeMeta {
   forkSha?: string;
   mergedSha?: string;
+  /** il commit del branch dell'agente al merge: il diff resta consultabile anche dopo averlo eliminato */
+  branchSha?: string;
 }
 
 export interface StateData {
