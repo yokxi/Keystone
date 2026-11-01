@@ -31,7 +31,10 @@ const HELP = `Keystone orchestratore ${VERSION}
   --sim-delay <ms>     pausa tra i passi del motore sim (default 400)
   --reset              cancella lo stato del profilo prima di partire
   --ci "<comando>"     comando dei test del repository (default: rilevato, es. npm test)
-  --engine sim|claude  motore degli agenti (default sim, senza API)
+  --engine sim|claude|codex  motore degli agenti (default sim, senza API)
+  --lead-engine <m>    motore del lead (team misto); --worker-engine <m> motore dei worker
+  --use-codex-login    Codex con il login ChatGPT fatto nella cartella di Keystone (solo uso personale)
+  --codex-path <file>  binario codex da usare (default: quello del pacchetto @openai/codex)
   --lead-model <id>    modello del lead (claude: default claude-opus-5-5)
   --worker-model <id>  modello dei worker (claude: default claude-sonnet-5-5)
   --effort <livello>   low | medium | high | xhigh | max
@@ -88,6 +91,10 @@ async function main(): Promise<void> {
       'goal-turns': { type: 'string' },
       'goal-minutes': { type: 'string' },
       engine: { type: 'string' },
+      'lead-engine': { type: 'string' },
+      'worker-engine': { type: 'string' },
+      'use-codex-login': { type: 'boolean' },
+      'codex-path': { type: 'string' },
       'lead-model': { type: 'string' },
       'worker-model': { type: 'string' },
       effort: { type: 'string' },
@@ -107,16 +114,27 @@ async function main(): Promise<void> {
   cfg.profile = values.profile ?? (values.demo ? 'demo' : 'default');
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(cfg.profile)) throw new Error(`profilo non valido: ${cfg.profile} (lettere, cifre, - e _)`);
   if (values.port) cfg.port = Number(values.port);
-  const engine = (values.engine ?? 'sim') as 'sim' | 'claude';
-  if (engine !== 'sim' && engine !== 'claude') throw new Error(`motore non valido: ${values.engine} (sim o claude; codex arriva in Fase 6)`);
-  cfg.agents = defaultAgents(engine, values.workers ? Number(values.workers) : 3);
-  if (values['lead-model']) cfg.claude.leadModel = values['lead-model'];
-  if (values['worker-model']) cfg.claude.workerModel = values['worker-model'];
+  const engineOf = (v: string | undefined, label: string): 'sim' | 'claude' | 'codex' => {
+    const e = v ?? 'sim';
+    if (e !== 'sim' && e !== 'claude' && e !== 'codex') throw new Error(`${label} non valido: ${e} (sim, claude o codex)`);
+    return e;
+  };
+  const engine = engineOf(values.engine, 'motore');
+  const leadEngine = engineOf(values['lead-engine'] ?? engine, 'motore del lead');
+  const workerEngine = engineOf(values['worker-engine'] ?? engine, 'motore dei worker');
+  cfg.agents = defaultAgents({ lead: leadEngine, worker: workerEngine }, values.workers ? Number(values.workers) : 3);
+  // --lead-model / --worker-model valgono per il motore di quel ruolo
+  if (values['lead-model']) cfg[leadEngine === 'codex' ? 'codex' : 'claude'].leadModel = values['lead-model'];
+  if (values['worker-model']) cfg[workerEngine === 'codex' ? 'codex' : 'claude'].workerModel = values['worker-model'];
   if (values.effort) {
     if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(values.effort)) throw new Error(`effort non valido: ${values.effort}`);
     cfg.claude.effort = values.effort as 'low';
     cfg.claude.leadEffort = values.effort as 'low';
+    cfg.codex.effort = values.effort as 'low';
+    cfg.codex.leadEffort = values.effort as 'low';
   }
+  if (values['use-codex-login']) cfg.codex.useCodexLogin = true;
+  if (values['codex-path']) cfg.codex.binPath = path.resolve(values['codex-path']);
   if (values.budget !== undefined) {
     const b = Number(values.budget);
     if (!Number.isFinite(b) || b < 0) throw new Error(`tetto di spesa non valido: ${values.budget}`);
@@ -134,10 +152,17 @@ async function main(): Promise<void> {
     cfg.claude.useClaudeLogin = true;
     log.info(applyLoginBudget(cfg, values.budget !== undefined || !!process.env.KEYSTONE_BUDGET_USD?.trim()));
     log.info(applyLoginLimits(cfg, explicitLimits));
+  } else if (leadEngine === 'codex' || workerEngine === 'codex') {
+    // Codex riporta solo token, non dollari: il freno sono i turni e il tempo
+    log.info(applyLoginLimits(cfg, explicitLimits).replace('login personale', 'Codex'));
+    if (leadEngine === 'codex' && workerEngine === 'codex' && values.budget === undefined && !process.env.KEYSTONE_BUDGET_USD?.trim()) {
+      cfg.budgetUsdPerGoal = 0;
+      log.info('Codex riporta token, non dollari: nessun tetto di spesa');
+    }
   } else if (explicitLimits.turns || explicitLimits.minutes) {
     cfg.goalLimits = { ...(explicitLimits.turns ? { turns: explicitLimits.turns } : {}), ...(explicitLimits.minutes ? { minutes: explicitLimits.minutes } : {}) };
   }
-  if (values.record) cfg.claude.recordDir = path.resolve(values.record);
+  if (values.record) cfg.claude.recordDir = cfg.codex.recordDir = path.resolve(values.record);
   if (values['keep-branches']) cfg.keepMergedBranches = true;
   if (values['user-name']?.trim()) cfg.userName = values['user-name'].trim();
   if (values['sim-delay']) cfg.sim.stepDelayMs = Number(values['sim-delay']);

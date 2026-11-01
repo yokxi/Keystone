@@ -226,6 +226,8 @@ export const OrchestratorStatus = z.object({
   profile: z.string().optional(),
   /** subscription: un motore usa l'abbonamento, la spesa mostrata è una stima */
   billing: z.enum(['api', 'subscription']).optional(),
+  /** almeno un motore riporta solo token (Codex): la spesa mostrata non comprende il suo consumo */
+  costIncomplete: z.boolean().optional(),
 });
 export type OrchestratorStatus = z.infer<typeof OrchestratorStatus>;
 

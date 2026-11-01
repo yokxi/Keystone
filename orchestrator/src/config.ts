@@ -48,6 +48,17 @@ export interface OrchestratorConfig {
     /** registra le trascrizioni dei turni in questa cartella (per i test di replay) */
     recordDir?: string;
   };
+  codex: {
+    leadModel?: string;
+    workerModel?: string;
+    effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    leadEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    /** login ChatGPT nella CODEX_HOME di Keystone (solo uso personale): disattivato di default */
+    useCodexLogin: boolean;
+    /** percorso del binario codex (default: quello del pacchetto installato) */
+    binPath?: string;
+    recordDir?: string;
+  };
 }
 
 export const DEFAULT_PORT = 7931;
@@ -66,10 +77,12 @@ export function defaultHome(env: NodeJS.ProcessEnv = process.env): string {
   return env.KEYSTONE_HOME?.trim() || path.join(os.homedir(), '.keystone');
 }
 
-export function defaultAgents(engine: EngineId, workers = 3): AgentConfig[] {
+/** Il cast con il motore indicato, uguale per tutti oppure diverso per lead e worker (team misto). */
+export function defaultAgents(engine: EngineId | { lead: EngineId; worker: EngineId }, workers = 3): AgentConfig[] {
   const lead = CAST.find((c) => c.role === 'lead')!;
   const ws = CAST.filter((c) => c.role === 'worker').slice(0, Math.max(1, Math.min(workers, 5)));
-  return [lead, ...ws].map((c) => ({ ...c, engine }));
+  const of = (role: Role) => (typeof engine === 'string' ? engine : engine[role === 'lead' ? 'lead' : 'worker']);
+  return [lead, ...ws].map((c) => ({ ...c, engine: of(c.role) }));
 }
 
 export function defaultConfig(env: NodeJS.ProcessEnv = process.env): OrchestratorConfig {
@@ -87,6 +100,7 @@ export function defaultConfig(env: NodeJS.ProcessEnv = process.env): Orchestrato
     budgetUsdPerGoal: Number(env.KEYSTONE_BUDGET_USD ?? 5) || 0,
     // Opus 5.5 ha effort predefinito 'medium': lo si dichiara esplicitamente
     claude: { useClaudeLogin: false, effort: 'medium', leadEffort: 'high' },
+    codex: { useCodexLogin: false, effort: 'medium', leadEffort: 'high' },
   };
 }
 

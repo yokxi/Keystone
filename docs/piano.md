@@ -2,11 +2,12 @@
 
 Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fasi ancora da fare.
 
-## Fase 6 — Motore Codex
+## Fase 6 — Motore Codex (fatta)
 
-Adattatore per Codex accanto a quelli di Claude e del motore sim, con le stesse garanzie: ogni tool
-passa dalla policy di Keystone, nessuna configurazione personale dell'utente, spesa e limiti per
-obiettivo.
+Adattatore per `codex app-server` accanto a quelli di Claude e del motore sim, con le stesse
+garanzie: ogni azione passa dalla policy di Keystone, nessuna configurazione personale dell'utente,
+limiti per obiettivo. Dettagli e limiti noti in `docs/motore-codex.md`. Manca la prova con un
+modello vero.
 
 ## Fase 6b — Verifica visuale nella review
 

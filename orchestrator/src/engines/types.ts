@@ -77,6 +77,8 @@ export interface EngineAdapter {
   readonly label: string;
   /** come si paga: api = la spesa è reale; subscription = abbonamento, la spesa è una stima */
   readonly billing?: 'api' | 'subscription';
+  /** false: il motore riporta solo token, non dollari (Codex) */
+  readonly reportsCost?: boolean;
   /** modello predefinito per un ruolo (se la configurazione non ne indica uno) */
   defaultModel(role: Role): string;
   /** nome del modello come lo mostra l'interfaccia (es. "claude-opus-5-5" -> "Opus 5.5") */

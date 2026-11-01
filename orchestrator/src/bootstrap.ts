@@ -29,6 +29,8 @@ export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = 
         sim: { stepDelayMs: cfg.sim.stepDelayMs },
         // configurazione isolata di Claude Code, in ~/.keystone (mai ~/.claude dell'utente)
         claude: { ...cfg.claude, configDir: path.join(cfg.home, 'claude-config') },
+        // configurazione isolata di Codex, in ~/.keystone (mai ~/.codex dell'utente)
+        codex: { ...cfg.codex, codexHome: path.join(cfg.home, 'codex-home') },
       },
     );
   const members: TeamMember[] = cfg.agents.map((a) => {

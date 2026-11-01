@@ -45,7 +45,7 @@ documentato qui.
 | `MemoryEntry` | `id` (`shared/<slug>` o `<agente>/<slug>`), `scope`, `title`, `body` (markdown), `author?`, `updated` |
 | `FeedItem` | `ts`, `kind`, `text`, `agentId?`, `to?` |
 | `LogEntry` | `ts`, `kind` (`text`/`tool`/`result`/`error`/`diff`/`test`/`permission`), `text` |
-| `OrchestratorStatus` | `version`, `auth` (`ok`/`failed`/`unknown`), `message`, `costUsd`, `tokens`, `userName`, `userNameSource`, `profile`, `billing` |
+| `OrchestratorStatus` | `version`, `auth` (`ok`/`failed`/`unknown`), `message`, `costUsd`, `tokens`, `userName`, `userNameSource`, `profile`, `billing`, `costIncomplete` |
 | `DiffFile` | `path`, `oldPath?`, `status` (`added`/`modified`/`deleted`/`renamed`), `binary`, `additions`, `deletions`, `hunks[]` {`header`, `oldStart`, `newStart`, `lines[]` {`kind`: `add`/`del`/`ctx`, `text`, `oldNo?`, `newNo?`}} |
 
 **Stati di un agente:** `idle`, `thinking`, `reading`, `editing`, `running`, `testing`,

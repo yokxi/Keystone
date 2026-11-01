@@ -281,3 +281,22 @@ Dettagli in `docs/motore-claude.md`. In sintesi:
   vedono (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, verificato sulla CLI vera);
 - ogni obiettivo ha un tetto di spesa: al raggiungimento gli agenti si fermano, il lavoro resta
   salvato e la decisione su come proseguire spetta a te.
+
+## 8. Motore Codex
+
+Dettagli in `docs/motore-codex.md`. In sintesi:
+
+- Codex chiede l'approvazione prima di ogni comando (`approvalPolicy: "untrusted"`, verificato:
+  anche i comandi di sola lettura). Ogni richiesta (comandi, modifiche di file, tool del team)
+  passa dalla policy di Keystone con lo stesso vocabolario del motore Claude; le richieste di
+  permessi aggiuntivi o di input all'utente sono rifiutate;
+- le approvazioni non vanno mai a un revisore automatico (`guardian_approval` spento), e il
+  modello non ha tool laterali: niente lettura di immagini, sub-agenti, browser, ricerca web;
+- gli agenti non ereditano la configurazione di Codex dell'utente: `CODEX_HOME` di Keystone,
+  nessun server MCP, nessun `AGENTS.md` (nemmeno del repository), skill di sistema disattivate,
+  niente login shell. Lo verifica un test sulla CLI vera, con controprova;
+- sandbox di Codex come seconda barriera: lead in sola lettura, worker con scrittura solo nel
+  worktree e nelle cartelle git del suo branch, senza rete;
+- la chiave API passa a Codex con `account/login/start` e resta in `~/.keystone/codex-home`: non è
+  nell'ambiente del processo né in quello dei comandi;
+- Codex riporta solo token: il freno per obiettivo sono i limiti di turni e di tempo.

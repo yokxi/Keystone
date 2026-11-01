@@ -114,6 +114,7 @@ describe('spesa', () => {
     expect(spendLabel('subscription')).toMatchObject({ word: 'stima', suffix: ' · abbonamento' });
     expect(spendLabel('api')).toMatchObject({ word: 'costo', suffix: '' });
     expect(spendLabel(undefined)).toMatchObject({ word: 'costo', suffix: '' });
+    expect(spendLabel('api', true)).toMatchObject({ word: 'costo', suffix: ' · Codex: solo token' });
   });
 
   it("limiti di turni e di tempo dell'obiettivo", () => {

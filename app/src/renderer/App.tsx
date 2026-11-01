@@ -285,9 +285,9 @@ function StatusBar({ state, theme, setTheme, decisions }: { state: ViewState; th
       <div className="status-items">
         {decisions > 0 && <span className="badge bad">{decisions} {decisions === 1 ? 'decisione' : 'decisioni'}</span>}
         <GoalSpend state={state} />
-        <span title={spendLabel(s?.billing).title} data-testid="total-spend">
-          {spendLabel(s?.billing).word} <b style={{ color: 'var(--text)' }}>{money(s?.costUsd ?? 0)}</b>
-          {spendLabel(s?.billing).suffix}
+        <span title={spendLabel(s?.billing, !!s?.costIncomplete).title} data-testid="total-spend">
+          {spendLabel(s?.billing, !!s?.costIncomplete).word} <b style={{ color: 'var(--text)' }}>{money(s?.costUsd ?? 0)}</b>
+          {spendLabel(s?.billing, !!s?.costIncomplete).suffix}
         </span>
         <span>
           token <b style={{ color: 'var(--text)' }}>{tokens(s?.tokens ?? 0)}</b>
@@ -307,7 +307,7 @@ function GoalSpend({ state }: { state: ViewState }) {
   const goal = [...state.goals].reverse().find((g) => g.status === 'planning' || g.status === 'active' || g.status === 'paused') ?? state.goals[state.goals.length - 1];
   if (!goal) return null;
   const ratio = goal.budgetUsd ? goal.costUsd / goal.budgetUsd : 0;
-  const label = spendLabel(state.status?.billing);
+  const label = spendLabel(state.status?.billing, !!state.status?.costIncomplete);
   const estimate = state.status?.billing === 'subscription';
   const cls = goal.status === 'paused' || ratio >= 1 ? 'bad' : ratio >= 0.8 ? 'warn' : '';
   return (
