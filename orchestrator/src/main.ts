@@ -91,6 +91,7 @@ async function main(): Promise<void> {
   const cfg = defaultConfig();
   if (values.home) cfg.home = path.resolve(values.home);
   cfg.profile = values.profile ?? (values.demo ? 'demo' : 'default');
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(cfg.profile)) throw new Error(`profilo non valido: ${cfg.profile} (lettere, cifre, - e _)`);
   if (values.port) cfg.port = Number(values.port);
   const engine = (values.engine ?? 'sim') as 'sim' | 'claude';
   if (engine !== 'sim' && engine !== 'claude') throw new Error(`motore non valido: ${values.engine} (sim o claude; codex arriva in Fase 6)`);

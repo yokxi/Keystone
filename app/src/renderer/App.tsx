@@ -45,6 +45,8 @@ export function App() {
   const [feed, setFeed] = useState<FeedLine[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [conn, setConn] = useState<ConnectionInfo>();
+  /** profilo scelto per il pulsante "Avvia orchestratore" (vuoto: quello dell'app) */
+  const [startProfile, setStartProfile] = useState('');
   const toastSeq = useRef(0);
 
   // tema: segue il sistema o la scelta dell'utente
@@ -176,10 +178,31 @@ export function App() {
           <div className={`banner ${conn ? '' : 'bad'}`}>
             <span className="grow">Orchestratore non raggiungibile su {conn?.url ?? '…'}: riprovo da solo. Puoi avviarlo con "npm run orchestrator".</span>
             {conn?.canStart && (
-              <button className="btn small" onClick={() => void window.keystone.startOrchestrator().then((a) => !a.ok && toast('warn', a.error ?? 'avvio non riuscito'))}>
-                Avvia orchestratore
-              </button>
+              <>
+                {conn.profiles.some((p) => p !== conn.profile) && (
+                  <select className="input small" style={{ width: "auto" }} aria-label="Profilo da avviare" data-testid="start-profile" value={startProfile || conn.profile} onChange={(e) => setStartProfile(e.target.value)}>
+                    {[conn.profile, ...conn.profiles.filter((p) => p !== conn.profile)].map((p) => (
+                      <option key={p} value={p}>
+                        {p === conn.profile ? `${p} (profilo dell'app)` : p}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  className="btn small"
+                  data-testid="start-orchestrator"
+                  title="Avvia l'orchestratore con il motore sim su questa porta. Per il motore Claude usa npm run orchestrator -- --engine claude."
+                  onClick={() => void window.keystone.startOrchestrator(startProfile || conn.profile).then((a) => !a.ok && toast('warn', a.error ?? 'avvio non riuscito'))}
+                >
+                  Avvia orchestratore · profilo {startProfile || conn.profile}
+                </button>
+              </>
             )}
+          </div>
+        )}
+        {state.connected && conn && state.status?.profile && state.status.profile !== conn.profile && (
+          <div className="banner bad" data-testid="profile-mismatch">
+            L'app usa il profilo "{conn.profile}" ma l'orchestratore collegato su {conn.url} usa "{state.status.profile}". Riavvia l'app con KEYSTONE_PROFILE={state.status.profile} oppure avvia l'orchestratore del profilo "{conn.profile}".
           </div>
         )}
         {state.status?.auth === 'failed' && <div className="banner bad">Autenticazione dei motori non riuscita: {state.status.message}</div>}
@@ -282,9 +305,14 @@ function GoalSpend({ state }: { state: ViewState }) {
   const ratio = goal.budgetUsd ? goal.costUsd / goal.budgetUsd : 0;
   const cls = goal.status === 'paused' || ratio >= 1 ? 'bad' : ratio >= 0.8 ? 'warn' : '';
   return (
-    <span className={`badge ${cls}`} title={`Spesa dell'obiettivo ${goal.id}${goal.budgetUsd ? ' rispetto al tetto' : ' (nessun tetto)'}`} data-testid="goal-spend">
+    <span
+      className={`badge ${cls}`}
+      title={`Spesa dell'obiettivo ${goal.id}${goal.budgetUsd ? ' rispetto al tetto' : ' (nessun tetto)'}${goal.costUnreconciledUsd ? `. Di questa, ${money(goal.costUnreconciledUsd)} è contata per prudenza: una sessione ripresa potrebbe non aver ritrovato la spesa precedente, che quindi potrebbe essere contata due volte.` : ''}`}
+      data-testid="goal-spend"
+    >
       obiettivo {money(goal.costUsd)}
       {goal.budgetUsd ? ` / ${money(goal.budgetUsd)}` : ' · senza tetto'}
+      {goal.costUnreconciledUsd ? ` (≤ ${money(goal.costUnreconciledUsd)} prudenziali)` : ''}
       {goal.status === 'paused' ? ' · in pausa' : ''}
     </span>
   );

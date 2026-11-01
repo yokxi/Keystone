@@ -12,9 +12,11 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, session, shell, type
 import type { DiffFile, ServerMessage, ViewState } from '@keystone/shared';
 import { CHANNELS, type Ack, type ConnectionInfo, type UiEvent } from './api.js';
 import { isTrustedSender, validateCommand } from './ipc-validate.js';
+import { listProfiles, orchestratorArgs, resolveStartProfile } from './profiles.js';
 import { OrchestratorClient } from './orchestrator-client.js';
 
 const home = process.env.KEYSTONE_HOME?.trim() || path.join(os.homedir(), '.keystone');
+/** il profilo dell'app: quello che il pulsante "Avvia orchestratore" usa se non se ne sceglie un altro */
 const profile = process.env.KEYSTONE_PROFILE?.trim() || 'default';
 
 function orchestratorPort(): number {
@@ -112,11 +114,13 @@ function registerIpc(): void {
   });
   ipcMain.handle(CHANNELS.connection, (e): ConnectionInfo => {
     guard(e);
-    return { url, canStart: !!orchestratorEntry() };
+    return { url, canStart: !!orchestratorEntry(), profile, profiles: listProfiles(home) };
   });
-  ipcMain.handle(CHANNELS.start, (e): Ack => {
+  ipcMain.handle(CHANNELS.start, (e, requested: unknown): Ack => {
     guard(e);
-    return startOrchestrator();
+    const r = resolveStartProfile(profile, requested, home);
+    if (!r.ok) return { ok: false, error: r.error };
+    return startOrchestrator(r.profile);
   });
 }
 
@@ -127,11 +131,12 @@ function orchestratorEntry(): { root: string; main: string } | undefined {
   return fs.existsSync(main) && fs.existsSync(path.join(root, 'node_modules', 'tsx')) ? { root, main } : undefined;
 }
 
-function startOrchestrator(): Ack {
+function startOrchestrator(startProfile: string): Ack {
   const entry = orchestratorEntry();
   if (!entry) return { ok: false, error: 'orchestratore non trovato: avvialo con "npm run orchestrator"' };
-  // l'eseguibile di Electron funziona anche come Node con ELECTRON_RUN_AS_NODE
-  const child = spawn(process.execPath, ['--import', 'tsx', entry.main, '--port', String(port), '--profile', profile], {
+  // l'eseguibile di Electron funziona anche come Node con ELECTRON_RUN_AS_NODE; la porta è quella
+  // a cui l'app è collegata, il profilo quello dell'app o quello scelto esplicitamente
+  const child = spawn(process.execPath, orchestratorArgs(entry.main, port, startProfile), {
     cwd: entry.root,
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', KEYSTONE_HOME: home },
     detached: true,
@@ -139,7 +144,7 @@ function startOrchestrator(): Ack {
     windowsHide: true,
   });
   child.unref();
-  return { ok: true };
+  return { ok: true, result: { profile: startProfile } };
 }
 
 // ---- finestra -----------------------------------------------------------------------------

@@ -21,7 +21,7 @@ const api: KeystoneApi = {
   previewRepo: (p) => ipcRenderer.invoke(CHANNELS.preview, p),
   pickFolder: () => ipcRenderer.invoke(CHANNELS.pickFolder),
   connection: () => ipcRenderer.invoke(CHANNELS.connection),
-  startOrchestrator: () => ipcRenderer.invoke(CHANNELS.start),
+  startOrchestrator: (profile) => ipcRenderer.invoke(CHANNELS.start, profile),
 };
 
 contextBridge.exposeInMainWorld('keystone', api);

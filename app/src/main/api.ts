@@ -15,6 +15,10 @@ export interface ConnectionInfo {
   url: string;
   /** l'app può avviare l'orchestratore (sviluppo: sorgenti presenti) */
   canStart: boolean;
+  /** il profilo dell'app (KEYSTONE_PROFILE, default "default") */
+  profile: string;
+  /** i profili esistenti, tra cui scegliere all'avvio */
+  profiles: string[];
 }
 
 export interface KeystoneApi {
@@ -26,7 +30,8 @@ export interface KeystoneApi {
   previewRepo(path: string): Promise<{ ok: true; preview: RepoPreview } | { ok: false; error: string }>;
   pickFolder(): Promise<string | undefined>;
   connection(): Promise<ConnectionInfo>;
-  startOrchestrator(): Promise<Ack>;
+  /** avvia l'orchestratore (motore sim) con il profilo dell'app, o con quello indicato */
+  startOrchestrator(profile?: string): Promise<Ack>;
 }
 
 export const CHANNELS = {
