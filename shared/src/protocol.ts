@@ -83,6 +83,52 @@ export type Agent = z.infer<typeof Agent>;
 export const LogEntry = z.object({ ts: Ts, kind: LogKind, text: z.string() });
 export type LogEntry = z.infer<typeof LogEntry>;
 
+/** Un passaggio di una verifica visuale (eseguito da Keystone con Playwright, non dall'agente). */
+export const VisualStep = z.discriminatedUnion('action', [
+  /** apre un percorso dell'app (relativo all'URL configurato, sempre sulla stessa origine) */
+  z.object({ action: z.literal('goto'), path: z.string().max(500) }),
+  z.object({ action: z.literal('click'), selector: z.string().min(1).max(300) }),
+  z.object({ action: z.literal('fill'), selector: z.string().min(1).max(300), value: z.string().max(2000) }),
+  z.object({ action: z.literal('press'), selector: z.string().min(1).max(300), key: z.string().min(1).max(50) }),
+  /** aspetta che un elemento sia visibile */
+  z.object({ action: z.literal('wait'), selector: z.string().min(1).max(300) }),
+]);
+export type VisualStep = z.infer<typeof VisualStep>;
+
+/** Una pagina da verificare: si apre `path`, si eseguono i passaggi, si cattura la schermata. */
+export const VisualCheck = z.object({
+  name: z.string().min(1).max(100),
+  path: z.string().max(500),
+  steps: z.array(VisualStep).max(30),
+  /** cosa si dovrebbe vedere (didascalia nella review) */
+  caption: z.string().max(300),
+});
+export type VisualCheck = z.infer<typeof VisualCheck>;
+
+/** Il resoconto strutturato del worker a fine task. */
+export const WorkReport = z.object({
+  request: z.string().max(4000),
+  changes: z.string().max(8000),
+  why: z.string().max(8000),
+  verification: z.string().max(8000),
+  openIssues: z.string().max(4000),
+});
+export type WorkReport = z.infer<typeof WorkReport>;
+
+/** Una schermata catturata (il file sta in ~/.keystone, mai nel repository). */
+export const VisualShot = z.object({ id: z.string().regex(/^[a-z0-9-]{1,80}$/), error: z.string().optional() });
+export const VisualSide = z.object({ shot: VisualShot.optional(), error: z.string().optional() });
+export const VisualReport = z.object({
+  /** done: eseguita; skipped: non eseguita (motivo in note); failed: avvio dell'app non riuscito */
+  status: z.enum(['done', 'skipped', 'failed']),
+  note: z.string().optional(),
+  at: Ts,
+  checks: z.array(z.object({ name: z.string(), caption: z.string(), before: VisualSide, after: VisualSide })),
+  /** problemi di avvio o di esecuzione, da mostrare nella review */
+  problems: z.array(z.string()),
+});
+export type VisualReport = z.infer<typeof VisualReport>;
+
 export const Task = z.object({
   id: Id,
   title: z.string().min(1),
@@ -99,6 +145,12 @@ export const Task = z.object({
   ci: CiStatus,
   summary: z.string().optional(),
   blockedReason: z.string().optional(),
+  /** resoconto strutturato del worker (submit_report) */
+  report: WorkReport.optional(),
+  /** pagine e passaggi da verificare dichiarati dal worker */
+  visualChecks: z.array(VisualCheck).max(10).optional(),
+  /** esito della verifica visuale eseguita da Keystone */
+  visual: VisualReport.optional(),
   createdBy: Id,
   createdAt: Ts,
   updatedAt: Ts,
@@ -180,6 +232,15 @@ export const Repo = z.object({
   path: z.string(),
   /** branch attualmente estratto nel checkout dell'utente */
   branch: z.string(),
+  /** verifica visuale: come avviare l'app (assente = disattivata) */
+  visual: z
+    .object({
+      command: z.string().min(1).max(1000),
+      /** solo rete locale: http(s) su localhost, 127.0.0.1 o [::1] */
+      url: z.string().max(500),
+      startTimeoutSec: z.number().int().min(5).max(600),
+    })
+    .optional(),
   /** branch in cui si fanno i merge (e da cui partono i worktree); assente = il branch aperto */
   mergeTarget: z.string().optional(),
   /** branch locali tra cui scegliere la destinazione (esclusi quelli degli agenti) */
@@ -287,6 +348,8 @@ export const RepoUpsertMsg = z.object({ ...envelope('repo.upsert'), repo: Repo }
 export const MemoryUpsertMsg = z.object({ ...envelope('memory.upsert'), entry: MemoryEntry });
 export const FeedAddMsg = z.object({ ...envelope('feed.add'), item: FeedItem });
 export const StatusMsg = z.object({ ...envelope('status'), status: OrchestratorStatus });
+/** Risposta a visual.shot.request: l'immagine come data URL PNG (solo verso il client che l'ha chiesta). */
+export const VisualShotMsg = z.object({ ...envelope('visual.shot'), requestId: z.string(), dataUrl: z.string().optional(), error: z.string().optional() });
 export const DiffMsg = z.object({
   ...envelope('diff'),
   requestId: z.string(),
@@ -318,6 +381,7 @@ export const ServerMessage = z.discriminatedUnion('type', [
   FeedAddMsg,
   StatusMsg,
   DiffMsg,
+  VisualShotMsg,
   NotifyMsg,
   AckMsg,
   ErrorMsg,
@@ -387,7 +451,16 @@ export const WorktreesPruneMsg = z.object({ ...envelope('worktrees.prune') });
 /** Il tuo nome come lo usano gli agenti e i log; null o vuoto = torna al predefinito (git user.name). */
 export const SettingsSetMsg = z.object({ ...envelope('settings.set'), userName: z.string().max(200).nullable() });
 /** Il branch in cui fare i merge di un repository; null = il branch aperto nel tuo checkout. */
-export const RepoConfigMsg = z.object({ ...envelope('repo.config'), repoId: Id, mergeTarget: z.string().max(250).nullable() });
+export const RepoConfigMsg = z.object({
+  ...envelope('repo.config'),
+  repoId: Id,
+  /** assente = invariato */
+  mergeTarget: z.string().max(250).nullable().optional(),
+  /** verifica visuale: null = disattivata; assente = invariata */
+  visual: z.object({ command: z.string().min(1).max(1000), url: z.string().min(1).max(500), startTimeoutSec: z.number().int().min(5).max(600) }).nullable().optional(),
+});
+/** Una schermata della verifica visuale di un task (la risposta è un messaggio visual.shot). */
+export const VisualShotRequestMsg = z.object({ ...envelope('visual.shot.request'), requestId: z.string().min(1).max(100), taskId: Id, shotId: z.string().regex(/^[a-z0-9-]{1,80}$/) });
 
 export const ClientMessage = z.discriminatedUnion('type', [
   HelloMsg,
@@ -403,6 +476,7 @@ export const ClientMessage = z.discriminatedUnion('type', [
   GoalBudgetMsg,
   SettingsSetMsg,
   RepoConfigMsg,
+  VisualShotRequestMsg,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 

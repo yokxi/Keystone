@@ -66,6 +66,74 @@ passaggi da verificare: URL, clic, campi da compilare. Scrive anche un resoconto
 
 **Limite iniziale.** All'inizio solo app web, e il limite va documentato.
 
+## Fase 6c — Accesso al database in sola lettura
+
+Da fare dopo la Fase 6b. Non è ancora implementata.
+
+**Configurazione per repository.** Per ogni repository registrato si configurano una o più
+connessioni a database: SQL Server, PostgreSQL o SQLite.
+
+- Le credenziali si salvano con `safeStorage` di Electron. Non arrivano mai agli agenti né ai loro
+  comandi: non stanno nell'ambiente dei sottoprocessi, nei prompt, nei log o nelle trascrizioni.
+- Per ogni connessione si configurano il limite di righe e il tempo massimo di ogni query.
+
+**Cosa possono fare gli agenti.** Gli agenti accedono al database solo con gli strumenti di
+Keystone, mai con un client proprio:
+
+- elenco delle tabelle e delle loro colonne;
+- descrizione di una tabella: colonne, tipi, chiavi, indici;
+- query in sola lettura, con i limiti di righe e di tempo della connessione.
+
+**La garanzia della sola lettura.**
+
+- La garanzia vera è un utente del database con soli permessi di lettura. L'interfaccia lo chiede
+  esplicitamente durante la configurazione: serve una conferma, non una casella già spuntata. Il
+  motivo è spiegato in `docs/sicurezza.md`.
+- In più, dove il database lo permette, ogni query gira in una transazione in sola lettura:
+  `SET TRANSACTION READ ONLY` su PostgreSQL, connessione aperta in sola lettura su SQLite. SQL
+  Server non ha un equivalente per le transazioni, quindi lì conta solo l'utente.
+- Il controllo del testo della query, per esempio "solo SELECT", è al massimo un aiuto. Non è una
+  garanzia e la documentazione non lo presenta come tale.
+
+**Registro e approvazione.**
+
+- Keystone registra ogni query: testo, agente, connessione, durata, righe restituite, esito.
+- Le query si vedono nel pannello dell'agente.
+- Un'opzione per connessione fa approvare all'utente le query una per una, come i comandi che
+  chiedono il permesso.
+
+**Trascrizioni.** I risultati delle query entrano nelle trascrizioni salvate (`--record`) solo dopo
+la pulizia, come gli altri dati locali e i segreti.
+
+**Avviso.** I risultati delle query vengono inviati al fornitore del modello. Quindi si usano solo
+database di sviluppo o con dati anonimizzati, mai di produzione. L'avviso sta:
+
+- nell'interfaccia, durante la configurazione della connessione;
+- in `docs/sicurezza.md`.
+
+**MCP: da valutare.** Oggi i tool del team sono definiti una volta sola (`TeamTool`) e ogni motore
+li espone a modo suo: il motore Claude con un server MCP interno (`createSdkMcpServer`), il motore
+Codex con i dynamic tool di `app-server`. Gli strumenti del database possono seguire la stessa
+strada: sono tool di Keystone e passano dalla policy, dal registro e dall'approvazione. Questo
+basta per la prima versione.
+
+Per collegare in futuro un server MCP esterno per lo schema del database, conviene che sia Keystone
+a fare da client MCP, e che inoltri i suoi tool agli agenti come tool del team. Non si passa il
+server direttamente al motore, perché si perderebbero:
+
+- la policy;
+- il registro e l'approvazione;
+- la pulizia delle trascrizioni;
+- l'isolamento attuale (`mcp_servers: {}` per Codex, nessun server MCP dell'utente per Claude).
+
+Da decidere prima di implementare:
+
+- se esporre i tool del database con nomi e schemi compatibili con quelli dei server MCP più
+  diffusi per i database;
+- come limitare un server esterno ai soli tool di lettura;
+- dove gira un server esterno: un processo stdio con l'ambiente ripulito, senza le credenziali
+  degli agenti.
+
 ## Fase 7 — File di configurazione
 
 `~/.keystone/config.json`: motore e modello per agente, effort, numero di worker e le altre

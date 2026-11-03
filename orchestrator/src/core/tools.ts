@@ -1,9 +1,10 @@
 // I tool del team, uguali per ogni motore:
 //   send_message, ask_user, write_memory, read_memory, update_task, report_status, list_tasks
 //   solo lead: create_task, request_merge
+//   solo worker: submit_report (resoconto strutturato e pagine da verificare visivamente)
 // Ogni risultato porta con sé i messaggi non letti dell'agente: così un messaggio arriva anche
 // a metà turno.
-import type { AgentState, TaskStatus } from '@keystone/shared';
+import { VisualCheck, type AgentState, type TaskStatus } from '@keystone/shared';
 import { z } from 'zod';
 import type { TeamTool, TeamToolResult } from '../engines/types.js';
 import { truncate } from '../util/text.js';
@@ -166,6 +167,43 @@ export function teamTools(o: Orchestrator, agentId: string, role: 'lead' | 'work
     }),
     tool('list_tasks', 'Mostra il tabellone (id, stato, assegnatario, dipendenze).', {}, async () => reply(boardSummary(env()))),
   ];
+
+  if (role === 'worker') {
+    tools.push(
+      tool(
+        'submit_report',
+        'Prima di mettere il task in review: il resoconto strutturato del lavoro e, se il repository ha la verifica visuale, le pagine da controllare. ' +
+          'Keystone (non tu) avvia l’app dal branch di partenza e dal tuo worktree, esegue i passaggi e confronta le schermate. ' +
+          'visual_checks: [{ name, path (es. "/" o "/impostazioni", sempre relativo all’app), steps: [{ action: "click"|"fill"|"press"|"wait"|"goto", selector?, value?, key?, path? }], caption: cosa si dovrebbe vedere }].',
+        {
+          task_id: z.string().min(1),
+          request: z.string().min(1).max(4000).describe('la richiesta originale, con parole tue'),
+          changes: z.string().min(1).max(8000).describe('cosa hai cambiato'),
+          why: z.string().min(1).max(8000).describe('perché, e le alternative scartate'),
+          verification: z.string().min(1).max(8000).describe('come l’hai verificato (test, comandi, controlli)'),
+          open_issues: z.string().max(4000).describe('problemi aperti o rischi; "nessuno" se non ce ne sono'),
+          visual_checks: z.array(VisualCheck).max(10).optional(),
+        },
+        async (a) => {
+          const t = o.tasks.get(a.task_id);
+          if (!t) return fail(`nessun task ${a.task_id}`);
+          if (t.assignee !== agentId) return fail(`${t.id} non è un tuo task`);
+          for (const c of a.visual_checks ?? []) {
+            for (const p of [c.path, ...c.steps.flatMap((s) => (s.action === 'goto' ? [s.path] : []))]) {
+              if (!p.startsWith('/') || p.startsWith('//')) return fail(`percorso "${p}" non valido: deve iniziare con / (una pagina della stessa app)`);
+            }
+          }
+          o.tasks.update(t.id, {
+            report: { request: a.request, changes: a.changes, why: a.why, verification: a.verification, openIssues: a.open_issues },
+            ...(a.visual_checks ? { visualChecks: a.visual_checks } : {}),
+          });
+          const repo = t.repoId ? o.repos.get(t.repoId) : undefined;
+          const note = a.visual_checks?.length ? (repo?.visual ? ` Keystone verificherà ${a.visual_checks.length} pagine.` : ' (la verifica visuale non è configurata per questo repository: le pagine sono annotate ma non verificate)') : '';
+          return reply(`Resoconto registrato per ${t.id}.${note} Ora: update_task("${t.id}", status "review", summary).`);
+        },
+      ),
+    );
+  }
 
   if (role === 'lead') {
     tools.push(
