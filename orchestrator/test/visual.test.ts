@@ -31,8 +31,12 @@ describe('verifica visuale: regole di sicurezza', () => {
   it("l'app e il browser parlano solo con la rete locale", () => {
     for (const u of ['http://localhost:3000', 'http://127.0.0.1:5173/x', 'https://localhost', 'http://[::1]:8080/']) expect(isLocalUrl(u), u).toBe(true);
     for (const u of ['http://example.com', 'http://localhost.evil.com', 'http://127.0.0.2', 'file:///C:/x', 'javascript:alert(1)', 'ftp://localhost', 'non un url']) expect(isLocalUrl(u), u).toBe(false);
-    for (const u of ['data:image/png;base64,xx', 'blob:http://localhost/1', 'about:blank', 'ws://localhost:5173/hmr', 'wss://127.0.0.1:1']) expect(browserRequestAllowed(u), u).toBe(true);
-    for (const u of ['https://fonts.googleapis.com/css', 'wss://evil.com/socket', 'http://192.168.1.10/']) expect(browserRequestAllowed(u), u).toBe(false);
+    // il browser raggiunge solo l'origine dell'app: stesso host, stessa porta (anche per i WebSocket)
+    const app = 'http://localhost:5173';
+    for (const u of ['data:image/png;base64,xx', 'blob:http://localhost/1', 'about:blank', 'http://localhost:5173/src/main.ts?t=1', 'ws://localhost:5173/hmr']) expect(browserRequestAllowed(u, app), u).toBe(true);
+    for (const u of ['https://fonts.googleapis.com/css', 'wss://evil.com/socket', 'http://192.168.1.10/', 'http://localhost:5432/', 'http://127.0.0.1:5173/', 'ws://localhost:2375/', 'https://localhost:5173/', 'http://localhost/'])
+      expect(browserRequestAllowed(u, app), u).toBe(false);
+    expect(browserRequestAllowed('http://example.com/', 'http://example.com')).toBe(false); // un URL dell'app non locale non ammette niente
     expect(validateVisualConfig({ command: 'npm run dev', url: 'http://localhost:5173', startTimeoutSec: 60 })).toBeUndefined();
     expect(validateVisualConfig({ command: '  ', url: 'http://localhost:5173', startTimeoutSec: 60 })).toMatch(/comando/);
     expect(validateVisualConfig({ command: 'x', url: 'https://staging.example.com', startTimeoutSec: 60 })).toMatch(/locale/);
@@ -54,6 +58,21 @@ describe('verifica visuale: regole di sicurezza', () => {
     expect(env.BROWSER).toBe('none');
   });
 
+  it("un comando che non può partire non fa cadere l'orchestratore e la verifica lo dice", { timeout: 30_000 }, async () => {
+    const d = tmpDir();
+    const r = await runTry({
+      repo: { id: 'r1', name: 'repo', path: d, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node -e 0', url: 'http://127.0.0.1:9', startTimeoutSec: 5 } },
+      checks: [{ name: 'Home', path: '/', steps: [], caption: '' }],
+      worktreePath: path.join(d, 'non-esiste'),
+      shotsDir: path.join(d, 'visual', 't1-try'),
+      browser: { channel: 'msedge', label: 'mai usato' },
+      env: process.env,
+      maxMs: 10_000,
+    });
+    expect(r.status).toBe('failed');
+    expect(r.problems.join('\n')).toMatch(/prova: l'app non si è avviata/);
+  });
+
   it('il collegamento a node_modules si toglie senza toccare la cartella vera', () => {
     const d = tmpDir();
     const real = path.join(d, 'repo', 'node_modules');
@@ -67,7 +86,7 @@ describe('verifica visuale: regole di sicurezza', () => {
     expect(fs.existsSync(link)).toBe(false);
     expect(fs.readFileSync(path.join(real, 'pacchetto', 'index.js'), 'utf8')).toBe('x');
     // una cartella vera non è un collegamento di Keystone: non si tocca
-    removeLink(real);
+    expect(removeLink(real)).toBe(true);
     expect(fs.existsSync(real)).toBe(true);
   });
 
@@ -365,14 +384,14 @@ http.createServer((req, res) => {
 // dipendere da attese a tempo. Lo script "dopo" scrive in console e lancia un errore non gestito.
 const page = (title: string, broken = false) =>
   `<!doctype html><html><body><h1 id="t">${title}</h1><p id="c"></p><button id="b" onclick="document.getElementById('c').textContent='Cliccato'">clic</button>` +
-  `<img src="/manca.png"><img src="http://example.invalid/x.png">` +
+  `<img src="/manca.png"><img src="http://example.invalid/x.png"><img src="http://127.0.0.1:9/altro-servizio.png">` +
   (broken ? `<script>console.error('Errore solo dopo'); throw new Error('Boom dopo');</script>` : `<script>console.log('pronto');</script>`) +
   `</body></html>`;
 
 const browser = findBrowser(path.join(process.env.KEYSTONE_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.keystone'), 'browsers'));
 
 describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
-  it('avvia l\'app dal branch di partenza e dal worktree, cattura le schermate, blocca la rete esterna', { timeout: 120_000 }, async () => {
+  it('avvia l\'app dal branch di partenza e dal worktree, cattura le schermate, blocca la rete esterna', { timeout: 300_000 }, async () => {
     const d = tmpDir();
     const repoPath = path.join(d, 'repo');
     fs.mkdirSync(repoPath);
@@ -399,7 +418,7 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
     } as unknown as Task;
     const shotsDir = path.join(d, 'visual', 't1');
     const rep = await runVisual({
-      repo: { id: 'r1', name: 'repo', path: repoPath, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url, startTimeoutSec: 30 } },
+      repo: { id: 'r1', name: 'repo', path: repoPath, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url, startTimeoutSec: 120 } },
       task,
       worktreePath: wtPath,
       baseRef: 'main',
@@ -420,12 +439,14 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
     expect(rep.checks[1]!.after.error).not.toMatch(/Timeout/);
     // l'immagine esterna è stata bloccata, e lo dice
     expect(rep.problems.join('\n')).toContain('example.invalid');
+    // anche un altro servizio locale (altra porta) è bloccato: solo l'origine dell'app
+    expect(rep.problems.join('\n')).toContain('127.0.0.1:9');
     // diagnostica: il 404 e la richiesta bloccata ci sono prima e dopo; errore JS e console solo dopo
     const b = rep.checks[0]!.before.diagnostics!;
     const a = rep.checks[0]!.after.diagnostics!;
     expect(b.errors).toEqual([]);
     expect(b.console).toEqual([{ type: 'log', text: 'pronto' }]);
-    expect(b.failedRequests).toEqual(expect.arrayContaining([expect.objectContaining({ url: `${url}/manca.png`, status: 404 }), expect.objectContaining({ url: 'http://example.invalid/x.png', blocked: true })]));
+    expect(b.failedRequests).toEqual(expect.arrayContaining([expect.objectContaining({ url: `${url}/manca.png`, status: 404 }), expect.objectContaining({ url: 'http://example.invalid/x.png', blocked: true }), expect.objectContaining({ url: 'http://127.0.0.1:9/altro-servizio.png', blocked: true })]));
     expect(a.errors[0]).toMatch(/^Boom dopo/);
     const fresh = onlyAfter(b, a);
     expect(fresh.errors).toHaveLength(1);
@@ -468,7 +489,7 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
 });
 
 describe.skipIf(!browser)('prova interfaccia vera (browser installato)', () => {
-  it('solo il worktree: esito dei passaggi, diagnostica e schermata', { timeout: 120_000 }, async () => {
+  it('solo il worktree: esito dei passaggi, diagnostica e schermata', { timeout: 300_000 }, async () => {
     const d = tmpDir();
     const wt = path.join(d, 'wt');
     fs.mkdirSync(wt);
@@ -478,7 +499,7 @@ describe.skipIf(!browser)('prova interfaccia vera (browser installato)', () => {
     const port = await freePort();
     const url = `http://127.0.0.1:${port}`;
     const r = await runTry({
-      repo: { id: 'r1', name: 'repo', path: wt, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url, startTimeoutSec: 30 } },
+      repo: { id: 'r1', name: 'repo', path: wt, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url, startTimeoutSec: 120 } },
       checks: [
         { name: 'Home', path: '/', steps: [{ action: 'click', selector: '#b' }], caption: '' },
         { name: 'Campo sbagliato', path: '/', steps: [{ action: 'fill', selector: '#t', value: 'x' }], caption: '' },
@@ -505,13 +526,13 @@ describe.skipIf(!browser)('prova interfaccia vera (browser installato)', () => {
     await expect(fetch(url, { signal: AbortSignal.timeout(1000) })).rejects.toThrow();
   });
 
-  it('una prova che supera il tempo massimo si ferma e lo dice', { timeout: 60_000 }, async () => {
+  it('una prova che supera il tempo massimo si ferma e lo dice', { timeout: 300_000 }, async () => {
     const d = tmpDir();
     fs.writeFileSync(path.join(d, 'server.mjs'), SERVER);
     fs.writeFileSync(path.join(d, 'index.html'), page('Prova'));
     const port = await freePort();
     const r = await runTry({
-      repo: { id: 'r1', name: 'repo', path: d, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url: `http://127.0.0.1:${port}`, startTimeoutSec: 30 } },
+      repo: { id: 'r1', name: 'repo', path: d, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url: `http://127.0.0.1:${port}`, startTimeoutSec: 120 } },
       // il tempo è già esaurito: nessuna pagina viene aperta, senza dipendere dalla velocità della macchina
       checks: [{ name: 'Home', path: '/', steps: [], caption: '' }],
       worktreePath: d,

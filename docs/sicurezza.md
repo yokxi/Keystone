@@ -277,7 +277,8 @@ dell'agente per catturare le schermate. Con la prova interfaccia (`try_ui`) il w
 a Keystone di avviarla dal suo worktree durante il lavoro, con limiti per turno. In entrambi i casi
 viene eseguito codice del branch, come per i test.
 
-- La rete esterna è bloccata nel browser, e frenata (non isolata) per il processo dell'app.
+- Il browser raggiunge solo l'origine dell'app (stesso host e porta): né la rete esterna né altri
+  servizi locali. Per il processo dell'app la rete esterna è frenata, non isolata.
 - L'app riceve l'ambiente senza credenziali.
 - Le schermate restano in `~/.keystone` e non finiscono nelle trascrizioni.
 - Console, errori JavaScript e richieste fallite dell'app arrivano agli agenti come testo, quindi

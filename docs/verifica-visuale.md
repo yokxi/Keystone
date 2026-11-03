@@ -171,13 +171,22 @@ sola. Se l'orchestratore si riavvia, la decisione viene annullata e chiesta di n
 - **Il comando esegue il codice del branch dell'agente sul tuo computer**, come i test del
   repository. Lo stesso vale per il lato "prima", che esegue il codice del tuo branch. Configura la
   verifica solo per repository di cui ti fidi tanto quanto ti fidi dei loro test.
-- **Rete solo locale.**
+- **Rete solo locale, browser solo sull'app.**
   - L'URL configurato deve essere locale.
-  - Il browser blocca ogni richiesta HTTP e ogni WebSocket non locali, e lo annota nella review.
+  - Il browser raggiunge solo l'origine dell'app, cioè lo stesso host e la stessa porta dell'URL.
+    Blocca ogni altra richiesta HTTP e ogni WebSocket, comprese quelle verso altre porte locali
+    (database, Docker, altri dev server), e lo annota nella review. Un'app che usa un'API o un
+    WebSocket su un'altra porta vedrà quelle richieste fallire: è il prezzo di questa garanzia.
     I service worker sono bloccati e i download disattivati.
   - Il processo dell'app riceve `HTTP_PROXY`/`HTTPS_PROXY` verso un indirizzo inesistente. È un
     **freno**, non un isolamento: un programma che ignora le variabili del proxy può ancora
     raggiungere la rete esterna. Keystone non è una sandbox (vedi `docs/sicurezza.md`, 4bis).
+- **`node_modules` collegato, non copiato.** La junction verso il `node_modules` del tuo checkout
+  è scrivibile, quindi l'app avviata (e i suoi script) potrebbe modificarlo. Non è una capacità
+  nuova: il codice del branch gira con i tuoi diritti sul disco, come i test, e potrebbe già
+  scrivere lì con un percorso assoluto. Keystone toglie il collegamento senza mai seguirlo, quindi
+  non cancella la cartella vera. Se un collegamento non si toglie (file occupato), lo dice e lo
+  toglie al prossimo avvio.
 - **Niente credenziali.** L'app riceve l'ambiente sicuro degli agenti, senza le variabili che
   finiscono in `API_KEY`, `TOKEN`, `SECRET`, `PASSWORD`, né le credenziali git.
 - **Le schermate restano in `~/.keystone/<profilo>/visual/<task>/`.** Non vanno mai nel

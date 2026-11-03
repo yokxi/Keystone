@@ -35,9 +35,18 @@ export function isLocalUrl(u: string): boolean {
 }
 
 /** Una richiesta del browser è ammessa? Solo locale, più gli schemi interni del browser. */
-export function browserRequestAllowed(u: string): boolean {
+export function browserRequestAllowed(u: string, appUrl: string): boolean {
   if (/^(data|blob|about):/i.test(u)) return true;
-  return isLocalUrl(u) || /^wss?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u);
+  // solo l'origine dell'app (stesso host e stessa porta): gli altri servizi locali dell'utente
+  // (database, Docker, altri dev server) non sono raggiungibili dalla pagina
+  try {
+    const x = new URL(u);
+    const app = new URL(appUrl);
+    const proto = x.protocol === 'ws:' ? 'http:' : x.protocol === 'wss:' ? 'https:' : x.protocol;
+    return isLocalUrl(appUrl) && proto === app.protocol && x.host.toLowerCase() === app.host.toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 function hostOf(u: string): string {
@@ -158,8 +167,12 @@ async function startApp(dir: string, cfg: VisualConfig, env: Record<string, stri
   const proc = spawn(cfg.command, { cwd: dir, env, shell: true, windowsHide: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout!.on('data', (d: Buffer) => (out = (out + d.toString()).slice(-20_000)));
   proc.stderr!.on('data', (d: Buffer) => (out = (out + d.toString()).slice(-20_000)));
+  // senza questo listener un errore di avvio (es. cartella inesistente) farebbe cadere l'orchestratore
+  let spawnError: string | undefined;
+  proc.on('error', (e) => (spawnError = e.message));
   const deadline = Date.now() + cfg.startTimeoutSec * 1000;
   while (Date.now() < deadline) {
+    if (spawnError) return { proc, output: () => out, error: `l'app non si è avviata: ${spawnError}` };
     if (proc.exitCode !== null) return { proc, output: () => out, error: `l'app è terminata subito (codice ${proc.exitCode})` };
     if (await responds(cfg.url)) return { proc, output: () => out };
     await new Promise((r) => setTimeout(r, 400));
@@ -223,16 +236,16 @@ async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: Vi
     const ctx = await b.newContext({ viewport: VIEWPORT, serviceWorkers: 'block', acceptDownloads: false });
     await ctx.route('**/*', (route) => {
       const u = route.request().url();
-      if (browserRequestAllowed(u)) return route.continue();
+      if (browserRequestAllowed(u, cfg.url)) return route.continue();
       blocked.add(hostOf(u));
       return route.abort('blockedbyclient');
     });
     // anche i WebSocket: quelli non locali vengono chiusi senza mai connettersi
     await ctx.routeWebSocket(/.*/, (ws) => {
-      if (browserRequestAllowed(ws.url())) ws.connectToServer();
+      if (browserRequestAllowed(ws.url(), cfg.url)) ws.connectToServer();
       else {
         blocked.add(hostOf(ws.url()));
-        void ws.close({ code: 1008, reason: 'bloccato da Keystone: solo rete locale' });
+        void ws.close({ code: 1008, reason: "bloccato da Keystone: solo l'origine dell'app" });
       }
     });
     for (let i = 0; i < checks.length; i++) {
@@ -293,10 +306,12 @@ async function runSide(o: {
 }): Promise<{ results?: VisualSide[]; problems: string[] }> {
   const problems: string[] = [];
   const label = SIDE_LABEL[o.side];
-  const linked = await linkDependencies(o.repoPath, o.dir);
-  const app = await startApp(o.dir, o.cfg, o.env);
+  let linked: string | undefined;
+  let app: Awaited<ReturnType<typeof startApp>> | undefined;
   let results: VisualSide[] | undefined;
   try {
+    linked = await linkDependencies(o.repoPath, o.dir);
+    app = await startApp(o.dir, o.cfg, o.env);
     if (app.error) problems.push(`${label}: ${app.error}${app.output().trim() ? `\n${lastLines(app.output(), 8)}` : ''}`);
     else {
       const r = await captureSide(o.browser, o.cfg, o.checks, o.side, o.shotsDir, { stepTimeoutMs: o.stepTimeoutMs, ...(o.deadline !== undefined ? { deadline: o.deadline } : {}) });
@@ -306,8 +321,8 @@ async function runSide(o: {
   } catch (e) {
     problems.push(`${label}: ${truncate((e as Error).message ?? String(e), 300)}`);
   } finally {
-    stopApp(app.proc);
-    if (linked) removeLink(linked);
+    if (app) stopApp(app.proc);
+    if (linked && !removeLink(linked)) problems.push(`${label}: collegamento a node_modules non rimosso (${linked}): verrà tolto al prossimo avvio`);
     if (!(await waitFree(o.cfg.url, 10_000))) problems.push(`${label}: l'app risponde ancora su ${o.cfg.url} dopo essere stata fermata`);
   }
   return { ...(results ? { results } : {}), problems };
@@ -488,18 +503,24 @@ async function linkDependencies(repoPath: string, dir: string): Promise<string |
  * Toglie il collegamento a node_modules SENZA seguirlo: mai una cancellazione ricorsiva, che su una
  * junction potrebbe svuotare la cartella vera del tuo checkout.
  */
-export function removeLink(link: string): void {
+export function removeLink(link: string): boolean {
   let st: fs.Stats;
   try {
     st = fs.lstatSync(link);
   } catch {
-    return;
+    return true; // non c'è
   }
-  if (!st.isSymbolicLink()) return; // non è un collegamento creato da Keystone: non si tocca
+  if (!st.isSymbolicLink()) return true; // non è un collegamento creato da Keystone: non si tocca
   try {
     fs.unlinkSync(link);
+    return true;
   } catch {
-    fs.rmdirSync(link); // junction su Windows: rmdir non ricorsivo toglie solo il collegamento
+    try {
+      fs.rmdirSync(link); // junction su Windows: rmdir non ricorsivo toglie solo il collegamento
+      return true;
+    } catch {
+      return false; // occupato: resta, e la pulizia all'avvio lo toglie
+    }
   }
 }
 
