@@ -18,6 +18,7 @@ const api: KeystoneApi = {
   },
   send: (cmd) => ipcRenderer.invoke(CHANNELS.send, cmd),
   requestDiff: (repoId, worktree) => ipcRenderer.invoke(CHANNELS.diff, repoId, worktree),
+  requestShot: (taskId, shotId) => ipcRenderer.invoke(CHANNELS.shot, taskId, shotId),
   previewRepo: (p) => ipcRenderer.invoke(CHANNELS.preview, p),
   pickFolder: () => ipcRenderer.invoke(CHANNELS.pickFolder),
   connection: () => ipcRenderer.invoke(CHANNELS.connection),

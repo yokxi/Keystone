@@ -37,10 +37,10 @@ documentato qui.
 | Entità | Campi |
 |---|---|
 | `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens` |
-| `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `createdBy`, `createdAt`, `updatedAt` |
+| `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `report?` (resoconto del worker), `visualChecks?` (pagine da verificare), `visual?` (esito della verifica visuale), `createdBy`, `createdAt`, `updatedAt` |
 | `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`paused`/`done`/`failed`/`cancelled`; `paused` = fermo perché ha raggiunto il tetto di spesa), `progress` 0..1, `repoId?`, `costUsd` (spesa registrata), `budgetUsd?` (tetto di spesa; assente = nessun tetto), `pausedFrom?`, `createdAt` |
 | `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`/`budget`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `command?` (permesso: il comando completo, senza tagli), `alwaysAsk?` (permesso: richiede sempre approvazione, niente "Consenti sempre"), `createdAt`, `answeredAt?` |
-| `Repo` | `id`, `name`, `path`, `branch`, `dirty`, `ci`, `worktrees[]` |
+| `Repo` | `id`, `name`, `path`, `branch`, `dirty`, `ci`, `worktrees[]`, `mergeTarget?`, `branches?`, `visual?` (`{ command, url, startTimeoutSec, leadScreenshots? }`) |
 | `Worktree` | `id` (`<agente>-<task>`), `repoId`, `agentId`, `taskId?`, `branch` (`Keystone/<agente>/<task>-<slug>`), `base`, `path`, `status` (`active`/`merged`/`abandoned`), `files`, `additions`, `deletions` |
 | `MemoryEntry` | `id` (`shared/<slug>` o `<agente>/<slug>`), `scope`, `title`, `body` (markdown), `author?`, `updated` |
 | `FeedItem` | `ts`, `kind`, `text`, `agentId?`, `to?` |
@@ -70,6 +70,9 @@ worktree diventa `done` solo tramite merge approvato dall'utente.
 - merge: `Merge` / `Richiedi modifiche` / `Rifiuta`;
 - tetto di spesa raggiunto (`budget`): `Aumenta il tetto` / `Lascia in pausa`. Il `text` della
   risposta può indicare il nuovo tetto in dollari; senza importo il tetto raddoppia;
+- download del browser per la verifica visuale (permesso con `tool: "visual.browser"`): `Scarica
+  Chromium` / `Nega`. Keystone la apre solo se non trova Edge né Chrome; vedi
+  `docs/verifica-visuale.md`;
 - permesso: `Consenti una volta` / `Consenti sempre per questo agente` / `Nega`. Per le azioni che
   richiedono sempre approvazione (configurazione git, variabili d'ambiente, hook e `.git`,
   `git -c`) le opzioni sono solo `Consenti una volta` / `Nega`. Il `context` della decisione
@@ -117,6 +120,11 @@ diff, test, permessi).
 ### `diff`
 `{ requestId, repoId, worktree, files: DiffFile[] }`: risposta a `diff.request`, inviata solo al
 client che l'ha chiesta.
+
+### `visual.shot`
+`{ requestId, dataUrl?, error? }`: risposta a `visual.shot.request`, inviata solo al client che l'ha
+chiesta. `dataUrl` è la schermata come `data:image/png;base64,…`; se la schermata non esiste o non
+appartiene alla verifica del task arriva solo `error`.
 
 ### `notify`
 `{ level: info|warn|need_user, text }`: notifica da mostrare. `need_user` indica che una decisione
@@ -196,11 +204,25 @@ torna al predefinito: `--user-name`, poi `git config user.name`, poi il nome ute
 Vale dai turni successivi. Risultato: `{ userName, userNameSource }`.
 
 ### `repo.config`
-`{ repoId, mergeTarget }`: il branch in cui fare i merge di un repository. `null` = il branch aperto
-nel tuo checkout. Il branch deve esistere e non può essere `Keystone/*`. I nuovi worktree partono
-da quel branch. Se non è estratto nel tuo checkout, il merge sposta solo il riferimento con
-`update-ref` e il controllo del valore precedente: il tuo checkout non cambia. Risultato:
-`{ repoId, mergeTarget }`.
+`{ repoId, mergeTarget?, visual? }`: configurazione di un repository. Ogni campo assente resta
+com'è, `null` torna al default; serve almeno uno dei due campi.
+
+- `mergeTarget`: il branch in cui fare i merge. `null` = il branch aperto nel tuo checkout. Il
+  branch deve esistere e non può essere `Keystone/*`. I nuovi worktree partono da quel branch. Se
+  non è estratto nel tuo checkout, il merge sposta solo il riferimento con `update-ref` e il
+  controllo del valore precedente: il tuo checkout non cambia.
+- `visual`: la verifica visuale, `{ command, url, startTimeoutSec, leadScreenshots? }`. `null` =
+  disattivata. `url` deve essere locale (`localhost`, `127.0.0.1` o `[::1]`), `startTimeoutSec`
+  tra 5 e 600. `leadScreenshots: true` allega le schermate alla review del lead. Dettagli in
+  `docs/verifica-visuale.md`.
+
+Risultato: `{ repoId, mergeTarget, visual }` (i valori dopo la modifica, `null` se assenti).
+
+### `visual.shot.request`
+`{ requestId, taskId, shotId }`: chiede una schermata della verifica visuale di un task. `shotId`
+è uno degli id nell'esito `task.visual` (es. `before-1`, `after-2`): altri id non vengono
+serviti, e un percorso non può mai arrivare dal client. La risposta è un messaggio `visual.shot`.
+Risultato: `{ found }`.
 
 ### `worktrees.prune`
 `{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o
@@ -244,7 +266,7 @@ nella forma restituita da `EngineAdapter.displayModel()`.
 `{ callId, tool, input }`: l'agente usa un tool. Il vocabolario è comune a tutti i motori:
 `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`, `PowerShell`, oppure un tool del team
 (`send_message`, `ask_user`, `write_memory`, `read_memory`, `update_task`, `report_status`,
-`list_tasks`, `create_task`, `request_merge`).
+`list_tasks`, `create_task`, `request_merge`, `submit_report`).
 
 ### `tool_result`
 `{ callId, ok, output }`: esito di una tool call.

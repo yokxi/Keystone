@@ -9,16 +9,17 @@
 //   - il processo dell'app riceve un proxy inesistente per HTTP/HTTPS: è un freno, non un isolamento
 //     del sistema operativo (vedi docs/verifica-visuale.md).
 // Le schermate stanno in ~/.keystone/<profilo>/visual/, mai nel repository, nei log o nelle trascrizioni.
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import type { Repo, Task, VisualCheck, VisualReport } from '@keystone/shared';
+import type { Repo, Task, VisualCheck, VisualConfig, VisualReport } from '@keystone/shared';
 import { ensureDir } from '../util/fsx.js';
 import { git } from '../util/git.js';
+import { killTree } from '../util/proc.js';
 import { lastLines, truncate } from '../util/text.js';
 
-export type VisualConfig = NonNullable<Repo['visual']>;
+export type { VisualConfig };
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
@@ -36,6 +37,14 @@ export function isLocalUrl(u: string): boolean {
 export function browserRequestAllowed(u: string): boolean {
   if (/^(data|blob|about):/i.test(u)) return true;
   return isLocalUrl(u) || /^wss?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u);
+}
+
+function hostOf(u: string): string {
+  try {
+    return new URL(u).host || u.slice(0, 60);
+  } catch {
+    return u.slice(0, 60);
+  }
 }
 
 /** Valida la configurazione di un repository; restituisce l'errore da mostrare. */
@@ -105,16 +114,8 @@ export function installChromium(browsersDir: string): Promise<{ ok: boolean; out
 }
 
 /** Ferma l'app e tutti i processi che ha avviato. */
-function killTree(p: ChildProcess): void {
-  if (p.exitCode !== null || !p.pid) return;
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(p.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-  else {
-    try {
-      process.kill(-p.pid, 'SIGKILL');
-    } catch {
-      p.kill('SIGKILL');
-    }
-  }
+function stopApp(p: ChildProcess): void {
+  if (p.exitCode === null && p.pid) killTree(p.pid);
 }
 
 /** Ambiente dell'app: quello sicuro degli agenti, senza credenziali, con la rete esterna verso un proxy inesistente. */
@@ -130,6 +131,26 @@ export function appEnv(base: Record<string, string | undefined>, url: string): R
   return out;
 }
 
+/** L'URL risponde? (qualsiasi risposta sotto 500) */
+async function responds(url: string): Promise<boolean> {
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(2000), redirect: 'manual' });
+    return r.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+/** Aspetta che l'URL smetta di rispondere (la porta torna libera dopo aver fermato l'app). */
+async function waitFree(url: string, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (!(await responds(url))) return true;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
 /** Avvia l'app e aspetta che risponda; restituisce il processo e il suo output. */
 async function startApp(dir: string, cfg: VisualConfig, env: Record<string, string>): Promise<{ proc: ChildProcess; output: () => string; error?: string }> {
   let out = '';
@@ -139,18 +160,17 @@ async function startApp(dir: string, cfg: VisualConfig, env: Record<string, stri
   const deadline = Date.now() + cfg.startTimeoutSec * 1000;
   while (Date.now() < deadline) {
     if (proc.exitCode !== null) return { proc, output: () => out, error: `l'app è terminata subito (codice ${proc.exitCode})` };
-    try {
-      const r = await fetch(cfg.url, { signal: AbortSignal.timeout(2000), redirect: 'manual' });
-      if (r.status < 500) return { proc, output: () => out };
-    } catch {
-      /* non ancora pronta */
-    }
+    if (await responds(cfg.url)) return { proc, output: () => out };
     await new Promise((r) => setTimeout(r, 400));
   }
   return { proc, output: () => out, error: `l'app non risponde su ${cfg.url} entro ${cfg.startTimeoutSec} s` };
 }
 
 type Side = 'before' | 'after';
+
+const VIEWPORT = { width: 1280, height: 800 };
+/** Altezza massima di una schermata, in pixel. */
+const MAX_SHOT_HEIGHT = 4000;
 
 /** Esegue i controlli in una istanza dell'app già avviata e cattura le schermate. */
 async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: VisualCheck[], side: Side, shotsDir: string, stepTimeoutMs: number) {
@@ -159,12 +179,20 @@ async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: Vi
   const blocked = new Set<string>();
   const results: Array<{ shot?: { id: string; error?: string }; error?: string }> = [];
   try {
-    const ctx = await b.newContext({ viewport: { width: 1280, height: 800 }, serviceWorkers: 'block', acceptDownloads: false });
+    const ctx = await b.newContext({ viewport: VIEWPORT, serviceWorkers: 'block', acceptDownloads: false });
     await ctx.route('**/*', (route) => {
       const u = route.request().url();
       if (browserRequestAllowed(u)) return route.continue();
-      blocked.add(new URL(u).host);
+      blocked.add(hostOf(u));
       return route.abort('blockedbyclient');
+    });
+    // anche i WebSocket: quelli non locali vengono chiusi senza mai connettersi
+    await ctx.routeWebSocket(/.*/, (ws) => {
+      if (browserRequestAllowed(ws.url())) ws.connectToServer();
+      else {
+        blocked.add(hostOf(ws.url()));
+        void ws.close({ code: 1008, reason: 'bloccato da Keystone: solo rete locale' });
+      }
     });
     for (let i = 0; i < checks.length; i++) {
       const c = checks[i]!;
@@ -187,7 +215,9 @@ async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: Vi
       // la schermata si cattura anche se un passaggio è fallito: mostra dove si è fermata
       const id = `${side}-${i + 1}`;
       try {
-        await page.screenshot({ path: path.join(shotsDir, `${id}.png`), fullPage: true });
+        // pagina intera, ma al massimo MAX_SHOT_HEIGHT pixel: le pagine lunghissime pesano e non servono
+        const height = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)).catch(() => VIEWPORT.height);
+        await page.screenshot({ path: path.join(shotsDir, `${id}.png`), fullPage: true, clip: { x: 0, y: 0, width: VIEWPORT.width, height: Math.max(1, Math.min(height, MAX_SHOT_HEIGHT)) } });
         results.push({ shot: { id, ...(error ? { error } : {}) }, ...(error ? { error } : {}) });
       } catch (e) {
         results.push({ error: error ?? `schermata non catturata: ${(e as Error).message}` });
@@ -231,10 +261,11 @@ export async function runVisual(input: VisualRunInput): Promise<VisualReport> {
   const baseDir = path.join(path.dirname(input.shotsDir), `${path.basename(input.shotsDir)}-base`);
   const sides: Record<Side, Awaited<ReturnType<typeof captureSide>>['results'] | undefined> = { before: undefined, after: undefined };
   const env = appEnv(input.env, cfg.url);
+  // un'altra app risponde già sull'URL: le schermate sarebbero sue, non del branch
+  if (await responds(cfg.url)) return report('failed', `qualcosa risponde già su ${cfg.url} prima dell'avvio: ferma l'altra app o scegli un'altra porta`);
   try {
     // il branch di partenza, in un worktree temporaneo (il tuo checkout non viene toccato)
-    await git(input.repo.path, ['worktree', 'remove', '--force', baseDir], { allowFail: true });
-    fs.rmSync(baseDir, { recursive: true, force: true });
+    await removeBaseWorktree(input.repo.path, baseDir);
     const add = await git(input.repo.path, ['worktree', 'add', '--detach', baseDir, input.baseRef], { allowFail: true });
     if (add.code !== 0) problems.push(`impossibile preparare il branch di partenza: ${truncate(add.stderr.trim(), 200)}`);
     for (const [side, dir] of [['before', add.code === 0 ? baseDir : undefined], ['after', input.worktreePath]] as const) {
@@ -252,14 +283,13 @@ export async function runVisual(input: VisualRunInput): Promise<VisualReport> {
       } catch (e) {
         problems.push(`${side === 'before' ? 'prima' : 'dopo'}: ${truncate((e as Error).message ?? String(e), 300)}`);
       } finally {
-        killTree(app.proc);
+        stopApp(app.proc);
         if (linked) removeLink(linked);
+        if (!(await waitFree(cfg.url, 10_000))) problems.push(`${side === 'before' ? 'prima' : 'dopo'}: l'app risponde ancora su ${cfg.url} dopo essere stata fermata`);
       }
     }
   } finally {
-    await git(input.repo.path, ['worktree', 'remove', '--force', baseDir], { allowFail: true });
-    fs.rmSync(baseDir, { recursive: true, force: true });
-    await git(input.repo.path, ['worktree', 'prune'], { allowFail: true });
+    await removeBaseWorktree(input.repo.path, baseDir);
   }
   const rows = checks.map((c, i) => ({
     name: c.name,
@@ -269,6 +299,49 @@ export async function runVisual(input: VisualRunInput): Promise<VisualReport> {
   }));
   if (!sides.before && !sides.after) return report('failed', "l'app non si è avviata", rows);
   return report('done', undefined, rows);
+}
+
+/** Toglie il worktree temporaneo del branch di partenza (prima il collegamento a node_modules, mai seguito). */
+async function removeBaseWorktree(repoPath: string, baseDir: string): Promise<void> {
+  removeLink(path.join(baseDir, 'node_modules'));
+  await git(repoPath, ['worktree', 'remove', '--force', baseDir], { allowFail: true });
+  fs.rmSync(baseDir, { recursive: true, force: true, maxRetries: 5 });
+  await git(repoPath, ['worktree', 'prune'], { allowFail: true });
+}
+
+/**
+ * Dopo un'interruzione (crash, chiusura forzata): toglie i collegamenti a node_modules rimasti nei
+ * worktree degli agenti e i worktree temporanei del branch di partenza. Restituisce cosa ha fatto.
+ */
+export async function cleanupVisualLeftovers(visualDir: string, repos: readonly Repo[]): Promise<string[]> {
+  const done: string[] = [];
+  for (const r of repos) {
+    for (const w of r.worktrees.filter((x) => x.status === 'active')) {
+      const link = path.join(w.path, 'node_modules');
+      if (isLink(link)) {
+        removeLink(link);
+        done.push(`tolto il collegamento a node_modules rimasto in ${w.path}`);
+      }
+    }
+  }
+  if (!fs.existsSync(visualDir)) return done;
+  for (const name of fs.readdirSync(visualDir).filter((n) => n.endsWith('-base'))) {
+    const dir = path.join(visualDir, name);
+    removeLink(path.join(dir, 'node_modules'));
+    for (const r of repos) await git(r.path, ['worktree', 'remove', '--force', dir], { allowFail: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+    for (const r of repos) await git(r.path, ['worktree', 'prune'], { allowFail: true });
+    done.push(`rimosso il worktree temporaneo ${dir}`);
+  }
+  return done;
+}
+
+function isLink(p: string): boolean {
+  try {
+    return fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 /**

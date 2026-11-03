@@ -27,6 +27,8 @@ export interface KeystoneApi {
   onEvent(cb: (e: UiEvent) => void): () => void;
   send(cmd: ValidatedCommand): Promise<Ack>;
   requestDiff(repoId: string, worktree: string): Promise<{ ok: true; files: DiffFile[] } | { ok: false; error: string }>;
+  /** una schermata della verifica visuale di un task (data URL PNG) */
+  requestShot(taskId: string, shotId: string): Promise<{ ok: true; dataUrl: string } | { ok: false; error: string }>;
   previewRepo(path: string): Promise<{ ok: true; preview: RepoPreview } | { ok: false; error: string }>;
   pickFolder(): Promise<string | undefined>;
   connection(): Promise<ConnectionInfo>;
@@ -40,6 +42,7 @@ export const CHANNELS = {
   event: 'ks:event',
   send: 'ks:send',
   diff: 'ks:diff',
+  shot: 'ks:visual-shot',
   preview: 'ks:preview',
   pickFolder: 'ks:pick-folder',
   connection: 'ks:connection',

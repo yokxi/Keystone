@@ -41,6 +41,11 @@ export interface TurnSpec {
   /** lead: il checkout dell'utente (sola lettura); worker: il suo worktree */
   cwd: string;
   prompt: string;
+  /**
+   * Immagini da allegare al prompt (file PNG locali, con didascalia), dopo il testo. Oggi: le
+   * schermate della verifica visuale nella review del lead, solo se l'opzione è attiva.
+   */
+  images?: Array<{ path: string; caption: string }>;
   /** ruolo, regole e contesto, aggiunti alle istruzioni di sistema del motore */
   instructions: string;
   model: string;

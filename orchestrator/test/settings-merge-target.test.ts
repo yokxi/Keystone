@@ -78,8 +78,35 @@ describe('branch di destinazione del merge', () => {
     await expect(o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: 'non-esiste' }, noReply)).rejects.toThrow(/non esiste/);
     await expect(o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: 'Keystone/bruno/t1-x' }, noReply)).rejects.toThrow(/branch degli agenti/);
     await expect(o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: '-x' }, noReply)).rejects.toThrow(/non valido/);
-    expect(await o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: 'sviluppo' }, noReply)).toEqual({ repoId, mergeTarget: 'sviluppo' });
-    expect(await o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: null }, noReply)).toEqual({ repoId, mergeTarget: null });
+    expect(await o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: 'sviluppo' }, noReply)).toEqual({ repoId, mergeTarget: 'sviluppo', visual: null });
+    expect(await o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: null }, noReply)).toEqual({ repoId, mergeTarget: null, visual: null });
+  });
+
+  it('repo.config: un campo assente resta invariato, null torna al default (verifica visuale e destinazione indipendenti)', async () => {
+    const { o, repoId } = await setup();
+    const visual = { command: 'npm run dev', url: 'http://localhost:5173', startTimeoutSec: 60 };
+    await o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: 'sviluppo' }, noReply);
+
+    // salvare la verifica visuale non cambia la destinazione dei merge
+    expect(await o.handle({ v: 1, type: 'repo.config', repoId, visual }, noReply)).toEqual({ repoId, mergeTarget: 'sviluppo', visual });
+    expect(o.repos.get(repoId)).toMatchObject({ mergeTarget: 'sviluppo', visual });
+
+    // e viceversa: cambiare la destinazione non tocca la verifica visuale
+    expect(await o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: null }, noReply)).toEqual({ repoId, mergeTarget: null, visual });
+    expect(o.repos.get(repoId)?.mergeTarget).toBeUndefined();
+    expect(o.repos.get(repoId)?.visual).toEqual(visual);
+    await o.handle({ v: 1, type: 'repo.config', repoId, mergeTarget: 'sviluppo' }, noReply);
+
+    // null esplicito disattiva la verifica visuale, la destinazione resta
+    expect(await o.handle({ v: 1, type: 'repo.config', repoId, visual: null }, noReply)).toEqual({ repoId, mergeTarget: 'sviluppo', visual: null });
+    expect(o.repos.get(repoId)?.visual).toBeUndefined();
+    expect(o.repos.get(repoId)?.mergeTarget).toBe('sviluppo');
+
+    // un URL non locale è rifiutato e non cambia niente
+    await expect(o.handle({ v: 1, type: 'repo.config', repoId, visual: { ...visual, url: 'https://staging.example.com' } }, noReply)).rejects.toThrow(/locale/);
+    expect(o.repos.get(repoId)?.visual).toBeUndefined();
+    // senza nessun campo non c'è niente da cambiare
+    await expect(o.handle({ v: 1, type: 'repo.config', repoId } as never, noReply)).rejects.toThrow(/niente da cambiare/);
   });
 
   it('destinazione diversa dal branch aperto: il worktree parte da lì e il merge sposta solo quel riferimento', async () => {

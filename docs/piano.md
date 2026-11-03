@@ -26,7 +26,9 @@ modello vero.
 
 ## Fase 6b — Verifica visuale nella review
 
-Da fare dopo la Fase 6. Non è ancora implementata.
+Parte 1 fatta: schermate prima/dopo, resoconto del worker, permesso per il browser, schermate al
+lead come opzione. Dettagli e limiti in `docs/verifica-visuale.md`. Manca la parte 2, più sotto.
+Manca anche una prova con un modello vero.
 
 **Configurazione per repository.** Per ogni repository registrato si configurano:
 
@@ -65,6 +67,32 @@ passaggi da verificare: URL, clic, campi da compilare. Scrive anche un resoconto
 - L'installazione dei browser di Playwright chiede il permesso.
 
 **Limite iniziale.** All'inizio solo app web, e il limite va documentato.
+
+### Parte 2 — da fare in una conversazione separata
+
+Dopo la parte 1 (verifica con schermate prima/dopo, descritta sopra), da fare dopo l'ok.
+
+**Console, errori e rete nella review.** Durante la verifica Keystone raccoglie, per ogni pagina e
+per ciascuno dei due lati (prima e dopo):
+
+- i messaggi della console del browser;
+- gli errori JavaScript non gestiti;
+- le richieste fallite: errori di rete, risposte 4xx e 5xx, richieste bloccate perché non locali.
+
+La review li mostra accanto alle schermate e mette in evidenza ciò che compare solo "dopo". Il
+lead li riceve come testo nella sua review. Testi lunghi troncati, nessun dato fuori da
+`~/.keystone`.
+
+**Strumento "prova interfaccia" per il worker.** Durante il lavoro il worker può chiedere a
+Keystone di avviare l'app dal suo worktree e di eseguire dei passaggi, con lo stesso formato di
+`visual_checks`. Riceve indietro l'esito dei passaggi, la console, gli errori e le richieste
+fallite. Così verifica l'interfaccia prima di mettere il task in review. Regole:
+
+- lo esegue Keystone, con le stesse garanzie della verifica in review: solo rete locale, ambiente
+  senza credenziali, schermate in `~/.keystone`;
+- limiti per turno: numero di prove e tempo massimo;
+- la schermata va all'agente solo se l'opzione delle schermate è attiva per il repository, perché
+  costa token.
 
 ## Fase 6c — Accesso al database in sola lettura
 
@@ -111,27 +139,27 @@ database di sviluppo o con dati anonimizzati, mai di produzione. L'avviso sta:
 - nell'interfaccia, durante la configurazione della connessione;
 - in `docs/sicurezza.md`.
 
-**MCP: da valutare.** Oggi i tool del team sono definiti una volta sola (`TeamTool`) e ogni motore
-li espone a modo suo: il motore Claude con un server MCP interno (`createSdkMcpServer`), il motore
-Codex con i dynamic tool di `app-server`. Gli strumenti del database possono seguire la stessa
-strada: sono tool di Keystone e passano dalla policy, dal registro e dall'approvazione. Questo
-basta per la prima versione.
+**MCP: decisione presa.** Oggi i tool del team sono definiti una volta sola (`TeamTool`) e ogni
+motore li espone a modo suo: il motore Claude con un server MCP interno (`createSdkMcpServer`), il
+motore Codex con i dynamic tool di `app-server`. Gli strumenti del database seguono la stessa
+strada: sono tool di Keystone e passano dalla policy, dal registro e dall'approvazione.
 
-Per collegare in futuro un server MCP esterno per lo schema del database, conviene che sia Keystone
-a fare da client MCP, e che inoltri i suoi tool agli agenti come tool del team. Non si passa il
-server direttamente al motore, perché si perderebbero:
+Decisione: se in futuro si collega un server MCP esterno (per esempio per lo schema del database),
+**Keystone fa da client MCP e inoltra i suoi strumenti agli agenti come tool del team**, con policy,
+registro e approvazione. Il server esterno non viene mai passato direttamente al motore, perché si
+perderebbero:
 
 - la policy;
 - il registro e l'approvazione;
 - la pulizia delle trascrizioni;
 - l'isolamento attuale (`mcp_servers: {}` per Codex, nessun server MCP dell'utente per Claude).
 
-Da decidere prima di implementare:
+Restano da definire, prima di implementare:
 
 - se esporre i tool del database con nomi e schemi compatibili con quelli dei server MCP più
   diffusi per i database;
 - come limitare un server esterno ai soli tool di lettura;
-- dove gira un server esterno: un processo stdio con l'ambiente ripulito, senza le credenziali
+- come avviare un server esterno: un processo stdio con l'ambiente ripulito, senza le credenziali
   degli agenti.
 
 ## Fase 7 — File di configurazione

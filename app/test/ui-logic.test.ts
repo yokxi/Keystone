@@ -86,7 +86,18 @@ describe('validazione IPC nel processo main', () => {
     expect(validateCommand({ type: 'settings.set', userName: null })).toMatchObject({ ok: true });
     expect(validateCommand({ type: 'settings.set', userName: 42 })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'repo.config', repoId: 'r1', mergeTarget: 'sviluppo' })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'repo.config', repoId: 'r1', mergeTarget: null })).toMatchObject({ ok: true });
+    // mergeTarget è facoltativo: basta la verifica visuale (o null per disattivarla)
+    expect(validateCommand({ type: 'repo.config', repoId: 'r1', visual: { command: 'npm run dev', url: 'http://localhost:5173', startTimeoutSec: 60 } })).toEqual({
+      ok: true,
+      msg: { type: 'repo.config', repoId: 'r1', visual: { command: 'npm run dev', url: 'http://localhost:5173', startTimeoutSec: 60 } },
+    });
+    expect(validateCommand({ type: 'repo.config', repoId: 'r1', visual: null })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'repo.config', repoId: 'r1', visual: { command: 'x', url: 'http://localhost', startTimeoutSec: 1 } })).toMatchObject({ ok: false });
+    // senza nessun campo da cambiare: rifiutato
     expect(validateCommand({ type: 'repo.config', repoId: 'r1' })).toMatchObject({ ok: false });
+    // le schermate passano da un canale dedicato del main, non dal renderer
+    expect(validateCommand({ type: 'visual.shot.request', requestId: 'q', taskId: 't1', shotId: 'after-1' })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'hello', client: 'x', protocol: 1 })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'snapshot' })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'task.action', taskId: 't1', action: 'rm -rf' })).toMatchObject({ ok: false });

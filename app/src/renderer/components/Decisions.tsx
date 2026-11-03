@@ -24,11 +24,14 @@ function DecisionCard({ d, state, answer, openMerge }: { d: Decision } & Props) 
     if (err) setError(err);
   };
   const strict = d.kind === 'permission' && d.alwaysAsk === true;
+  // richiesta di Keystone stesso (download del browser per la verifica visuale), non di un agente
+  const fromKeystone = d.kind === 'permission' && d.tool === 'visual.browser';
+  const who = fromKeystone ? 'Keystone' : (agent?.name ?? d.agentId);
   return (
     <div className={`card decision ${d.kind} ${strict ? 'strict' : ''}`} data-testid={`decision-${d.id}`}>
       <div className="decision-head">
-        {agent && <Avatar agent={agent} agents={state.agents} size={20} />}
-        <b style={{ color: 'var(--text)' }}>{agent?.name ?? d.agentId}</b>
+        {agent && !fromKeystone && <Avatar agent={agent} agents={state.agents} size={20} />}
+        <b style={{ color: 'var(--text)' }}>{who}</b>
         <span className={`badge ${d.kind === 'merge' ? 'ok' : d.kind === 'permission' || d.kind === 'budget' ? 'warn' : 'info'}`}>{KIND_LABEL[d.kind]}</span>
         {d.taskId && <span className="badge">{d.taskId}</span>}
         <span className="mono faint">{d.id}</span>
@@ -42,14 +45,14 @@ function DecisionCard({ d, state, answer, openMerge }: { d: Decision } & Props) 
           <span className="icon">⚠</span>
           <div>
             Richiede sempre la tua approvazione
-            <small>Configurazione git, variabili d'ambiente, hook o file .git: puoi consentire solo questa singola esecuzione.</small>
+            <small>{fromKeystone ? 'Download di un browser nella cartella di Keystone: puoi consentirlo solo questa volta.' : "Configurazione git, variabili d'ambiente, hook o file .git: puoi consentire solo questa singola esecuzione."}</small>
           </div>
         </div>
       )}
 
       {d.kind === 'permission' ? (
         <>
-          <div className="decision-q">{agent?.name ?? d.agentId} chiede di eseguire:</div>
+          <div className="decision-q">{who} chiede di eseguire:</div>
           <div className="command-block">{d.command ?? d.question}</div>
         </>
       ) : (

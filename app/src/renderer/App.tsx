@@ -213,7 +213,7 @@ export function App() {
         {view === 'decisions' && <Decisions state={state} answer={answer} openMerge={openMerge} />}
         {view === 'review' && <Review state={state} target={review} answer={answer} close={() => setView('decisions')} />}
         {view === 'memory' && <Memory state={state} />}
-        {view === 'repos' && <Repos state={state} send={sendVoid} openRegister={(p) => setRegister({ ...(p ? { path: p } : {}) })} />}
+        {view === 'repos' && <Repos state={state} send={send} openRegister={(p) => setRegister({ ...(p ? { path: p } : {}) })} />}
         {view === 'settings' && <Settings state={state} send={sendVoid} />}
       </main>
       <ConsoleBar

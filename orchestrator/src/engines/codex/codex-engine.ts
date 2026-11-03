@@ -28,7 +28,7 @@ import { z } from 'zod';
 import type { EngineEvent, PermissionAnswer, Role } from '@keystone/shared';
 import { ensureDir } from '../../util/fsx.js';
 import { git } from '../../util/git.js';
-import { truncate } from '../../util/text.js';
+import { redactImageData, truncate } from '../../util/text.js';
 import { EventChannel, PermissionBroker } from '../channel.js';
 import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TurnSpec } from '../types.js';
 import { unwrapShell } from './command.js';
@@ -504,7 +504,7 @@ export class CodexEngine implements EngineAdapter {
         }
         if (aborted) throw new Error('interrotto');
         const effort = codexEffort(spec.role === 'lead' ? (this.cfg.leadEffort ?? this.cfg.effort) : this.cfg.effort);
-        const t = await rpc.request<{ turn: { id: string } }>('turn/start', { threadId, input: [{ type: 'text', text: spec.prompt, text_elements: [] }], ...(effort ? { effort } : {}) });
+        const t = await rpc.request<{ turn: { id: string } }>('turn/start', { threadId, input: turnInput(spec), ...(effort ? { effort } : {}) });
         turnId = t.turn.id;
         const res = await done;
         if (aborted || res.status === 'interrupted') emit({ type: 'turn_end', status: 'aborted' });
@@ -574,9 +574,22 @@ export class CodexEngine implements EngineAdapter {
       // la chiave API di login/start non va mai nelle trascrizioni
       const e = entry as { msg?: RpcMessage };
       if (e.msg?.method === 'account/login/start') return;
-      fs.appendFileSync(file, `${JSON.stringify(entry)}\n`);
+      fs.appendFileSync(file, `${JSON.stringify(entry, redactImageData)}\n`);
     };
   }
+}
+
+/** L'input del turno: il prompt e, se ci sono, le immagini locali (localImage), ognuna con la sua didascalia. */
+export function turnInput(spec: Pick<TurnSpec, 'prompt' | 'images'>): Array<Record<string, unknown>> {
+  const input: Array<Record<string, unknown>> = [{ type: 'text', text: spec.prompt, text_elements: [] }];
+  for (const img of spec.images ?? []) {
+    if (!fs.existsSync(img.path)) {
+      input.push({ type: 'text', text: `${img.caption}: schermata non disponibile`, text_elements: [] });
+      continue;
+    }
+    input.push({ type: 'text', text: img.caption, text_elements: [] }, { type: 'localImage', path: img.path });
+  }
+  return input;
 }
 
 /** I tool del team come dynamicTools di Codex (schema JSON dallo schema zod). */

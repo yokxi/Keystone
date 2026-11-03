@@ -25,7 +25,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Decision, DiffFile, Repo, Worktree } from '@keystone/shared';
+import type { Decision, DiffFile, Repo, VisualConfig, Worktree } from '@keystone/shared';
 import { MERGE_OPTIONS } from '@keystone/shared';
 import { ensureDir, samePath } from '../util/fsx.js';
 import { git, gitOut, identityEnv } from '../util/git.js';
@@ -34,6 +34,7 @@ import { runShell } from '../util/proc.js';
 import { lastLines, slugify } from '../util/text.js';
 import type { Ctx } from './context.js';
 import { parseUnifiedDiff } from './diff.js';
+import { validateVisualConfig } from './visual.js';
 import { guardActive, guardInstalled, installGuard, previewGuard, writeGuardFile, WORKTREE_PREFIX, type GuardPreview } from './gitsafety.js';
 
 export const BRANCH_PREFIX = 'Keystone';
@@ -624,6 +625,23 @@ export class RepoManager {
       this.changed(r);
       return r;
     });
+  }
+
+  /**
+   * La verifica visuale del repository (null = disattivata). L'URL deve essere locale: l'app
+   * avviata per la verifica non deve parlare con la rete esterna.
+   */
+  setVisual(repoId: string, cfg: VisualConfig | null): Repo {
+    const r = this.require(repoId);
+    if (cfg === null) delete r.visual;
+    else {
+      const clean: VisualConfig = { command: cfg.command.trim(), url: cfg.url.trim(), startTimeoutSec: cfg.startTimeoutSec, ...(cfg.leadScreenshots ? { leadScreenshots: true } : {}) };
+      const bad = validateVisualConfig(clean);
+      if (bad) throw new RepoError(bad, 'refused');
+      r.visual = clean;
+    }
+    this.changed(r);
+    return r;
   }
 
   /** Rimuove la cartella di un worktree con retry (Windows) e poi `git worktree prune`. */

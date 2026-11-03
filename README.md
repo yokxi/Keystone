@@ -1,5 +1,4 @@
 # Keystone
-
 Orchestratore desktop di un team di agenti AI (un lead e fino a cinque worker) che lavora su un tuo
 repository git. Ogni task ha il suo worktree e il suo branch. Il tuo checkout cambia solo con un
 merge che approvi tu.
@@ -32,4 +31,5 @@ Con un motore vero: `--engine claude` o `--engine codex`. Per un team misto: `--
 - `docs/sicurezza.md`: cosa può e non può fare un agente, e i limiti ("non è una sandbox").
 - `docs/interfaccia.md`: le pagine dell'app.
 - `docs/protocol.md`: il protocollo tra orchestratore e app.
+- `docs/verifica-visuale.md`: le schermate prima/dopo nella review, eseguite da Keystone.
 - `docs/piano.md`: le fasi successive.

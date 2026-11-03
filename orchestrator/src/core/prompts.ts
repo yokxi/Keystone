@@ -1,5 +1,5 @@
 // Prompt e istruzioni per gli agenti (uguali per ogni motore).
-import type { Goal, Task, Worktree } from '@keystone/shared';
+import type { Goal, Task, VisualReport, Worktree } from '@keystone/shared';
 import type { DiffFile } from '@keystone/shared';
 import { lastLines } from '../util/text.js';
 import { diffToText } from './diff.js';
@@ -24,6 +24,27 @@ export function ciReport(res: TestResult | undefined): string {
     `- output finale (ultime ${CI_TAIL_LINES} righe):`,
     tail ? tail.split('\n').map((l) => `    ${l}`).join('\n') : '    (nessun output)',
   ].join('\n');
+}
+
+/**
+ * L'esito della verifica visuale in testo (log, feed, review del lead, decisione di merge). Prima
+ * riga: il riassunto.
+ */
+export function visualSummary(r: VisualReport): string {
+  if (r.status === 'running') return 'Verifica visuale: in corso';
+  if (r.status === 'skipped') return `Verifica visuale: non eseguita (${r.note ?? 'motivo sconosciuto'})`;
+  const failedChecks = r.checks.filter((c) => c.before.error || c.after.error || c.after.shot?.error);
+  const head =
+    r.status === 'failed'
+      ? `Verifica visuale: NON RIUSCITA (${r.note ?? "l'app non si è avviata"})`
+      : `Verifica visuale eseguita da Keystone: ${r.checks.length} pagine${failedChecks.length ? `, ${failedChecks.length} con passaggi non riusciti` : ''}${r.problems.length ? `, ${r.problems.length} problemi` : ''}`;
+  const lines = [head];
+  for (const c of r.checks) {
+    const side = (label: string, x: VisualReport['checks'][number]['before']) => `${label}: ${x.shot ? (x.shot.error ? `schermata, passaggio non riuscito (${x.shot.error})` : 'schermata') : `nessuna schermata (${x.error ?? '?'})`}`;
+    lines.push(`- ${c.name}${c.caption ? ` (atteso: ${c.caption})` : ''}: ${side('prima', c.before)}; ${side('dopo', c.after)}`);
+  }
+  for (const p of r.problems) lines.push(`- problema: ${p}`);
+  return lines.join('\n');
 }
 
 export interface PromptEnv {
@@ -72,7 +93,7 @@ export function workerInstructions(env: PromptEnv, wt: Worktree): string {
     '',
     `Sei un WORKER. Lavori solo nel tuo worktree: ${wt.path} (branch ${wt.branch}, base ${wt.base}).`,
     'Modifica i file, esegui i test, committa sul tuo branch con messaggi chiari.',
-    'Quando hai finito chiama update_task con status "review" e un summary (cosa hai cambiato, come l\'hai verificato). Se sei bloccato usa status "blocked" con blocked_reason.',
+    'Quando hai finito: prima submit_report (richiesta, cosa hai cambiato e perché, come l\'hai verificato, problemi aperti; se il task tocca l\'interfaccia web, le pagine da verificare in visual_checks), poi update_task con status "review" e un summary. Se sei bloccato usa status "blocked" con blocked_reason.',
   ].join('\n');
 }
 
@@ -86,16 +107,33 @@ export function workPrompt(env: PromptEnv, t: Task, wt: Worktree, continuesFrom?
     t.description ? `\n${t.description}` : '',
     continuesFrom ? `\nRiprendi il lavoro iniziato da ${env.nameOf(continuesFrom)}: il tuo branch parte dal suo.` : '',
     `\nWorktree: ${wt.path}`,
-    '\nQuando hai finito: update_task con status "review" e summary.',
+    '\nQuando hai finito: submit_report, poi update_task con status "review" e summary.',
   ].join('');
 }
 
-export function reviewPrompt(env: PromptEnv, t: Task, files: DiffFile[], ciNote: string): string {
+/** Il resoconto strutturato del worker (submit_report), in testo. */
+export function workReportText(t: Task): string {
+  const r = t.report;
+  if (!r) return '';
+  return [
+    'Resoconto del worker (quello che dice lui, da verificare):',
+    `- richiesta: ${r.request}`,
+    `- cosa ha cambiato: ${r.changes}`,
+    `- perché: ${r.why}`,
+    `- come l'ha verificato: ${r.verification}`,
+    `- problemi aperti: ${r.openIssues || 'nessuno'}`,
+  ].join('\n');
+}
+
+export function reviewPrompt(env: PromptEnv, t: Task, files: DiffFile[], ciNote: string, opts: { withImages?: boolean } = {}): string {
   return [
     `Rivedi ${t.id} — ${t.title} (worker: ${t.assignee ? env.nameOf(t.assignee) : '?'}).`,
     t.summary ? `Riassunto del worker (quello che dice lui): ${t.summary}` : '',
+    workReportText(t),
     '',
     ciNote,
+    t.visual ? `\n${visualSummary(t.visual)}` : '',
+    opts.withImages ? 'Le schermate prima/dopo sono allegate a questo messaggio, nello stesso ordine delle pagine qui sopra. Confrontale con quanto atteso.' : '',
     '',
     'Diff:',
     diffToText(files),

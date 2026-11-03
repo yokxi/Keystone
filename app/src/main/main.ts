@@ -50,12 +50,16 @@ function pushState(): void {
 }
 
 const pendingDiffs = new Map<string, (files: DiffFile[]) => void>();
+const pendingShots = new Map<string, (r: { dataUrl?: string; error?: string }) => void>();
 
 client.onState(() => pushState());
 client.onMessage$((m: ServerMessage) => {
   if (m.type === 'diff') {
     pendingDiffs.get(m.requestId)?.(m.files);
     pendingDiffs.delete(m.requestId);
+  } else if (m.type === 'visual.shot') {
+    pendingShots.get(m.requestId)?.({ ...(m.dataUrl ? { dataUrl: m.dataUrl } : {}), ...(m.error ? { error: m.error } : {}) });
+    pendingShots.delete(m.requestId);
   } else if (m.type === 'notify') {
     sendEvent({ type: 'notify', level: m.level, text: m.text });
     // l'utente è altrove: notifica di sistema quando serve una sua decisione
@@ -76,6 +80,7 @@ function guard(e: IpcMainInvokeEvent): void {
 }
 
 let diffSeq = 0;
+let shotSeq = 0;
 
 function registerIpc(): void {
   ipcMain.handle(CHANNELS.getState, (e): ViewState => {
@@ -99,6 +104,22 @@ function registerIpc(): void {
       return { ok: false, error: ack.error ?? 'diff non disponibile' };
     }
     return { ok: true, files: await Promise.race([files, new Promise<DiffFile[]>((r) => setTimeout(() => r([]), 30_000))]) };
+  });
+  ipcMain.handle(CHANNELS.shot, async (e, taskId: unknown, shotId: unknown) => {
+    guard(e);
+    if (typeof taskId !== 'string' || typeof shotId !== 'string' || !/^[a-z0-9-]{1,80}$/.test(shotId)) return { ok: false, error: 'richiesta non valida' };
+    const requestId = `shot-${++shotSeq}`;
+    const res = new Promise<{ dataUrl?: string; error?: string }>((resolve) => pendingShots.set(requestId, resolve));
+    const ack = await client.request({ type: 'visual.shot.request', requestId, taskId, shotId });
+    if (!ack.ok) {
+      pendingShots.delete(requestId);
+      return { ok: false, error: ack.error ?? 'schermata non disponibile' };
+    }
+    const r: { dataUrl?: string; error?: string } = await Promise.race([res, new Promise<{ error: string }>((ok) => setTimeout(() => ok({ error: 'tempo scaduto' }), 30_000))]);
+    pendingShots.delete(requestId);
+    // al renderer arriva solo un'immagine PNG in base64, mai altro
+    if (r.dataUrl && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(r.dataUrl)) return { ok: true, dataUrl: r.dataUrl };
+    return { ok: false, error: r.error ?? 'schermata non valida' };
   });
   ipcMain.handle(CHANNELS.preview, async (e, p: unknown) => {
     guard(e);

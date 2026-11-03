@@ -266,6 +266,22 @@ comando, chiede.
   del 20 ottobre. Si usa quindi la 44.10.1, l'ultima della serie. Quando la 44.10.1 avrà più di
   due settimane la regola sarà di nuovo rispettata, senza bisogno di cambiare versione.
 
+- **playwright-core 1.64.1** (pubblicata il 14 ottobre 2026), per la verifica visuale. È solo la
+  libreria, senza browser: i browser di Playwright vengono scaricati soltanto dopo il tuo permesso
+  (vedi `docs/verifica-visuale.md`).
+
+## 6bis. Verifica visuale
+
+Se la configuri per un repository, Keystone avvia l'app dal branch di partenza e dal worktree
+dell'agente per catturare le schermate. Quindi esegue codice del branch, come i test.
+
+- La rete esterna è bloccata nel browser, e frenata (non isolata) per il processo dell'app.
+- L'app riceve l'ambiente senza credenziali.
+- Le schermate restano in `~/.keystone` e non finiscono nelle trascrizioni.
+- Il download di Chromium chiede sempre il permesso.
+
+Dettagli e limiti in `docs/verifica-visuale.md`.
+
 ## 7. Motore Claude
 
 Dettagli in `docs/motore-claude.md`. In sintesi:

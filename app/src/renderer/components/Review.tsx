@@ -1,4 +1,4 @@
-import type { Decision, DiffFile, ViewState } from '@keystone/shared';
+import type { Decision, DiffFile, Task, ViewState, VisualReport } from '@keystone/shared';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collapseContext } from '../lib/diff-view.js';
 
@@ -84,6 +84,104 @@ function FileDiff({ f }: { f: DiffFile }) {
   );
 }
 
+/** Una schermata, caricata solo quando serve (dal main, che la chiede all'orchestratore). */
+function Shot({ taskId, side, label, onOpen }: { taskId: string; side: VisualReport['checks'][number]['before']; label: string; onOpen: (src: string) => void }) {
+  const [src, setSrc] = useState<string>();
+  const [error, setError] = useState<string>();
+  const id = side.shot?.id;
+  useEffect(() => {
+    setSrc(undefined);
+    setError(undefined);
+    if (!id) return;
+    let alive = true;
+    void window.keystone.requestShot(taskId, id).then((r) => {
+      if (!alive) return;
+      if (r.ok) setSrc(r.dataUrl);
+      else setError(r.error);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [taskId, id]);
+  const problem = side.shot?.error ?? side.error;
+  return (
+    <figure className="shot">
+      <figcaption>
+        <b>{label}</b>
+        {problem && (
+          <span className="badge bad" title={problem}>
+            {side.shot ? 'passaggio non riuscito' : 'nessuna schermata'}
+          </span>
+        )}
+      </figcaption>
+      {src ? (
+        <button className="shot-img" onClick={() => onOpen(src)} title="Ingrandisci">
+          <img src={src} alt={label} />
+        </button>
+      ) : (
+        <div className="shot-empty">{id ? (error ?? 'carico…') : 'nessuna schermata'}</div>
+      )}
+      {problem && <div className="shot-problem">{problem}</div>}
+    </figure>
+  );
+}
+
+const VISUAL_STATUS: Record<VisualReport['status'], { label: string; cls: string }> = {
+  running: { label: 'in corso', cls: 'warn' },
+  done: { label: 'eseguita', cls: 'ok' },
+  skipped: { label: 'non eseguita', cls: '' },
+  failed: { label: 'non riuscita', cls: 'bad' },
+};
+
+/** Verifica visuale: schermate prima/dopo affiancate per ogni pagina, con didascalia e problemi. */
+function VisualPanel({ task, visual }: { task: Task; visual: VisualReport }) {
+  const [zoom, setZoom] = useState<{ src: string; label: string }>();
+  const st = VISUAL_STATUS[visual.status];
+  return (
+    <div className="card visual-panel" data-testid="visual-panel">
+      <div className="visual-head">
+        <h4>Verifica visuale</h4>
+        <span className={`badge ${st.cls}`}>{st.label}</span>
+        {visual.note && <span className="muted">{visual.note}</span>}
+      </div>
+      {visual.problems.length > 0 && (
+        <ul className="visual-problems">
+          {visual.problems.map((p, i) => (
+            <li key={i}>
+              <pre>{p}</pre>
+            </li>
+          ))}
+        </ul>
+      )}
+      {visual.checks.map((c, i) => (
+        <div key={i} className="visual-check">
+          <div className="visual-check-head">
+            <b>{c.name}</b>
+            {c.caption && <span className="muted">atteso: {c.caption}</span>}
+          </div>
+          <div className="shot-pair">
+            <Shot taskId={task.id} side={c.before} label="Prima" onOpen={(src) => setZoom({ src, label: `${c.name} · prima` })} />
+            <Shot taskId={task.id} side={c.after} label="Dopo" onOpen={(src) => setZoom({ src, label: `${c.name} · dopo` })} />
+          </div>
+        </div>
+      ))}
+      {zoom && (
+        <div className="overlay" onClick={() => setZoom(undefined)} role="dialog" aria-modal="true" aria-label={zoom.label}>
+          <figure className="shot-zoom" onClick={(e) => e.stopPropagation()}>
+            <figcaption>
+              {zoom.label}
+              <button className="btn small" onClick={() => setZoom(undefined)}>
+                Chiudi
+              </button>
+            </figcaption>
+            <img src={zoom.src} alt={zoom.label} />
+          </figure>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function Review({ state, target, answer, close }: Props) {
   const [files, setFiles] = useState<DiffFile[]>();
   const [error, setError] = useState<string>();
@@ -158,6 +256,23 @@ export function Review({ state, target, answer, close }: Props) {
               <pre>{task.summary}</pre>
             </div>
           )}
+          {task?.report && (
+            <div className="card summary-box" data-testid="work-report">
+              <h4>Resoconto del worker</h4>
+              <dl className="report">
+                <dt>Richiesta</dt>
+                <dd>{task.report.request}</dd>
+                <dt>Cosa ha cambiato</dt>
+                <dd>{task.report.changes}</dd>
+                <dt>Perché</dt>
+                <dd>{task.report.why}</dd>
+                <dt>Come l’ha verificato</dt>
+                <dd>{task.report.verification}</dd>
+                <dt>Problemi aperti</dt>
+                <dd>{task.report.openIssues || 'nessuno'}</dd>
+              </dl>
+            </div>
+          )}
           {decision?.context && (
             <div className="card summary-box">
               <h4>Note della review e test</h4>
@@ -190,6 +305,7 @@ export function Review({ state, target, answer, close }: Props) {
           )}
         </div>
         <div className="review-main">
+          {task?.visual && <VisualPanel task={task} visual={task.visual} />}
           {error && !decision && <div className="card empty">{error}</div>}
           {!files && !error && <div className="card empty">Carico il diff…</div>}
           {files?.length === 0 && <div className="card empty">Nessuna modifica in questo worktree.</div>}

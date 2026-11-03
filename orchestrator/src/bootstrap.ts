@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { EngineId } from '@keystone/shared';
 import { dataDir, type OrchestratorConfig } from './config.js';
 import type { Logger } from './core/context.js';
-import { Orchestrator } from './core/orchestrator.js';
+import { Orchestrator, type VisualDeps } from './core/orchestrator.js';
 import type { RepoManagerOptions } from './core/repos.js';
 import type { TeamMember } from './core/team.js';
 import { createEngines, type EngineFactoryOptions } from './engines/registry.js';
@@ -18,6 +18,8 @@ export interface BuildOptions {
   storeDebounceMs?: number;
   /** legge git user.name (test) */
   resolveGitUserName?: () => string | undefined;
+  /** verifica visuale simulata (test) */
+  visual?: Partial<VisualDeps>;
 }
 
 export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = {}): Orchestrator {
@@ -56,5 +58,6 @@ export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = 
     ...(cfg.keepMergedBranches ? { keepMergedBranches: true } : {}),
     ...(cfg.goalLimits ? { defaultGoalLimits: cfg.goalLimits } : {}),
     ...(opts.storeDebounceMs !== undefined ? { storeDebounceMs: opts.storeDebounceMs } : {}),
+    ...(opts.visual ? { visual: opts.visual } : {}),
   });
 }

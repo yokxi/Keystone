@@ -118,9 +118,21 @@ export type WorkReport = z.infer<typeof WorkReport>;
 /** Una schermata catturata (il file sta in ~/.keystone, mai nel repository). */
 export const VisualShot = z.object({ id: z.string().regex(/^[a-z0-9-]{1,80}$/), error: z.string().optional() });
 export const VisualSide = z.object({ shot: VisualShot.optional(), error: z.string().optional() });
+/** Configurazione della verifica visuale di un repository. */
+export const VisualConfig = z.object({
+  /** il comando che avvia l'app, eseguito nella cartella del branch (es. "npm run dev") */
+  command: z.string().min(1).max(1000),
+  /** solo rete locale: http(s) su localhost, 127.0.0.1 o [::1] */
+  url: z.string().min(1).max(500),
+  startTimeoutSec: z.number().int().min(5).max(600),
+  /** il lead vede le schermate nella sua review (costa token; disattivato di default) */
+  leadScreenshots: z.boolean().optional(),
+});
+export type VisualConfig = z.infer<typeof VisualConfig>;
+
 export const VisualReport = z.object({
-  /** done: eseguita; skipped: non eseguita (motivo in note); failed: avvio dell'app non riuscito */
-  status: z.enum(['done', 'skipped', 'failed']),
+  /** running: in corso; done: eseguita; skipped: non eseguita (motivo in note); failed: l'app non si è avviata */
+  status: z.enum(['running', 'done', 'skipped', 'failed']),
   note: z.string().optional(),
   at: Ts,
   checks: z.array(z.object({ name: z.string(), caption: z.string(), before: VisualSide, after: VisualSide })),
@@ -233,14 +245,7 @@ export const Repo = z.object({
   /** branch attualmente estratto nel checkout dell'utente */
   branch: z.string(),
   /** verifica visuale: come avviare l'app (assente = disattivata) */
-  visual: z
-    .object({
-      command: z.string().min(1).max(1000),
-      /** solo rete locale: http(s) su localhost, 127.0.0.1 o [::1] */
-      url: z.string().max(500),
-      startTimeoutSec: z.number().int().min(5).max(600),
-    })
-    .optional(),
+  visual: VisualConfig.optional(),
   /** branch in cui si fanno i merge (e da cui partono i worktree); assente = il branch aperto */
   mergeTarget: z.string().optional(),
   /** branch locali tra cui scegliere la destinazione (esclusi quelli degli agenti) */
@@ -450,15 +455,18 @@ export type RepoPreview = z.infer<typeof RepoPreview>;
 export const WorktreesPruneMsg = z.object({ ...envelope('worktrees.prune') });
 /** Il tuo nome come lo usano gli agenti e i log; null o vuoto = torna al predefinito (git user.name). */
 export const SettingsSetMsg = z.object({ ...envelope('settings.set'), userName: z.string().max(200).nullable() });
-/** Il branch in cui fare i merge di un repository; null = il branch aperto nel tuo checkout. */
+/**
+ * Configurazione di un repository. Ogni campo assente resta com'è; null torna al default:
+ * mergeTarget null = il branch aperto nel tuo checkout, visual null = verifica visuale disattivata.
+ */
 export const RepoConfigMsg = z.object({
   ...envelope('repo.config'),
   repoId: Id,
   /** assente = invariato */
   mergeTarget: z.string().max(250).nullable().optional(),
   /** verifica visuale: null = disattivata; assente = invariata */
-  visual: z.object({ command: z.string().min(1).max(1000), url: z.string().min(1).max(500), startTimeoutSec: z.number().int().min(5).max(600) }).nullable().optional(),
-});
+  visual: VisualConfig.nullable().optional(),
+}).refine((m) => m.mergeTarget !== undefined || m.visual !== undefined, { message: 'indica almeno mergeTarget o visual' });
 /** Una schermata della verifica visuale di un task (la risposta è un messaggio visual.shot). */
 export const VisualShotRequestMsg = z.object({ ...envelope('visual.shot.request'), requestId: z.string().min(1).max(100), taskId: Id, shotId: z.string().regex(/^[a-z0-9-]{1,80}$/) });
 

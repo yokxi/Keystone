@@ -1,10 +1,114 @@
-import type { RepoPreview, ViewState } from '@keystone/shared';
+import type { Repo, RepoPreview, ViewState } from '@keystone/shared';
 import { useEffect, useState } from 'react';
+
+type Send = (cmd: Parameters<Window['keystone']['send']>[0]) => Promise<string | undefined>;
 
 interface Props {
   state: ViewState;
   openRegister: (path?: string) => void;
-  send: (cmd: Parameters<Window['keystone']['send']>[0]) => Promise<void>;
+  /** restituisce l'errore, se c'è */
+  send: Send;
+}
+
+/** L'URL è locale? (lo stesso controllo dell'orchestratore, per avvisare subito) */
+export function isLocalAppUrl(u: string): boolean {
+  try {
+    const x = new URL(u.trim());
+    return (x.protocol === 'http:' || x.protocol === 'https:') && ['localhost', '127.0.0.1', '[::1]'].includes(x.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+/** Verifica visuale di un repository: come avviare l'app, dove risponde, opzioni. */
+function VisualConfigForm({ repo, send }: { repo: Repo; send: Send }) {
+  const v = repo.visual;
+  const [editing, setEditing] = useState(false);
+  const [command, setCommand] = useState(v?.command ?? 'npm run dev');
+  const [url, setUrl] = useState(v?.url ?? 'http://localhost:5173');
+  const [timeout, setTimeoutSec] = useState(String(v?.startTimeoutSec ?? 60));
+  const [leadShots, setLeadShots] = useState(v?.leadScreenshots ?? false);
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+
+  const open = () => {
+    setCommand(v?.command ?? 'npm run dev');
+    setUrl(v?.url ?? 'http://localhost:5173');
+    setTimeoutSec(String(v?.startTimeoutSec ?? 60));
+    setLeadShots(v?.leadScreenshots ?? false);
+    setError(undefined);
+    setEditing(true);
+  };
+  const seconds = Number(timeout);
+  const invalid = !command.trim() ? 'manca il comando' : !isLocalAppUrl(url) ? "l'URL deve essere locale: http://localhost:… o http://127.0.0.1:…" : !Number.isInteger(seconds) || seconds < 5 || seconds > 600 ? 'tempo di avvio tra 5 e 600 secondi' : undefined;
+
+  const save = async (visual: Repo['visual'] | null) => {
+    setBusy(true);
+    setError(undefined);
+    const err = await send({ type: 'repo.config', repoId: repo.id, visual: visual ?? null });
+    setBusy(false);
+    if (err) setError(err);
+    else setEditing(false);
+  };
+
+  return (
+    <div className="visual-config" data-testid={`visual-config-${repo.id}`}>
+      <div className="row">
+        <span className="muted">verifica visuale</span>
+        {v ? (
+          <>
+            <span className="badge ok">attiva</span>
+            <span className="mono ellipsis">
+              {v.command} → {v.url}
+            </span>
+            {v.leadScreenshots && <span className="badge">schermate al lead</span>}
+          </>
+        ) : (
+          <span className="badge">disattivata</span>
+        )}
+        {!editing && (
+          <button className="btn small" style={{ marginLeft: 'auto' }} onClick={open}>
+            {v ? 'Modifica' : 'Configura'}
+          </button>
+        )}
+      </div>
+      {editing && (
+        <>
+          <div className="grid">
+            <label htmlFor={`vc-cmd-${repo.id}`}>Comando di avvio</label>
+            <input id={`vc-cmd-${repo.id}`} className="input mono small" value={command} onChange={(e) => setCommand(e.target.value)} placeholder="npm run dev" />
+            <label htmlFor={`vc-url-${repo.id}`}>URL dell'app</label>
+            <input id={`vc-url-${repo.id}`} className="input mono small" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:5173" />
+            <label htmlFor={`vc-to-${repo.id}`}>Tempo massimo di avvio (s)</label>
+            <input id={`vc-to-${repo.id}`} className="input small" style={{ width: 90 }} inputMode="numeric" value={timeout} onChange={(e) => setTimeoutSec(e.target.value)} />
+            <span />
+            <label className="row" style={{ gap: 6 }}>
+              <input type="checkbox" checked={leadShots} onChange={(e) => setLeadShots(e.target.checked)} />
+              Il lead vede le schermate nella sua review <span className="faint">(costa token: disattivato di default)</span>
+            </label>
+          </div>
+          <p className="note">
+            Keystone avvia l'app due volte, dal branch di partenza e dal worktree dell'agente, esegue le pagine indicate dal worker e confronta le schermate. Il comando esegue il codice del branch
+            sul tuo computer, come i test. L'app può usare solo la rete locale. Le schermate restano in ~/.keystone. Solo app web. Dettagli in docs/verifica-visuale.md.
+          </p>
+          {(error ?? invalid) && <div className="decision-error">{error ?? invalid}</div>}
+          <div className="decision-actions" style={{ marginTop: 8 }}>
+            <button className="btn primary small" disabled={busy || !!invalid} onClick={() => void save({ command: command.trim(), url: url.trim(), startTimeoutSec: seconds, ...(leadShots ? { leadScreenshots: true } : {}) })}>
+              Salva
+            </button>
+            {v && (
+              <button className="btn small danger" disabled={busy} onClick={() => void save(null)}>
+                Disattiva
+              </button>
+            )}
+            <button className="btn small" disabled={busy} onClick={() => setEditing(false)}>
+              Annulla
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 export function Repos({ state, openRegister, send }: Props) {
@@ -53,6 +157,7 @@ export function Repos({ state, openRegister, send }: Props) {
             </select>
             {r.mergeTarget && r.mergeTarget !== r.branch && <span className="faint">diverso dal branch aperto: il merge sposta solo il riferimento, il tuo checkout resta com'è</span>}
           </label>
+          <VisualConfigForm repo={r} send={send} />
           {r.worktrees.filter((w) => w.status === 'active').length === 0 && <div className="faint">Nessun worktree attivo.</div>}
           {r.worktrees
             .filter((w) => w.status === 'active')

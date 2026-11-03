@@ -5,7 +5,7 @@
 //  - un task passa a "doing" solo se ha un assegnatario e tutte le dipendenze sono "done"
 //  - un task con un worktree diventa "done" solo tramite merge approvato (opzione `merged`)
 //  - "done" e "cancelled" sono terminali per lo scheduler, ma un retry li riporta a "todo"
-import type { CiStatus, Task, TaskStatus } from '@keystone/shared';
+import type { CiStatus, Task, TaskStatus, VisualCheck, VisualReport, WorkReport } from '@keystone/shared';
 import type { Ctx } from './context.js';
 
 export class TaskError extends Error {
@@ -38,6 +38,12 @@ export interface TaskChanges {
   worktree?: string | null;
   ci?: CiStatus;
   summary?: string;
+  /** resoconto strutturato del worker */
+  report?: WorkReport;
+  /** pagine da verificare dichiarate dal worker; null le toglie */
+  visualChecks?: VisualCheck[] | null;
+  /** esito della verifica visuale; null lo toglie */
+  visual?: VisualReport | null;
 }
 
 /** Stati raggiungibili da ciascuno stato. */
@@ -117,6 +123,11 @@ export class TaskGraph {
     if (changes.branch !== undefined) t.branch = changes.branch;
     if (changes.ci !== undefined) t.ci = changes.ci;
     if (changes.summary !== undefined) t.summary = changes.summary;
+    if (changes.report !== undefined) t.report = changes.report;
+    if (changes.visualChecks === null) delete t.visualChecks;
+    else if (changes.visualChecks !== undefined) t.visualChecks = changes.visualChecks;
+    if (changes.visual === null) delete t.visual;
+    else if (changes.visual !== undefined) t.visual = changes.visual;
     if (changes.assignee === null) delete t.assignee;
     else if (changes.assignee !== undefined) t.assignee = changes.assignee;
     if (changes.worktree === null) delete t.worktree;

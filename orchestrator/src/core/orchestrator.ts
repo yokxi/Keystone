@@ -1,9 +1,10 @@
 // L'orchestratore: possiede tutto lo stato, compone i sottosistemi, applica gli intenti
 // dell'utente e offre al team le primitive per far lavorare gli agenti. Non dipende dal
 // trasporto: il server WebSocket gli passa i messaggi del client e si iscrive a quelli in uscita.
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MERGE_OPTIONS, type Agent, type ClientMessage, type Decision, type Goal, type LogKind, type NotifyLevel, type OrchestratorStatus, type Outbound, type Task } from '@keystone/shared';
+import { MERGE_OPTIONS, type Agent, type ClientMessage, type Decision, type Goal, type LogKind, type NotifyLevel, type OrchestratorStatus, type Outbound, type Task, type VisualReport } from '@keystone/shared';
 import { readGitUserName } from '../util/git.js';
 import { truncate } from '../util/text.js';
 import { MessageBus } from './bus.js';
@@ -13,7 +14,9 @@ import { Memory, MemoryError } from './memory.js';
 import { RepoError, RepoManager, type RepoManagerOptions } from './repos.js';
 import { Store } from './store.js';
 import { TaskError, TaskGraph } from './taskgraph.js';
+import { visualSummary } from './prompts.js';
 import { Team, type TeamMember, type TeamOptions } from './team.js';
+import { cleanupVisualLeftovers, findBrowser, installChromium, runVisual, shotFile, type BrowserChoice, type VisualRunInput } from './visual.js';
 
 export const VERSION = '0.1.0';
 
@@ -48,9 +51,19 @@ export interface OrchestratorOptions {
   /** tetto di spesa predefinito per obiettivo in dollari (0 o assente = nessun tetto) */
   defaultBudgetUsd?: number;
   storeDebounceMs?: number;
+  /** solo test: verifica visuale simulata */
+  visual?: Partial<VisualDeps>;
 }
 
 type Listener = (msg: Outbound) => void;
+
+/** Le parti della verifica visuale che i test possono sostituire (browser, download, esecuzione). */
+export interface VisualDeps {
+  findBrowser(): BrowserChoice | undefined;
+  /** scarica Chromium in ~/.keystone/browsers: SOLO dopo il permesso dell'utente */
+  installBrowser(): Promise<{ ok: boolean; output: string }>;
+  run(input: VisualRunInput): Promise<VisualReport>;
+}
 
 /**
  * Un nome accettabile per l'utente: senza caratteri di controllo né a capo (finisce nei prompt),
@@ -89,6 +102,8 @@ export class Orchestrator {
   readonly defaultBudgetUsd: number | undefined;
   readonly defaultGoalLimits: { turns?: number; minutes?: number };
   status: OrchestratorStatus;
+  readonly visual: VisualDeps;
+  private readonly dataDir: string;
   private listeners = new Set<Listener>();
 
   constructor(opts: OrchestratorOptions) {
@@ -98,6 +113,14 @@ export class Orchestrator {
     this.defaultGoalLimits = {
       ...(opts.defaultGoalLimits?.turns && opts.defaultGoalLimits.turns > 0 ? { turns: Math.floor(opts.defaultGoalLimits.turns) } : {}),
       ...(opts.defaultGoalLimits?.minutes && opts.defaultGoalLimits.minutes > 0 ? { minutes: opts.defaultGoalLimits.minutes } : {}),
+    };
+    this.dataDir = path.resolve(opts.dataDir);
+    const browsersDir = this.browsersDir;
+    this.visual = {
+      findBrowser: () => findBrowser(browsersDir),
+      installBrowser: () => installChromium(browsersDir),
+      run: runVisual,
+      ...opts.visual,
     };
     this.cliUserName = opts.userName ? sanitizeUserName(opts.userName) : undefined;
     this.gitUserName = sanitizeUserName((opts.resolveGitUserName ?? readGitUserName)() ?? '');
@@ -120,6 +143,17 @@ export class Orchestrator {
     this.team = new Team(this, opts.members, opts.team);
   }
 
+  /** Le schermate della verifica visuale di un task: ~/.keystone/<profilo>/visual/<task>. */
+  visualShotsDir(taskId: string): string {
+    if (!/^[A-Za-z0-9_-]{1,80}$/.test(taskId)) throw new Error(`id di task non valido: ${taskId}`);
+    return path.join(this.dataDir, 'visual', taskId);
+  }
+
+  /** Il Chromium scaricato con il permesso dell'utente, condiviso tra i profili: ~/.keystone/browsers. */
+  get browsersDir(): string {
+    return path.join(path.dirname(this.dataDir), 'browsers');
+  }
+
   get leadId(): string {
     return this.team.lead.id;
   }
@@ -132,6 +166,13 @@ export class Orchestrator {
       (r) => r.forEach((line) => this.log.info(`pulizia worktree: ${line}`)),
       (e: Error) => this.log.warn(`pulizia dei worktree all'avvio: ${e.message}`),
     );
+    // verifica visuale interrotta: collegamenti a node_modules e worktree temporanei rimasti
+    await cleanupVisualLeftovers(path.join(this.dataDir, 'visual'), this.repos.list()).then(
+      (r) => r.forEach((line) => this.log.info(`pulizia della verifica visuale: ${line}`)),
+      (e: Error) => this.log.warn(`pulizia della verifica visuale all'avvio: ${e.message}`),
+    );
+    // una verifica rimasta "in corso" non riparte da sola: la review la rifà
+    for (const t of this.tasks.list()) if (t.visual?.status === 'running') this.tasks.update(t.id, { visual: null });
     await this.team.start();
   }
 
@@ -376,7 +417,7 @@ export class Orchestrator {
       kind: 'merge',
       question: `Unire ${t.id} "${t.title}" (${wt.branch}) in ${wt.base}?`,
       options: MERGE_OPTIONS,
-      context: [summary, `${wt.files} file, +${wt.additions} -${wt.deletions}`, this.team.ciNoteOf(t.id) ?? `Test eseguiti da Keystone: ${t.ci === 'unknown' ? 'nessuno' : t.ci}`].join('\n'),
+      context: [summary, `${wt.files} file, +${wt.additions} -${wt.deletions}`, this.team.ciNoteOf(t.id) ?? `Test eseguiti da Keystone: ${t.ci === 'unknown' ? 'nessuno' : t.ci}`, ...(t.visual ? [visualSummary(t.visual)] : [])].join('\n'),
       taskId: t.id,
       repoId: t.repoId,
       worktree: wt.id,
@@ -572,9 +613,28 @@ export class Orchestrator {
       case 'settings.set':
         return { userName: this.setUserName(msg.userName), userNameSource: this.userNameSource };
       case 'repo.config': {
-        const r = await this.repos.setMergeTarget(msg.repoId, msg.mergeTarget && msg.mergeTarget.trim() ? msg.mergeTarget.trim() : null);
-        this.bus.feed('system', `${r.name}: i merge vanno in ${r.mergeTarget ?? `${r.branch} (il branch aperto)`}`);
-        return { repoId: r.id, mergeTarget: r.mergeTarget ?? null };
+        // campo assente = invariato; null = torna al default
+        if (msg.mergeTarget === undefined && msg.visual === undefined) throw new ClientError('niente da cambiare: indica mergeTarget o visual');
+        let r = this.repos.require(msg.repoId);
+        if (msg.visual !== undefined) {
+          r = this.repos.setVisual(msg.repoId, msg.visual);
+          this.bus.feed('system', r.visual ? `${r.name}: verifica visuale attiva (${r.visual.command} → ${r.visual.url})` : `${r.name}: verifica visuale disattivata`);
+        }
+        if (msg.mergeTarget !== undefined) {
+          r = await this.repos.setMergeTarget(msg.repoId, msg.mergeTarget && msg.mergeTarget.trim() ? msg.mergeTarget.trim() : null);
+          this.bus.feed('system', `${r.name}: i merge vanno in ${r.mergeTarget ?? `${r.branch} (il branch aperto)`}`);
+        }
+        return { repoId: r.id, mergeTarget: r.mergeTarget ?? null, visual: r.visual ?? null };
+      }
+      case 'visual.shot.request': {
+        const t = this.tasks.get(msg.taskId);
+        const file = t ? shotFile(this.visualShotsDir(t.id), t, msg.shotId) : undefined;
+        if (!file) {
+          reply({ type: 'visual.shot', requestId: msg.requestId, error: 'schermata non trovata' });
+          return { found: false };
+        }
+        reply({ type: 'visual.shot', requestId: msg.requestId, dataUrl: `data:image/png;base64,${fs.readFileSync(file).toString('base64')}` });
+        return { found: true };
       }
     }
   }

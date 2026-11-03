@@ -10,7 +10,7 @@
 // davvero sull'orchestratore. Se un tool è negato, il suo tool_result registrato viene sostituito
 // da un errore, come farebbe la CLI.
 import fs from 'node:fs';
-import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { TeamTool } from '../types.js';
 import type { QueryFn } from './claude-engine.js';
 
@@ -28,6 +28,8 @@ export interface ReplayRecord {
   /** le opzioni con cui il motore ha avviato il turno (per verificarle nei test) */
   options?: Options;
   prompt?: string;
+  /** il messaggio con blocchi, se il prompt non era una stringa (es. con immagini) */
+  userMessage?: SDKUserMessage;
   decisions: Array<{ toolUseId: string; toolName: string; decision: string; reason?: string }>;
   closed: boolean;
 }
@@ -40,13 +42,17 @@ export function replayQuery(turns: TranscriptEntry[][], records: ReplayRecord[] 
   let next = 0;
   return ({ prompt, options }, ctx) => {
     const entries = turns[Math.min(next++, turns.length - 1)] ?? [];
-    const rec: ReplayRecord = { options, prompt, decisions: [], closed: false };
+    const rec: ReplayRecord = { options, ...(typeof prompt === 'string' ? { prompt } : {}), decisions: [], closed: false };
     records.push(rec);
     const hook = options.hooks?.PreToolUse?.[0]?.hooks[0];
     const signal = options.abortController?.signal ?? new AbortController().signal;
     const denied = new Map<string, string>();
     const toolNames = new Map<string, string>();
     async function* gen(): AsyncGenerator<SDKMessage> {
+      if (typeof prompt !== 'string') {
+        const first = await prompt[Symbol.asyncIterator]().next();
+        if (!first.done) rec.userMessage = first.value;
+      }
       for (const e of entries) {
         if (rec.closed || signal.aborted) return;
         if (e.t === 'turn') continue;

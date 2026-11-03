@@ -13,15 +13,16 @@
 //
 // Gli eventi dei motori (EngineEvent) vengono tradotti qui, in un punto solo, in log, stato
 // dell'agente, costi e richieste di permesso.
-import { BUDGET_OPTIONS, PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus } from '@keystone/shared';
+import { BUDGET_OPTIONS, PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus, type VisualReport } from '@keystone/shared';
 import type { EngineAdapter, EngineTurn, TurnSpec } from '../engines/types.js';
+import { git } from '../util/git.js';
 import { lastLines, truncate } from '../util/text.js';
 import path from 'node:path';
 import { agentEnv } from './agent-env.js';
 import { guardActive } from './gitsafety.js';
 import type { Orchestrator } from './orchestrator.js';
 import { classify, describeCall, describeRuleKey } from './policy.js';
-import { ciReport, leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, workerInstructions, workPrompt } from './prompts.js';
+import { ciReport, leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, visualSummary, workerInstructions, workPrompt } from './prompts.js';
 import type { InflightJob, JobKind } from './store.js';
 import { teamTools, type ToolHooks } from './tools.js';
 
@@ -69,6 +70,8 @@ interface Job {
   fresh?: boolean;
   /** solleciti già inviati (worker che finisce il turno senza update_task) */
   nudges?: number;
+  /** schermate allegate al prompt (review del lead con l'opzione attiva) */
+  images?: Array<{ path: string; caption: string }>;
 }
 
 interface Running {
@@ -94,6 +97,12 @@ interface Running {
 
 /** Il limite raggiunto da un obiettivo: spesa (tetto), turni o minuti di lavoro. */
 export type GoalLimit = 'budget' | 'turns' | 'minutes';
+
+/** La richiesta di permesso per scaricare Chromium (verifica visuale). */
+export const BROWSER_TOOL = 'visual.browser';
+export const BROWSER_OPTIONS = ['Scarica Chromium', 'Nega'] as const;
+/** Schermate al massimo nella review del lead (ogni immagine costa token). */
+const MAX_LEAD_IMAGES = 8;
 
 /** Ogni quanto si controlla il limite di tempo durante i turni. */
 const LIMIT_CHECK_MS = 5_000;
@@ -568,6 +577,7 @@ export class Team {
         role: m.role,
         cwd,
         prompt,
+        ...(job.images?.length ? { images: job.images } : {}),
         instructions,
         model,
         ...(m.effort ? { effort: m.effort } : {}),
@@ -884,17 +894,25 @@ export class Team {
       }
       const ciNote = ciReport(ci);
       this.lastCi.set(t.id, ciNote);
+
+      // verifica visuale (se configurata per il repository): la esegue Keystone, non l'agente
+      const visual = await this.runVisualCheck(t.id);
+      const current = this.o.tasks.get(t.id);
+      if (!current || current.status !== 'review') return; // annullato o rimandato nel frattempo
       if (worker) this.o.setAgent(worker, { state: 'idle', activity: `${t.id} in review` });
 
       if (this.opts.leadReview && this.o.agent(this.lead.id)?.active) {
         this.o.setAgent(this.lead.id, { state: 'reading', activity: `rivede ${t.id}` });
+        const repo = current.repoId ? this.o.repos.get(current.repoId) : undefined;
+        const images = repo?.visual?.leadScreenshots && visual ? this.leadImages(current.id, visual) : [];
         this.enqueue({
           kind: 'review',
           agentId: this.lead.id,
           taskId: t.id,
           ...(t.goalId ? { goalId: t.goalId } : {}),
           sessionKey: `${this.lead.id}:${t.goalId ?? 'adhoc'}`,
-          prompt: reviewPrompt(this.promptEnv(), t, files, ciNote),
+          prompt: reviewPrompt(this.promptEnv(), current, files, ciNote, { withImages: images.length > 0 }),
+          ...(images.length ? { images } : {}),
         });
       } else {
         await this.o.openMergeDecision(t, t.summary ?? 'Lavoro completato.');
@@ -902,6 +920,114 @@ export class Team {
     } finally {
       this.reviewing.delete(taskId);
     }
+  }
+
+  /**
+   * La verifica visuale del task, se il repository la prevede: Keystone avvia l'app dal branch di
+   * partenza e dal worktree, esegue i passaggi dichiarati dal worker e cattura le schermate.
+   * Senza browser chiede il permesso di scaricare Chromium. Restituisce l'esito (undefined se la
+   * verifica non è configurata).
+   */
+  private async runVisualCheck(taskId: string): Promise<VisualReport | undefined> {
+    const t = this.o.tasks.get(taskId);
+    const repo = t?.repoId ? this.o.repos.get(t.repoId) : undefined;
+    if (!t || !repo || !t.worktree) return undefined;
+    if (!repo.visual) {
+      if (t.visual) this.o.tasks.update(t.id, { visual: null });
+      return undefined;
+    }
+    const cfg = repo.visual;
+    const worker = t.assignee;
+    const skipped = (note: string): VisualReport => {
+      const r: VisualReport = { status: 'skipped', note, at: this.o.now(), checks: [], problems: [] };
+      this.o.tasks.update(t.id, { visual: r });
+      this.o.bus.feed('ci', `${t.id}: verifica visuale non eseguita (${note})`, worker ? { agentId: worker } : {});
+      return r;
+    };
+    if (!t.visualChecks?.length) return skipped('il worker non ha indicato pagine da verificare');
+    let browser = this.o.visual.findBrowser();
+    if (!browser) {
+      const ok = await this.askBrowserInstall(t);
+      if (!ok.allowed) return skipped(ok.why);
+      browser = this.o.visual.findBrowser();
+      if (!browser) return skipped('Chromium scaricato ma non trovato');
+    }
+    const wt = this.o.repos.requireWorktree(repo.id, t.worktree);
+    this.o.tasks.update(t.id, { visual: { status: 'running', at: this.o.now(), checks: [], problems: [] } });
+    if (worker) {
+      this.o.setAgent(worker, { state: 'testing', activity: `verifica visuale di ${t.id}` });
+      this.o.agentLog(worker, 'test', `verifica visuale: ${t.visualChecks.length} pagine, app avviata con "${cfg.command}" (${browser.label})`);
+    }
+    // "prima" = il punto da cui è partito il branch dell'agente
+    const fork = await git(repo.path, ['merge-base', wt.base, wt.branch], { allowFail: true });
+    const baseRef = fork.code === 0 && fork.stdout.trim() ? fork.stdout.trim() : wt.base;
+    const m = worker ? this.member(worker) : undefined;
+    let r: VisualReport;
+    try {
+      r = await this.o.visual.run({
+        repo: { ...repo, visual: cfg },
+        task: t,
+        worktreePath: wt.path,
+        baseRef,
+        shotsDir: this.o.visualShotsDir(t.id),
+        browser,
+        env: agentEnv(process.env, { agentId: worker ?? 'visual', name: m?.name ?? 'Verifica visuale', cwd: wt.path }),
+        now: this.o.now,
+      });
+    } catch (e) {
+      r = { status: 'failed', note: 'errore della verifica', at: this.o.now(), checks: [], problems: [truncate((e as Error).message ?? String(e), 300)] };
+    }
+    this.o.tasks.update(t.id, { visual: r });
+    const summary = visualSummary(r);
+    if (worker) this.o.agentLog(worker, r.status === 'done' && !r.problems.length ? 'test' : 'error', summary);
+    this.o.bus.feed('ci', `${t.id}: ${summary.split('\n')[0]}`, worker ? { agentId: worker } : {});
+    return r;
+  }
+
+  /**
+   * Chiede il permesso di scaricare Chromium in ~/.keystone/browsers (una sola decisione aperta,
+   * condivisa tra i task che la aspettano). Dopo il sì lo scarica.
+   */
+  private async askBrowserInstall(t: Task): Promise<{ allowed: true } | { allowed: false; why: string }> {
+    const existing = this.o.decisions.open().find((d) => d.kind === 'permission' && d.tool === BROWSER_TOOL);
+    const d =
+      existing ??
+      this.o.createDecision({
+        agentId: this.lead.id,
+        kind: 'permission',
+        tool: BROWSER_TOOL,
+        question: 'Scaricare Chromium per la verifica visuale?',
+        command: `playwright install chromium   (in ${this.o.browsersDir}, circa 150 MB)`,
+        context: `La verifica visuale di ${t.id} ha bisogno di un browser e non ho trovato Edge né Chrome. Chromium viene scaricato da Playwright nella cartella di Keystone, non nel repository. Se neghi, la review di ${t.id} prosegue senza schermate.`,
+        options: BROWSER_OPTIONS,
+        alwaysAsk: true,
+        taskId: t.id,
+      });
+    const answered = await this.o.decisions.wait(d.id);
+    if (answered.status !== 'answered' || answered.answer?.option !== BROWSER_OPTIONS[0]) return { allowed: false, why: 'download di Chromium non consentito' };
+    if (this.o.visual.findBrowser()) return { allowed: true }; // già scaricato per un altro task
+    this.o.bus.feed('system', `Scarico Chromium in ${this.o.browsersDir}…`);
+    const res = await this.o.visual.installBrowser();
+    if (!res.ok) {
+      this.o.notify('warn', `Download di Chromium non riuscito: ${truncate(res.output, 200)}`);
+      return { allowed: false, why: `download di Chromium non riuscito: ${truncate(res.output, 200)}` };
+    }
+    this.o.bus.feed('system', 'Chromium scaricato: la verifica visuale può partire');
+    return { allowed: true };
+  }
+
+  /** Le schermate per il lead (solo con l'opzione attiva): prima e dopo di ogni pagina, con didascalia. */
+  private leadImages(taskId: string, r: VisualReport): Array<{ path: string; caption: string }> {
+    if (r.status !== 'done') return [];
+    const dir = this.o.visualShotsDir(taskId);
+    const out: Array<{ path: string; caption: string }> = [];
+    for (const c of r.checks) {
+      for (const [side, label] of [['before', 'prima'], ['after', 'dopo']] as const) {
+        const shot = c[side].shot;
+        if (shot) out.push({ path: path.join(dir, `${shot.id}.png`), caption: `${c.name}: ${label}${c.caption ? ` (atteso: ${c.caption})` : ''}` });
+      }
+    }
+    return out.slice(0, MAX_LEAD_IMAGES);
   }
 
   /** Esito dei test dell'ultimo giro per un task (per il testo della decisione di merge). */

@@ -23,10 +23,10 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createSdkMcpServer, query as sdkQuery, tool as sdkTool, type Options, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import { createSdkMcpServer, query as sdkQuery, tool as sdkTool, type Options, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineEvent, PermissionAnswer, Role } from '@keystone/shared';
 import { ensureDir } from '../../util/fsx.js';
-import { truncate } from '../../util/text.js';
+import { redactImageData, truncate } from '../../util/text.js';
 import { EventChannel, PermissionBroker } from '../channel.js';
 import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TurnSpec } from '../types.js';
 import { detectApiAuth, detectClaudeLogin, envForAuth, NO_API_AUTH_MESSAGE, NO_LOGIN_TOKEN_MESSAGE } from './auth.js';
@@ -58,7 +58,31 @@ export interface ClaudeEngineConfig {
 }
 
 /** La funzione che avvia un turno: quella dell'SDK, o un replay di una trascrizione nei test. */
-export type QueryFn = (params: { prompt: string; options: Options }, ctx: { tools: TeamTool[] }) => AsyncIterable<SDKMessage> & { close(): void };
+export type QueryFn = (params: { prompt: string | AsyncIterable<SDKUserMessage>; options: Options }, ctx: { tools: TeamTool[] }) => AsyncIterable<SDKMessage> & { close(): void };
+
+/** Limite dell'API per un'immagine in base64 (5 MB). */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Il messaggio dell'utente con testo e immagini (blocchi image in base64, ognuno preceduto dalla
+ * sua didascalia). Un'immagine mancante o troppo grande diventa una riga di testo che lo dice.
+ */
+export function userMessageWithImages(prompt: string, images: Array<{ path: string; caption: string }>): SDKUserMessage {
+  type Block = { type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: 'image/png'; data: string } };
+  const content: Block[] = [{ type: 'text', text: prompt }];
+  for (const img of images) {
+    let data: Buffer | undefined;
+    try {
+      data = fs.readFileSync(img.path);
+    } catch {
+      data = undefined;
+    }
+    if (!data) content.push({ type: 'text', text: `${img.caption}: schermata non disponibile` });
+    else if (Math.ceil(data.length / 3) * 4 > MAX_IMAGE_BYTES) content.push({ type: 'text', text: `${img.caption}: schermata troppo grande per essere allegata` });
+    else content.push({ type: 'text', text: img.caption }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: data.toString('base64') } });
+  }
+  return { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null };
+}
 
 interface TurnAccounting {
   seenUsage: Set<string>;
@@ -299,7 +323,17 @@ export class ClaudeEngine implements EngineAdapter {
       return { events: channel, respond: () => undefined, abort: () => undefined };
     }
 
-    const q = this.queryFn({ prompt: spec.prompt, options }, { tools: spec.tools });
+    // con immagini il prompt è un messaggio con blocchi: l'input resta aperto fino alla fine del
+    // turno (le richieste di permesso e i tool del team passano dallo stesso canale)
+    let endInput: () => void = () => undefined;
+    const inputOpen = new Promise<void>((r) => (endInput = r));
+    const prompt: string | AsyncIterable<SDKUserMessage> = spec.images?.length
+      ? (async function* () {
+          yield userMessageWithImages(spec.prompt, spec.images!);
+          await inputOpen;
+        })()
+      : spec.prompt;
+    const q = this.queryFn({ prompt, options }, { tools: spec.tools });
     const toolNames = new Map<string, string>();
     const acc: TurnAccounting = { seenUsage: new Set(), observedTokens: 0, compacted: false, base: spec.sessionCostUsd ?? 0, resumed: !!resume };
 
@@ -309,6 +343,7 @@ export class ClaudeEngine implements EngineAdapter {
         for await (const msg of q) {
           if (abort.signal.aborted) break;
           recorder?.({ t: 'msg', msg });
+          if (msg.type === 'result') endInput();
           for (const ev of this.map(msg, toolNames, acc)) {
             if (ev.type === 'turn_end') ended = true;
             emit(ev);
@@ -324,6 +359,7 @@ export class ClaudeEngine implements EngineAdapter {
           emit({ type: 'turn_end', status: 'error' });
         }
       } finally {
+        endInput();
         channel.close();
       }
     })();
@@ -419,6 +455,6 @@ export class ClaudeEngine implements EngineAdapter {
     if (!this.cfg.recordDir) return undefined;
     const file = path.join(ensureDir(this.cfg.recordDir), `${spec.agentId}-${spec.job.kind}-${spec.job.taskId ?? spec.job.goalId ?? 'x'}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}.jsonl`);
     fs.appendFileSync(file, `${JSON.stringify({ t: 'turn', role: spec.role, kind: spec.job.kind, title: spec.job.title ?? '' })}\n`);
-    return (entry) => fs.appendFileSync(file, `${JSON.stringify(entry)}\n`);
+    return (entry) => fs.appendFileSync(file, `${JSON.stringify(entry, redactImageData)}\n`);
   }
 }
