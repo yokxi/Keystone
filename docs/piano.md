@@ -2,7 +2,63 @@
 
 Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fasi ancora da fare.
 
-## Da fare prima della pubblicazione
+## Ordine delle fasi
+
+1. Fase Skill (regole per gli agenti e review sul riassunto)
+2. Fase 7 — File di configurazione
+3. Fase 8 — Pacchetto dell'app
+4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
+5. Fase 6c — Accesso al database in sola lettura: spostata dopo la pubblicazione
+
+## Uso in team
+
+Ogni persona installa Keystone sul proprio PC, con le proprie chiavi e il proprio clone del
+repository. Quello che si condivide (codice, skill del repository in `.keystone/skills/`) passa da
+git, con i normali push e pull fatti dalle persone. Nella prima versione non c'è un server
+condiviso: niente stato, chiavi o code di lavoro comuni tra PC diversi.
+
+## Fase Skill — Regole per gli agenti
+
+**Cosa sono.** Una skill è un file markdown di regole per gli agenti. Due posti:
+
+- `.keystone/skills/` nel repository: condivise con il team tramite git;
+- `~/.keystone/skills/`: personali, valgono per tutti i repository di chi le scrive.
+
+Ogni skill indica, nell'intestazione, a chi si applica (lead, worker, tutti) e quando (sempre,
+oppure solo per certi file o certe richieste), e se è attiva.
+
+**Come arrivano agli agenti.** Keystone le passa agli agenti allo stesso modo con Claude e con
+Codex, come parte delle istruzioni del turno. Non si riattivano le skill, le impostazioni, la
+memoria, i `CLAUDE.md` / `AGENTS.md` o i server MCP nativi dei motori: l'isolamento resta com'è.
+
+**Sicurezza.**
+
+- `.keystone/skills/` è un percorso protetto nella policy: gli agenti non possono scriverci (azione
+  negata, non chiesta).
+- Keystone legge le skill del repository dal branch di destinazione, non dal worktree
+  dell'agente: un agente che modificasse una skill nel suo worktree non cambierebbe le regole
+  proprie né degli altri. Un test per ciascuno dei due casi.
+
+**Interfaccia.**
+
+- Pagina Skill: crearle, modificarle, attivarle e disattivarle (del repository e personali).
+- Nella review, "Richiedi modifiche" offre di salvare la correzione come skill.
+- Il pannello dell'agente mostra quali skill ha ricevuto nel turno.
+
+**Review sul riassunto.** La review si apre sul riassunto: richiesta, cosa è stato fatto e perché,
+file toccati, esito dei test, schermate prima/dopo, rischi. Il diff sta in una scheda separata.
+(Non era stato fatto nella 6b parte 2, quindi entra in questa fase.)
+
+## Fase 7 — File di configurazione
+
+`~/.keystone/config.json`: motore e modello per agente, effort, numero di worker e le altre
+impostazioni oggi passate da riga di comando.
+
+## Fase 8 — Pacchetto dell'app
+
+L'app installabile, che avvia da sola l'orchestratore senza i sorgenti.
+
+## Pubblicazione — da fare prima
 
 - [ ] **Prova reale del motore Codex con una chiave API OpenAI.** Su un repository di prova:
   piano, lavoro, review e merge; permessi, sandbox, commit e conteggio dei token, con
@@ -16,6 +72,75 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
 
 Solo dopo le due prove reali di Codex si toglie l'etichetta "sperimentale · non ancora verificato
 con un modello reale" (`shared/src/engines.ts` e README).
+
+## Fase 6c — Accesso al database in sola lettura
+
+Spostata dopo la pubblicazione. Non è ancora implementata (un inizio non committato è stato
+scartato).
+
+**Configurazione per repository.** Per ogni repository registrato si configurano una o più
+connessioni a database: SQL Server, PostgreSQL o SQLite.
+
+- Le credenziali si salvano con `safeStorage` di Electron. Non arrivano mai agli agenti né ai loro
+  comandi: non stanno nell'ambiente dei sottoprocessi, nei prompt, nei log o nelle trascrizioni.
+- Per ogni connessione si configurano il limite di righe e il tempo massimo di ogni query.
+
+**Cosa possono fare gli agenti.** Gli agenti accedono al database solo con gli strumenti di
+Keystone, mai con un client proprio:
+
+- elenco delle tabelle e delle loro colonne;
+- descrizione di una tabella: colonne, tipi, chiavi, indici;
+- query in sola lettura, con i limiti di righe e di tempo della connessione.
+
+**La garanzia della sola lettura.**
+
+- La garanzia vera è un utente del database con soli permessi di lettura. L'interfaccia lo chiede
+  esplicitamente durante la configurazione: serve una conferma, non una casella già spuntata. Il
+  motivo è spiegato in `docs/sicurezza.md`.
+- In più, dove il database lo permette, ogni query gira in una transazione in sola lettura:
+  `SET TRANSACTION READ ONLY` su PostgreSQL, connessione aperta in sola lettura su SQLite. SQL
+  Server non ha un equivalente per le transazioni, quindi lì conta solo l'utente.
+- Il controllo del testo della query, per esempio "solo SELECT", è al massimo un aiuto. Non è una
+  garanzia e la documentazione non lo presenta come tale.
+
+**Registro e approvazione.**
+
+- Keystone registra ogni query: testo, agente, connessione, durata, righe restituite, esito.
+- Le query si vedono nel pannello dell'agente.
+- Un'opzione per connessione fa approvare all'utente le query una per una, come i comandi che
+  chiedono il permesso.
+
+**Trascrizioni.** I risultati delle query entrano nelle trascrizioni salvate (`--record`) solo dopo
+la pulizia, come gli altri dati locali e i segreti.
+
+**Avviso.** I risultati delle query vengono inviati al fornitore del modello. Quindi si usano solo
+database di sviluppo o con dati anonimizzati, mai di produzione. L'avviso sta:
+
+- nell'interfaccia, durante la configurazione della connessione;
+- in `docs/sicurezza.md`.
+
+**MCP: decisione presa.** Oggi i tool del team sono definiti una volta sola (`TeamTool`) e ogni
+motore li espone a modo suo: il motore Claude con un server MCP interno (`createSdkMcpServer`), il
+motore Codex con i dynamic tool di `app-server`. Gli strumenti del database seguono la stessa
+strada: sono tool di Keystone e passano dalla policy, dal registro e dall'approvazione.
+
+Decisione: se in futuro si collega un server MCP esterno (per esempio per lo schema del database),
+**Keystone fa da client MCP e inoltra i suoi strumenti agli agenti come tool del team**, con policy,
+registro e approvazione. Il server esterno non viene mai passato direttamente al motore, perché si
+perderebbero:
+
+- la policy;
+- il registro e l'approvazione;
+- la pulizia delle trascrizioni;
+- l'isolamento attuale (`mcp_servers: {}` per Codex, nessun server MCP dell'utente per Claude).
+
+Restano da definire, prima di implementare:
+
+- se esporre i tool del database con nomi e schemi compatibili con quelli dei server MCP più
+  diffusi per i database;
+- come limitare un server esterno ai soli tool di lettura;
+- come avviare un server esterno: un processo stdio con l'ambiente ripulito, senza le credenziali
+  degli agenti.
 
 ## Fase 6 — Motore Codex (fatta)
 
@@ -92,80 +217,3 @@ fallite. Così verifica l'interfaccia prima di mettere il task in review. Regole
 - limiti per turno: numero di prove e tempo massimo;
 - la schermata va all'agente solo se l'opzione delle schermate è attiva per il repository, perché
   costa token.
-
-## Fase 6c — Accesso al database in sola lettura
-
-Da fare dopo la Fase 6b. Non è ancora implementata.
-
-**Configurazione per repository.** Per ogni repository registrato si configurano una o più
-connessioni a database: SQL Server, PostgreSQL o SQLite.
-
-- Le credenziali si salvano con `safeStorage` di Electron. Non arrivano mai agli agenti né ai loro
-  comandi: non stanno nell'ambiente dei sottoprocessi, nei prompt, nei log o nelle trascrizioni.
-- Per ogni connessione si configurano il limite di righe e il tempo massimo di ogni query.
-
-**Cosa possono fare gli agenti.** Gli agenti accedono al database solo con gli strumenti di
-Keystone, mai con un client proprio:
-
-- elenco delle tabelle e delle loro colonne;
-- descrizione di una tabella: colonne, tipi, chiavi, indici;
-- query in sola lettura, con i limiti di righe e di tempo della connessione.
-
-**La garanzia della sola lettura.**
-
-- La garanzia vera è un utente del database con soli permessi di lettura. L'interfaccia lo chiede
-  esplicitamente durante la configurazione: serve una conferma, non una casella già spuntata. Il
-  motivo è spiegato in `docs/sicurezza.md`.
-- In più, dove il database lo permette, ogni query gira in una transazione in sola lettura:
-  `SET TRANSACTION READ ONLY` su PostgreSQL, connessione aperta in sola lettura su SQLite. SQL
-  Server non ha un equivalente per le transazioni, quindi lì conta solo l'utente.
-- Il controllo del testo della query, per esempio "solo SELECT", è al massimo un aiuto. Non è una
-  garanzia e la documentazione non lo presenta come tale.
-
-**Registro e approvazione.**
-
-- Keystone registra ogni query: testo, agente, connessione, durata, righe restituite, esito.
-- Le query si vedono nel pannello dell'agente.
-- Un'opzione per connessione fa approvare all'utente le query una per una, come i comandi che
-  chiedono il permesso.
-
-**Trascrizioni.** I risultati delle query entrano nelle trascrizioni salvate (`--record`) solo dopo
-la pulizia, come gli altri dati locali e i segreti.
-
-**Avviso.** I risultati delle query vengono inviati al fornitore del modello. Quindi si usano solo
-database di sviluppo o con dati anonimizzati, mai di produzione. L'avviso sta:
-
-- nell'interfaccia, durante la configurazione della connessione;
-- in `docs/sicurezza.md`.
-
-**MCP: decisione presa.** Oggi i tool del team sono definiti una volta sola (`TeamTool`) e ogni
-motore li espone a modo suo: il motore Claude con un server MCP interno (`createSdkMcpServer`), il
-motore Codex con i dynamic tool di `app-server`. Gli strumenti del database seguono la stessa
-strada: sono tool di Keystone e passano dalla policy, dal registro e dall'approvazione.
-
-Decisione: se in futuro si collega un server MCP esterno (per esempio per lo schema del database),
-**Keystone fa da client MCP e inoltra i suoi strumenti agli agenti come tool del team**, con policy,
-registro e approvazione. Il server esterno non viene mai passato direttamente al motore, perché si
-perderebbero:
-
-- la policy;
-- il registro e l'approvazione;
-- la pulizia delle trascrizioni;
-- l'isolamento attuale (`mcp_servers: {}` per Codex, nessun server MCP dell'utente per Claude).
-
-Restano da definire, prima di implementare:
-
-- se esporre i tool del database con nomi e schemi compatibili con quelli dei server MCP più
-  diffusi per i database;
-- come limitare un server esterno ai soli tool di lettura;
-- come avviare un server esterno: un processo stdio con l'ambiente ripulito, senza le credenziali
-  degli agenti.
-
-## Fase 7 — File di configurazione
-
-`~/.keystone/config.json`: motore e modello per agente, effort, numero di worker e le altre
-impostazioni oggi passate da riga di comando.
-
-## Fase 8 — Pacchetto dell'app
-
-L'app installabile, che avvia da sola l'orchestratore senza i sorgenti.
