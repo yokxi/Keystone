@@ -30,7 +30,7 @@ import { ensureDir } from '../../util/fsx.js';
 import { git } from '../../util/git.js';
 import { redactImageData, truncate } from '../../util/text.js';
 import { EventChannel, PermissionBroker } from '../channel.js';
-import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TurnSpec } from '../types.js';
+import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TeamToolResult, TurnSpec } from '../types.js';
 import { unwrapShell } from './command.js';
 import { RpcClient, type RpcMessage } from './rpc.js';
 
@@ -385,7 +385,7 @@ export class CodexEngine implements EngineAdapter {
           const a = await ask(`${TEAM_PREFIX}${name}`, args);
           if (!a.allow) return { contentItems: [{ type: 'inputText', text: `Permesso negato: ${a.message}` }], success: false };
           const r = await tool.run(args);
-          return { contentItems: [{ type: 'inputText', text: r.text }], success: !r.isError };
+          return { contentItems: toolContentItems(r), success: !r.isError };
         }
         case 'item/tool/requestUserInput':
           throw new Error('per chiedere qualcosa all\'utente usa il tool ask_user');
@@ -577,6 +577,22 @@ export class CodexEngine implements EngineAdapter {
       fs.appendFileSync(file, `${JSON.stringify(entry, redactImageData)}\n`);
     };
   }
+}
+
+/** Il risultato di un tool del team per Codex: testo e immagini come data URL (inputImage). */
+export function toolContentItems(r: TeamToolResult): Array<Record<string, unknown>> {
+  const items: Array<Record<string, unknown>> = [{ type: 'inputText', text: r.text }];
+  for (const img of r.images ?? []) {
+    let data: Buffer | undefined;
+    try {
+      data = fs.readFileSync(img.path);
+    } catch {
+      data = undefined;
+    }
+    if (!data) items.push({ type: 'inputText', text: `${img.caption}: schermata non disponibile` });
+    else items.push({ type: 'inputText', text: img.caption }, { type: 'inputImage', imageUrl: `data:image/png;base64,${data.toString('base64')}` });
+  }
+  return items;
 }
 
 /** L'input del turno: il prompt e, se ci sono, le immagini locali (localImage), ognuna con la sua didascalia. */

@@ -13,8 +13,8 @@
 //
 // Gli eventi dei motori (EngineEvent) vengono tradotti qui, in un punto solo, in log, stato
 // dell'agente, costi e richieste di permesso.
-import { BUDGET_OPTIONS, PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus, type VisualReport } from '@keystone/shared';
-import type { EngineAdapter, EngineTurn, TurnSpec } from '../engines/types.js';
+import { BUDGET_OPTIONS, PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus, type VisualCheck, type VisualReport } from '@keystone/shared';
+import type { EngineAdapter, EngineTurn, TeamToolResult, TurnSpec } from '../engines/types.js';
 import { git } from '../util/git.js';
 import { lastLines, truncate } from '../util/text.js';
 import path from 'node:path';
@@ -22,7 +22,7 @@ import { agentEnv } from './agent-env.js';
 import { guardActive } from './gitsafety.js';
 import type { Orchestrator } from './orchestrator.js';
 import { classify, describeCall, describeRuleKey } from './policy.js';
-import { ciReport, leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, visualSummary, workerInstructions, workPrompt } from './prompts.js';
+import { ciReport, leadInstructions, planPrompt, RESUME_PROMPT, reviewPrompt, tryReport, visualSummary, workerInstructions, workPrompt } from './prompts.js';
 import type { InflightJob, JobKind } from './store.js';
 import { teamTools, type ToolHooks } from './tools.js';
 
@@ -103,6 +103,8 @@ export const BROWSER_TOOL = 'visual.browser';
 export const BROWSER_OPTIONS = ['Scarica Chromium', 'Nega'] as const;
 /** Schermate al massimo nella review del lead (ogni immagine costa token). */
 const MAX_LEAD_IMAGES = 8;
+/** Prova interfaccia (try_ui): prove per turno, tempo totale per turno e tempo massimo di una prova. */
+export const TRY_UI_LIMITS = { perTurn: 5, msPerTurn: 10 * 60_000, msPerTry: 3 * 60_000 };
 
 /** Ogni quanto si controlla il limite di tempo durante i turni. */
 const LIMIT_CHECK_MS = 5_000;
@@ -564,11 +566,14 @@ export class Team {
       const model = this.modelOf(m);
       this.o.agentLog(agentId, 'text', `${resume ? 'Riprende' : 'Avvia'} ${job.kind}${job.taskId ? ` ${job.taskId}` : ''} (${m.engine.label} · ${m.engine.displayModel(model)})`);
 
+      // limiti della prova interfaccia: valgono per questo turno
+      const tries = { count: 0, usedMs: 0 };
       const hooks: ToolHooks = {
         onReview: () => undefined, // gestito a fine turno
         onChangesRequested: (taskId, feedback) => this.sendBackToWorker(taskId, `Il lead ha chiesto modifiche a ${taskId}:\n${feedback}\n\nFai le modifiche, rilancia i test, poi update_task("${taskId}", status "review", summary).`),
         onTasksChanged: () => this.tick(),
         onDecisionOpened: (id) => entry.decisions.add(id),
+        ...(m.role === 'worker' ? { tryUi: (taskId: string, checks: VisualCheck[]) => this.tryUi(agentId, taskId, checks, tries, () => !!entry.reason) } : {}),
       };
       const guard = { aborted: () => !!entry.reason, reason: () => entry.reason, whenAborted: entry.whenAborted };
       const spec: TurnSpec = {
@@ -904,7 +909,7 @@ export class Team {
       if (this.opts.leadReview && this.o.agent(this.lead.id)?.active) {
         this.o.setAgent(this.lead.id, { state: 'reading', activity: `rivede ${t.id}` });
         const repo = current.repoId ? this.o.repos.get(current.repoId) : undefined;
-        const images = repo?.visual?.leadScreenshots && visual ? this.leadImages(current.id, visual) : [];
+        const images = repo?.visual?.agentScreenshots && visual ? this.leadImages(current.id, visual) : [];
         this.enqueue({
           kind: 'review',
           agentId: this.lead.id,
@@ -964,7 +969,8 @@ export class Team {
     const m = worker ? this.member(worker) : undefined;
     let r: VisualReport;
     try {
-      r = await this.o.visual.run({
+      // una sola app per volta per repository (prove dei worker e altre verifiche aspettano)
+      r = await this.o.withVisualLock(repo.id, () => this.o.visual.run({
         repo: { ...repo, visual: cfg },
         task: t,
         worktreePath: wt.path,
@@ -973,7 +979,7 @@ export class Team {
         browser,
         env: agentEnv(process.env, { agentId: worker ?? 'visual', name: m?.name ?? 'Verifica visuale', cwd: wt.path }),
         now: this.o.now,
-      });
+      }));
     } catch (e) {
       r = { status: 'failed', note: 'errore della verifica', at: this.o.now(), checks: [], problems: [truncate((e as Error).message ?? String(e), 300)] };
     }
@@ -1014,6 +1020,53 @@ export class Team {
     }
     this.o.bus.feed('system', 'Chromium scaricato: la verifica visuale può partire');
     return { allowed: true };
+  }
+
+  /**
+   * Prova interfaccia (try_ui): Keystone avvia l'app dal worktree del worker, esegue i passaggi e
+   * restituisce esito, console, errori e richieste fallite. Limiti per turno (TRY_UI_LIMITS); la
+   * schermata va all'agente solo se l'utente l'ha consentito per il repository.
+   */
+  private async tryUi(agentId: string, taskId: string, checks: VisualCheck[], tries: { count: number; usedMs: number }, aborted: () => boolean): Promise<TeamToolResult> {
+    const err = (text: string): TeamToolResult => ({ text: `Errore: ${text}`, isError: true });
+    const t = this.o.tasks.get(taskId);
+    const repo = t?.repoId ? this.o.repos.get(t.repoId) : undefined;
+    if (!t || !repo || !t.worktree) return err(`${taskId} non ha un worktree`);
+    if (!repo.visual) return err(`la verifica visuale non è configurata per ${repo.name}: la prova dell'interfaccia non è disponibile (può configurarla l'utente nella pagina Repository)`);
+    if (tries.count >= TRY_UI_LIMITS.perTurn) return err(`hai già fatto ${tries.count} prove in questo turno (massimo ${TRY_UI_LIMITS.perTurn})`);
+    const remaining = TRY_UI_LIMITS.msPerTurn - tries.usedMs;
+    if (remaining <= 5_000) return err(`tempo per le prove di questo turno esaurito (${TRY_UI_LIMITS.msPerTurn / 60_000} minuti)`);
+    const browser = this.o.visual.findBrowser();
+    if (!browser) return err("nessun browser disponibile (né Edge né Chrome): l'utente potrà consentire il download di Chromium alla review");
+    const wt = this.o.repos.requireWorktree(repo.id, t.worktree);
+    const cfg = repo.visual;
+    tries.count++;
+    const m = this.member(agentId);
+    this.o.agentLog(agentId, 'test', `prova interfaccia: ${checks.length} pagine, app avviata con "${cfg.command}" (${browser.label})`);
+    const started = Date.now();
+    try {
+      const r = await this.o.withVisualLock(repo.id, async () => {
+        if (aborted()) throw new Error('il turno è stato interrotto');
+        return this.o.visual.tryRun({
+          repo: { ...repo, visual: cfg },
+          checks,
+          worktreePath: wt.path,
+          shotsDir: this.o.visualTryDir(t.id),
+          browser,
+          env: agentEnv(process.env, { agentId, name: m?.name ?? agentId, cwd: wt.path }),
+          maxMs: Math.min(TRY_UI_LIMITS.msPerTry, remaining),
+        });
+      });
+      const dir = this.o.visualTryDir(t.id);
+      const images = cfg.agentScreenshots ? r.pages.flatMap((p) => (p.side.shot ? [{ path: path.join(dir, `${p.side.shot.id}.png`), caption: `${p.name}: prova` }] : [])) : [];
+      const text = tryReport(r, { withImages: images.length > 0 });
+      this.o.agentLog(agentId, r.status === 'done' && !r.pages.some((p) => p.side.error) ? 'test' : 'error', text);
+      return { text, ...(r.status === 'failed' ? { isError: true } : {}), ...(images.length ? { images } : {}) };
+    } catch (e) {
+      return err(`prova non riuscita: ${truncate((e as Error).message ?? String(e), 300)}`);
+    } finally {
+      tries.usedMs += Date.now() - started;
+    }
   }
 
   /** Le schermate per il lead (solo con l'opzione attiva): prima e dopo di ogni pagina, con didascalia. */
@@ -1376,6 +1429,10 @@ function describeTeamCall(tool: string, input: Record<string, unknown>): string 
       return `crea il task "${s('title')}"${Array.isArray(input.deps) && input.deps.length ? ` (dopo ${(input.deps as string[]).join(', ')})` : ''}`;
     case 'request_merge':
       return `propone il merge di ${s('task_id')}`;
+    case 'submit_report':
+      return `manda il resoconto di ${s('task_id')}${Array.isArray(input.visual_checks) && input.visual_checks.length ? ` (${input.visual_checks.length} pagine da verificare)` : ''}`;
+    case 'try_ui':
+      return `prova l'interfaccia di ${s('task_id')}${Array.isArray(input.checks) ? ` (${input.checks.length} pagine)` : ''}`;
     default:
       return undefined;
   }

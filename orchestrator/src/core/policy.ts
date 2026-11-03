@@ -730,8 +730,11 @@ export function classifyShell(command: string, ctx: PolicyContext): Finding[] {
 
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
 /** I tool del team (core/tools.ts): sempre consentiti, sono codice di Keystone. */
-const TEAM_TOOLS = new Set(['send_message', 'ask_user', 'write_memory', 'read_memory', 'update_task', 'report_status', 'list_tasks', 'create_task', 'request_merge']);
+export const TEAM_TOOLS = new Set(['send_message', 'ask_user', 'write_memory', 'read_memory', 'update_task', 'report_status', 'list_tasks', 'create_task', 'request_merge', 'submit_report', 'try_ui']);
 const LEAD_ONLY_TOOLS = new Set(['create_task', 'request_merge']);
+const WORKER_ONLY_TOOLS = new Set(['submit_report', 'try_ui']);
+/** Un tool del team è ammesso per questo ruolo? */
+const teamToolAllowed = (name: string, role: PolicyContext['role']) => TEAM_TOOLS.has(name) && (role === 'lead' ? !WORKER_ONLY_TOOLS.has(name) : !LEAD_ONLY_TOOLS.has(name));
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 function pathOf(input: Record<string, unknown>): string | undefined {
@@ -762,10 +765,10 @@ export function classify(tool: string, input: Record<string, unknown>, ctx: Poli
   // i tool del team sono codice di Keystone (server MCP in-process "keystone"); ogni altro MCP è negato
   if (tool.startsWith('mcp__')) {
     const m = /^mcp__keystone__([a-z_]+)$/.exec(tool);
-    if (m && TEAM_TOOLS.has(m[1]!) && (ctx.role === 'lead' || !LEAD_ONLY_TOOLS.has(m[1]!))) return { action: 'allow', reason: 'tool del team di Keystone' };
+    if (m && teamToolAllowed(m[1]!, ctx.role)) return { action: 'allow', reason: 'tool del team di Keystone' };
     return { action: 'deny', reason: `server MCP non ammesso: ${tool} (gli agenti hanno solo i tool del team di Keystone)` };
   }
-  if (TEAM_TOOLS.has(tool)) return { action: 'allow', reason: 'tool del team di Keystone' };
+  if (teamToolAllowed(tool, ctx.role)) return { action: 'allow', reason: 'tool del team di Keystone' };
   if (READ_TOOLS.has(tool)) {
     const p = pathOf(input) ?? (typeof input.pattern === 'string' && tool === 'Glob' ? String(input.pattern) : '.');
     const abs = path.resolve(root, p.replace(/[*?[{].*$/, '') || '.');

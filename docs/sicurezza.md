@@ -273,11 +273,15 @@ comando, chiede.
 ## 6bis. Verifica visuale
 
 Se la configuri per un repository, Keystone avvia l'app dal branch di partenza e dal worktree
-dell'agente per catturare le schermate. Quindi esegue codice del branch, come i test.
+dell'agente per catturare le schermate. Con la prova interfaccia (`try_ui`) il worker può chiedere
+a Keystone di avviarla dal suo worktree durante il lavoro, con limiti per turno. In entrambi i casi
+viene eseguito codice del branch, come per i test.
 
 - La rete esterna è bloccata nel browser, e frenata (non isolata) per il processo dell'app.
 - L'app riceve l'ambiente senza credenziali.
 - Le schermate restano in `~/.keystone` e non finiscono nelle trascrizioni.
+- Console, errori JavaScript e richieste fallite dell'app arrivano agli agenti come testo, quindi
+  al fornitore del modello.
 - Il download di Chromium chiede sempre il permesso.
 
 Dettagli e limiti in `docs/verifica-visuale.md`.

@@ -117,7 +117,32 @@ export type WorkReport = z.infer<typeof WorkReport>;
 
 /** Una schermata catturata (il file sta in ~/.keystone, mai nel repository). */
 export const VisualShot = z.object({ id: z.string().regex(/^[a-z0-9-]{1,80}$/), error: z.string().optional() });
-export const VisualSide = z.object({ shot: VisualShot.optional(), error: z.string().optional() });
+/** Limiti della diagnostica raccolta per pagina e per lato (testi troncati, elenchi limitati). */
+export const DIAG_LIMITS = { console: 50, errors: 20, requests: 50, text: 500, error: 1000, url: 300 } as const;
+/** Un messaggio della console del browser (type: log, info, warning, error, debug…). */
+export const ConsoleEntry = z.object({ type: z.string().max(20), text: z.string().max(DIAG_LIMITS.text) });
+export type ConsoleEntry = z.infer<typeof ConsoleEntry>;
+/** Una richiesta fallita: errore di rete, risposta 4xx/5xx o richiesta bloccata perché non locale. */
+export const FailedRequest = z.object({
+  url: z.string().max(DIAG_LIMITS.url),
+  method: z.string().max(10).optional(),
+  status: z.number().int().optional(),
+  failure: z.string().max(200).optional(),
+  /** bloccata da Keystone (non locale) */
+  blocked: z.boolean().optional(),
+});
+export type FailedRequest = z.infer<typeof FailedRequest>;
+/** Console, errori JavaScript non gestiti e richieste fallite di una pagina. */
+export const PageDiagnostics = z.object({
+  console: z.array(ConsoleEntry).max(DIAG_LIMITS.console),
+  errors: z.array(z.string().max(DIAG_LIMITS.error)).max(DIAG_LIMITS.errors),
+  failedRequests: z.array(FailedRequest).max(DIAG_LIMITS.requests),
+  /** alcune voci sono state tralasciate per i limiti */
+  truncated: z.boolean().optional(),
+});
+export type PageDiagnostics = z.infer<typeof PageDiagnostics>;
+export const VisualSide = z.object({ shot: VisualShot.optional(), error: z.string().optional(), diagnostics: PageDiagnostics.optional() });
+export type VisualSide = z.infer<typeof VisualSide>;
 /** Configurazione della verifica visuale di un repository. */
 export const VisualConfig = z.object({
   /** il comando che avvia l'app, eseguito nella cartella del branch (es. "npm run dev") */
@@ -125,8 +150,8 @@ export const VisualConfig = z.object({
   /** solo rete locale: http(s) su localhost, 127.0.0.1 o [::1] */
   url: z.string().min(1).max(500),
   startTimeoutSec: z.number().int().min(5).max(600),
-  /** il lead vede le schermate nella sua review (costa token; disattivato di default) */
-  leadScreenshots: z.boolean().optional(),
+  /** gli agenti vedono le schermate: il lead nella review, il worker con try_ui (costa token; disattivato di default) */
+  agentScreenshots: z.boolean().optional(),
 });
 export type VisualConfig = z.infer<typeof VisualConfig>;
 

@@ -7,17 +7,19 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import type { EngineId, Outbound, Task, VisualReport } from '@keystone/shared';
+import { onlyAfter, type EngineId, type Outbound, type Task, type VisualCheck, type VisualReport } from '@keystone/shared';
 import { describe, expect, it } from 'vitest';
 import type { VisualDeps } from '../src/core/orchestrator.js';
-import { reviewPrompt, visualSummary } from '../src/core/prompts.js';
-import { BROWSER_OPTIONS, BROWSER_TOOL } from '../src/core/team.js';
-import { appEnv, browserRequestAllowed, cleanupVisualLeftovers, findBrowser, isLocalUrl, pageUrl, removeLink, runVisual, shotFile, validateVisualConfig, type VisualRunInput } from '../src/core/visual.js';
-import { userMessageWithImages } from '../src/engines/claude/claude-engine.js';
-import { turnInput } from '../src/engines/codex/codex-engine.js';
+import { classify } from '../src/core/policy.js';
+import { reviewPrompt, tryReport, visualSummary } from '../src/core/prompts.js';
+import { teamTools } from '../src/core/tools.js';
+import { BROWSER_OPTIONS, BROWSER_TOOL, TRY_UI_LIMITS } from '../src/core/team.js';
+import { appEnv, browserRequestAllowed, cleanupVisualLeftovers, findBrowser, isLocalUrl, pageUrl, removeLink, runTry, runVisual, shotFile, validateVisualConfig, type VisualRunInput, type VisualTryInput, type VisualTryResult } from '../src/core/visual.js';
+import { toolResultContent, userMessageWithImages } from '../src/engines/claude/claude-engine.js';
+import { toolContentItems, turnInput } from '../src/engines/codex/codex-engine.js';
 import { SimEngine } from '../src/engines/sim/sim-engine.js';
 import { defaultSimScript, type SimScript } from '../src/engines/sim/script.js';
-import type { EngineAdapter, TurnSpec } from '../src/engines/types.js';
+import type { EngineAdapter, TeamToolResult, TurnSpec } from '../src/engines/types.js';
 import { git, gitOut } from '../src/util/git.js';
 import { redactImageData } from '../src/util/text.js';
 import { demoRepo, noReply, testOrchestrator, tmpDir, waitFor } from './helpers.js';
@@ -233,13 +235,13 @@ function fakeVisual(calls: VisualRunInput[], over: Partial<VisualDeps> = {}): Pa
   };
 }
 
-async function setup(opts: { visual: Partial<VisualDeps>; leadScreenshots?: boolean; configure?: boolean; leadReview?: boolean }) {
+async function setup(opts: { visual: Partial<VisualDeps>; agentScreenshots?: boolean; configure?: boolean; leadReview?: boolean }) {
   const results: string[] = [];
   const specs: TurnSpec[] = [];
   const { o, cfg } = testOrchestrator({ workers: 1, leadReview: opts.leadReview ?? true, engines: spyEngines(workerWithReport(results), specs), visual: opts.visual });
   const r = await o.repos.add(await demoRepo(cfg.home), { confirmGuard: true });
   if (opts.configure !== false) {
-    await o.handle({ v: 1, type: 'repo.config', repoId: r.id, visual: { command: 'npm run dev', url: 'http://localhost:5173', startTimeoutSec: 30, ...(opts.leadScreenshots ? { leadScreenshots: true } : {}) } }, noReply);
+    await o.handle({ v: 1, type: 'repo.config', repoId: r.id, visual: { command: 'npm run dev', url: 'http://localhost:5173', startTimeoutSec: 30, ...(opts.agentScreenshots ? { agentScreenshots: true } : {}) } }, noReply);
   }
   await o.start();
   await o.handle({ v: 1, type: 'goal.submit', text: 'Aggiungi un saluto' }, noReply);
@@ -286,7 +288,7 @@ describe('verifica visuale nel flusso del team (verifica simulata)', () => {
 
   it('con l\'opzione attiva il lead riceve le schermate prima/dopo, con didascalia', async () => {
     const calls: VisualRunInput[] = [];
-    const { o, specs } = await setup({ visual: fakeVisual(calls), leadScreenshots: true });
+    const { o, specs } = await setup({ visual: fakeVisual(calls), agentScreenshots: true });
     const d = await waitFor(() => o.decisions.open().find((x) => x.kind === 'merge'), 'decisione di merge');
     const review = specs.find((s) => s.role === 'lead' && s.job.kind === 'review')!;
     const dir = o.visualShotsDir(d.taskId!);
@@ -359,8 +361,13 @@ http.createServer((req, res) => {
   else { res.writeHead(404); res.end(); }
 }).listen(Number(process.env.PORT), '127.0.0.1');
 `;
-const page = (title: string) =>
-  `<!doctype html><html><body><h1 id="t">${title}</h1><p id="c"></p><button id="b" onclick="document.getElementById('c').textContent='Cliccato'">clic</button><img src="http://example.invalid/x.png"></body></html>`;
+// Le immagini (404 e esterna bloccata) ritardano l'evento load: la diagnostica è completa senza
+// dipendere da attese a tempo. Lo script "dopo" scrive in console e lancia un errore non gestito.
+const page = (title: string, broken = false) =>
+  `<!doctype html><html><body><h1 id="t">${title}</h1><p id="c"></p><button id="b" onclick="document.getElementById('c').textContent='Cliccato'">clic</button>` +
+  `<img src="/manca.png"><img src="http://example.invalid/x.png">` +
+  (broken ? `<script>console.error('Errore solo dopo'); throw new Error('Boom dopo');</script>` : `<script>console.log('pronto');</script>`) +
+  `</body></html>`;
 
 const browser = findBrowser(path.join(process.env.KEYSTONE_HOME ?? path.join(process.env.USERPROFILE ?? process.env.HOME ?? '.', '.keystone'), 'browsers'));
 
@@ -377,7 +384,7 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
     await git(repoPath, [...id, 'commit', '-q', '-m', 'app']);
     const wtPath = path.join(d, 'wt');
     await git(repoPath, ['worktree', 'add', '-q', '-b', 'nuovo-titolo', wtPath]);
-    fs.writeFileSync(path.join(wtPath, 'index.html'), page('Dopo'));
+    fs.writeFileSync(path.join(wtPath, 'index.html'), page('Dopo', true));
     await git(wtPath, [...id, 'commit', '-q', '-am', 'titolo']);
 
     const port = await freePort();
@@ -386,7 +393,8 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
       id: 't1',
       visualChecks: [
         { name: 'Home', path: '/', steps: [{ action: 'click', selector: '#b' }, { action: 'wait', selector: '#t' }], caption: 'il titolo' },
-        { name: 'Pulsante mancante', path: '/', steps: [{ action: 'click', selector: '#non-esiste' }], caption: '' },
+        // un passaggio che fallisce subito, senza aspettare un timeout: si scrive in un titolo
+        { name: 'Campo sbagliato', path: '/', steps: [{ action: 'fill', selector: '#t', value: 'x' }], caption: '' },
       ],
     } as unknown as Task;
     const shotsDir = path.join(d, 'visual', 't1');
@@ -398,7 +406,8 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
       shotsDir,
       browser: browser!,
       env: { ...process.env, ANTHROPIC_API_KEY: 'non-deve-arrivare' },
-      stepTimeoutMs: 1500,
+      // margine ampio: i passaggi che devono riuscire non dipendono dal carico della macchina
+      stepTimeoutMs: 30_000,
       now: Date.now,
     });
 
@@ -407,9 +416,22 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
     expect(rep.checks[0]!.before.error).toBeUndefined();
     // un passaggio non riuscito: la schermata c'è comunque, con l'errore
     expect(rep.checks[1]!.after.shot?.id).toBe('after-2');
-    expect(rep.checks[1]!.after.error).toMatch(/Timeout|timeout/);
+    expect(rep.checks[1]!.after.error).toMatch(/not an <input>/);
+    expect(rep.checks[1]!.after.error).not.toMatch(/Timeout/);
     // l'immagine esterna è stata bloccata, e lo dice
     expect(rep.problems.join('\n')).toContain('example.invalid');
+    // diagnostica: il 404 e la richiesta bloccata ci sono prima e dopo; errore JS e console solo dopo
+    const b = rep.checks[0]!.before.diagnostics!;
+    const a = rep.checks[0]!.after.diagnostics!;
+    expect(b.errors).toEqual([]);
+    expect(b.console).toEqual([{ type: 'log', text: 'pronto' }]);
+    expect(b.failedRequests).toEqual(expect.arrayContaining([expect.objectContaining({ url: `${url}/manca.png`, status: 404 }), expect.objectContaining({ url: 'http://example.invalid/x.png', blocked: true })]));
+    expect(a.errors[0]).toMatch(/^Boom dopo/);
+    const fresh = onlyAfter(b, a);
+    expect(fresh.errors).toHaveLength(1);
+    expect(fresh.console).toEqual([{ type: 'error', text: 'Errore solo dopo' }]);
+    expect(fresh.failedRequests).toEqual([]);
+    expect(visualSummary(rep)).toContain('solo dopo: 1 errori JavaScript, 1 errori/avvisi in console, 0 richieste fallite');
     // prima e dopo sono diverse (il titolo è cambiato), e stanno nella cartella delle schermate
     const before = fs.readFileSync(path.join(shotsDir, 'before-1.png'));
     const after = fs.readFileSync(path.join(shotsDir, 'after-1.png'));
@@ -442,5 +464,257 @@ describe.skipIf(!browser)('verifica visuale vera (browser installato)', () => {
     } finally {
       other.close();
     }
+  });
+});
+
+describe.skipIf(!browser)('prova interfaccia vera (browser installato)', () => {
+  it('solo il worktree: esito dei passaggi, diagnostica e schermata', { timeout: 120_000 }, async () => {
+    const d = tmpDir();
+    const wt = path.join(d, 'wt');
+    fs.mkdirSync(wt);
+    fs.writeFileSync(path.join(wt, 'server.mjs'), SERVER);
+    fs.writeFileSync(path.join(wt, 'index.html'), page('Prova', true));
+    await git(wt, ['init', '-q', '-b', 'main']);
+    const port = await freePort();
+    const url = `http://127.0.0.1:${port}`;
+    const r = await runTry({
+      repo: { id: 'r1', name: 'repo', path: wt, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url, startTimeoutSec: 30 } },
+      checks: [
+        { name: 'Home', path: '/', steps: [{ action: 'click', selector: '#b' }], caption: '' },
+        { name: 'Campo sbagliato', path: '/', steps: [{ action: 'fill', selector: '#t', value: 'x' }], caption: '' },
+      ],
+      worktreePath: wt,
+      shotsDir: path.join(d, 'visual', 't1-try'),
+      browser: browser!,
+      env: process.env,
+      maxMs: 90_000,
+      stepTimeoutMs: 30_000,
+    });
+    expect(r.status).toBe('done');
+    expect(r.pages[0]!.side).toMatchObject({ shot: { id: 'try-1' } });
+    expect(r.pages[0]!.side.error).toBeUndefined();
+    expect(r.pages[1]!.side.error).toMatch(/not an <input>/);
+    expect(r.pages[0]!.side.diagnostics!.errors[0]).toMatch(/^Boom dopo/);
+    expect(fs.existsSync(path.join(d, 'visual', 't1-try', 'try-1.png'))).toBe(true);
+    const text = tryReport(r, { withImages: false });
+    expect(text).toContain('- Home: passaggi riusciti');
+    expect(text).toContain('errore JS: Boom dopo');
+    expect(text).toContain('console: [error] Errore solo dopo');
+    expect(text).toContain(`richiesta: GET ${url}/manca.png → 404`);
+    expect(text).toContain('richiesta: GET http://example.invalid/x.png → bloccata (non locale)');
+    await expect(fetch(url, { signal: AbortSignal.timeout(1000) })).rejects.toThrow();
+  });
+
+  it('una prova che supera il tempo massimo si ferma e lo dice', { timeout: 60_000 }, async () => {
+    const d = tmpDir();
+    fs.writeFileSync(path.join(d, 'server.mjs'), SERVER);
+    fs.writeFileSync(path.join(d, 'index.html'), page('Prova'));
+    const port = await freePort();
+    const r = await runTry({
+      repo: { id: 'r1', name: 'repo', path: d, branch: 'main', dirty: false, ci: 'unknown', worktrees: [], visual: { command: 'node server.mjs', url: `http://127.0.0.1:${port}`, startTimeoutSec: 30 } },
+      // il tempo è già esaurito: nessuna pagina viene aperta, senza dipendere dalla velocità della macchina
+      checks: [{ name: 'Home', path: '/', steps: [], caption: '' }],
+      worktreePath: d,
+      shotsDir: path.join(d, 'visual', 't1-try'),
+      browser: browser!,
+      env: process.env,
+      maxMs: -1,
+    });
+    expect(r.pages[0]!.side.error).toMatch(/tempo massimo della prova superato/);
+  });
+});
+
+// ---- parte 2 senza browser: diagnostica, testi, prova interfaccia nel team ------------------
+
+describe('diagnostica: cosa compare solo dopo', () => {
+  const diag = (o: Partial<{ console: Array<{ type: string; text: string }>; errors: string[]; failedRequests: Array<{ url: string; method?: string; status?: number; blocked?: boolean; failure?: string }> }>) => ({ console: [], errors: [], failedRequests: [], ...o });
+
+  it('confronta messaggi, prima riga degli errori e risorse senza query', () => {
+    const before = diag({
+      console: [{ type: 'warning', text: 'vecchio avviso' }],
+      errors: ['TypeError: x is undefined\n    at a (http://localhost:5173/src/a.js?t=1:10:5)'],
+      failedRequests: [{ url: 'http://localhost:5173/api/utente?t=111', method: 'GET', status: 404 }],
+    });
+    const after = diag({
+      console: [{ type: 'warning', text: 'vecchio avviso' }, { type: 'error', text: 'nuovo errore' }],
+      errors: ['TypeError: x is undefined\n    at a (http://localhost:5173/src/a.js?t=2:12:9)', 'ReferenceError: y is not defined'],
+      failedRequests: [{ url: 'http://localhost:5173/api/utente?t=222', method: 'GET', status: 404 }, { url: 'http://localhost:5173/api/ordini', method: 'POST', status: 500 }],
+    });
+    expect(onlyAfter(before, after)).toEqual({
+      console: [{ type: 'error', text: 'nuovo errore' }],
+      errors: ['ReferenceError: y is not defined'],
+      failedRequests: [{ url: 'http://localhost:5173/api/ordini', method: 'POST', status: 500 }],
+    });
+    // senza il lato "prima" non si può dire cosa è nuovo
+    expect(onlyAfter(undefined, after)).toEqual({ console: [], errors: [], failedRequests: [] });
+  });
+
+  it('nel riassunto per il lead: in evidenza il nuovo, il resto solo come conteggio', () => {
+    const rep: VisualReport = {
+      status: 'done',
+      at: 1,
+      problems: [],
+      checks: [
+        {
+          name: 'Home',
+          caption: '',
+          before: { shot: { id: 'before-1' }, diagnostics: diag({ failedRequests: [{ url: 'http://localhost/a.png', status: 404 }] }) },
+          after: { shot: { id: 'after-1' }, diagnostics: diag({ errors: ['Boom'], failedRequests: [{ url: 'http://localhost/a.png', status: 404 }] }) },
+        },
+      ],
+    };
+    const s = visualSummary(rep);
+    expect(s).toContain('  solo dopo: 1 errori JavaScript, 0 errori/avvisi in console, 0 richieste fallite');
+    expect(s).toContain('    - errore JS: Boom');
+    expect(s).toContain('  presenti anche prima: 1 tra errori, avvisi e richieste fallite');
+    expect(s).not.toContain('a.png');
+  });
+});
+
+describe('policy: ogni tool del team è ammesso per il suo ruolo, e solo per quello', () => {
+  it('nessun tool dimenticato (submit_report e try_ui compresi)', () => {
+    const { o } = testOrchestrator({ workers: 1 });
+    const hooks = { onReview: () => undefined, onChangesRequested: () => undefined, onTasksChanged: () => undefined, onDecisionOpened: () => undefined };
+    const guard = { aborted: () => false, reason: () => undefined, whenAborted: new Promise<void>(() => undefined) };
+    const lead = teamTools(o, o.leadId, 'lead', hooks, guard).map((t) => t.name);
+    const worker = teamTools(o, 'bruno', 'worker', hooks, guard).map((t) => t.name);
+    expect(worker).toEqual(expect.arrayContaining(['submit_report', 'try_ui']));
+    expect(lead).not.toContain('try_ui');
+    const cwd = tmpDir();
+    for (const [role, names, others] of [['lead', lead, worker], ['worker', worker, lead]] as const) {
+      for (const n of names) {
+        expect(classify(`mcp__keystone__${n}`, {}, { role, cwd }).action, `${role} ${n}`).toBe('allow');
+        expect(classify(n, {}, { role, cwd }).action, `${role} ${n}`).toBe('allow');
+      }
+      for (const n of others.filter((x) => !names.includes(x))) expect(classify(`mcp__keystone__${n}`, {}, { role, cwd }).action, `${role} ${n}`).toBe('deny');
+    }
+  });
+});
+
+describe('risultati dei tool con immagini', () => {
+  it('Claude: testo, didascalia e blocco immagine; Codex: inputImage come data URL', () => {
+    const d = tmpDir();
+    const f = path.join(d, 'try-1.png');
+    fs.writeFileSync(f, PNG);
+    const r: TeamToolResult = { text: 'esito', images: [{ path: f, caption: 'Home: prova' }, { path: path.join(d, 'no.png'), caption: 'X' }] };
+    expect(toolResultContent(r)).toEqual([
+      { type: 'text', text: 'esito' },
+      { type: 'text', text: 'Home: prova' },
+      { type: 'image', data: PNG.toString('base64'), mimeType: 'image/png' },
+      { type: 'text', text: 'X: schermata non disponibile' },
+    ]);
+    expect(toolContentItems(r)).toEqual([
+      { type: 'inputText', text: 'esito' },
+      { type: 'inputText', text: 'Home: prova' },
+      { type: 'inputImage', imageUrl: `data:image/png;base64,${PNG.toString('base64')}` },
+      { type: 'inputText', text: 'X: schermata non disponibile' },
+    ]);
+  });
+});
+
+describe('una sola app per volta per repository', () => {
+  it('le esecuzioni dello stesso repository si mettono in fila, anche dopo un errore; repository diversi no', async () => {
+    const { o } = testOrchestrator({ workers: 1 });
+    const log: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const first = o.withVisualLock('r1', async () => {
+      log.push('a:inizio');
+      await gate;
+      log.push('a:fine');
+      throw new Error('fallita');
+    });
+    const second = o.withVisualLock('r1', async () => {
+      log.push('b');
+      return 2;
+    });
+    const other = o.withVisualLock('r2', async () => {
+      log.push('altro repo');
+      return 3;
+    });
+    expect(await other).toBe(3);
+    expect(log).toEqual(['a:inizio', 'altro repo']); // r2 non aspetta r1
+    release();
+    await expect(first).rejects.toThrow('fallita');
+    expect(await second).toBe(2);
+    expect(log).toEqual(['a:inizio', 'altro repo', 'a:fine', 'b']);
+  });
+});
+
+/** Il worker prova l'interfaccia `times` volte durante il lavoro, poi lavora come sempre. */
+function workerTrying(times: number, results: TeamToolResult[]): SimScript {
+  return async (ctx) => {
+    if (ctx.spec.role === 'worker' && ctx.spec.job.kind === 'work') {
+      for (let i = 0; i < times; i++) results.push(await ctx.team('try_ui', { task_id: ctx.spec.job.taskId!, checks: CHECKS }));
+    }
+    return defaultSimScript(ctx);
+  };
+}
+
+function fakeTry(calls: VisualTryInput[]): Partial<VisualDeps> {
+  return {
+    findBrowser: () => ({ channel: 'msedge', label: 'Edge (finto)' }),
+    tryRun: async (input): Promise<VisualTryResult> => {
+      calls.push(input);
+      fs.mkdirSync(input.shotsDir, { recursive: true });
+      fs.writeFileSync(path.join(input.shotsDir, 'try-1.png'), PNG);
+      return {
+        status: 'done',
+        durationMs: 1234,
+        problems: [],
+        pages: input.checks.map((c: VisualCheck, i) => ({
+          name: c.name,
+          caption: c.caption,
+          side: i === 0 ? { shot: { id: 'try-1' }, diagnostics: { console: [], errors: ['Boom'], failedRequests: [] } } : { error: 'locator.click: Timeout' },
+        })),
+      };
+    },
+  };
+}
+
+async function setupTry(opts: { times: number; agentScreenshots?: boolean; configure?: boolean }) {
+  const results: TeamToolResult[] = [];
+  const calls: VisualTryInput[] = [];
+  const { o, cfg } = testOrchestrator({ workers: 1, leadReview: false, engines: new Map<EngineId, EngineAdapter>([['sim', new SimEngine({ stepDelayMs: 0, script: workerTrying(opts.times, results) })]]), visual: fakeTry(calls) });
+  const r = await o.repos.add(await demoRepo(cfg.home), { confirmGuard: true });
+  if (opts.configure !== false) {
+    await o.handle({ v: 1, type: 'repo.config', repoId: r.id, visual: { command: 'npm run dev', url: 'http://localhost:5173', startTimeoutSec: 30, ...(opts.agentScreenshots ? { agentScreenshots: true } : {}) } }, noReply);
+  }
+  await o.start();
+  await o.handle({ v: 1, type: 'goal.submit', text: 'Aggiungi un saluto' }, noReply);
+  const d = await waitFor(() => o.decisions.open().find((x) => x.kind === 'merge'), 'decisione di merge');
+  return { o, results, calls, repoId: r.id, taskId: d.taskId! };
+}
+
+describe('prova interfaccia (try_ui) nel team, con la prova simulata', () => {
+  it('Keystone prova il worktree del worker e gli restituisce esito e diagnostica; massimo per turno', async () => {
+    const { o, results, calls, repoId, taskId } = await setupTry({ times: TRY_UI_LIMITS.perTurn + 1 });
+    expect(calls).toHaveLength(TRY_UI_LIMITS.perTurn);
+    const t = o.tasks.get(taskId)!;
+    expect(calls[0]!.worktreePath).toBe(o.repos.requireWorktree(repoId, t.worktree!).path);
+    expect(calls[0]!.shotsDir).toBe(o.visualTryDir(taskId));
+    expect(calls[0]!.maxMs).toBeLessThanOrEqual(TRY_UI_LIMITS.msPerTry);
+    expect(Object.keys(calls[0]!.env).some((k) => /API_KEY$/.test(k))).toBe(false);
+    const first = results[0]!;
+    expect(first.isError).toBeUndefined();
+    expect(first.text).toContain("Prova dell'interfaccia eseguita da Keystone nel tuo worktree (1.2 s): eseguita");
+    expect(first.text).toContain('errore JS: Boom');
+    expect(first.text).toContain('passaggio non riuscito: locator.click: Timeout');
+    // schermate agli agenti disattivate (default): niente immagini, e lo dice
+    expect(first.images).toBeUndefined();
+    expect(first.text).toContain('Schermate non allegate');
+    expect(results[TRY_UI_LIMITS.perTurn]).toMatchObject({ isError: true, text: expect.stringMatching(/massimo 5/) });
+  });
+
+  it("con le schermate per gli agenti attive, la schermata torna al worker", async () => {
+    const { o, results, taskId } = await setupTry({ times: 1, agentScreenshots: true });
+    expect(results[0]!.images).toEqual([{ path: path.join(o.visualTryDir(taskId), 'try-1.png'), caption: 'Home: prova' }]);
+    expect(results[0]!.text).toContain('Le schermate sono allegate');
+  });
+
+  it('senza verifica visuale configurata la prova non parte e lo spiega', async () => {
+    const { results, calls } = await setupTry({ times: 1, configure: false });
+    expect(calls).toHaveLength(0);
+    expect(results[0]).toMatchObject({ isError: true, text: expect.stringMatching(/non è configurata/) });
   });
 });

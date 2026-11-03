@@ -24,6 +24,8 @@ export type { EngineEvent, PermissionAnswer };
 export interface TeamToolResult {
   text: string;
   isError?: boolean;
+  /** immagini da restituire all'agente insieme al testo (file PNG locali, con didascalia) */
+  images?: Array<{ path: string; caption: string }>;
 }
 
 /** Un tool del team (send_message, ask_user, ...): il motore lo espone all'agente con questo schema. */

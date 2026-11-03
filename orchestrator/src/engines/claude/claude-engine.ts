@@ -28,7 +28,7 @@ import type { EngineEvent, PermissionAnswer, Role } from '@keystone/shared';
 import { ensureDir } from '../../util/fsx.js';
 import { redactImageData, truncate } from '../../util/text.js';
 import { EventChannel, PermissionBroker } from '../channel.js';
-import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TurnSpec } from '../types.js';
+import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TeamToolResult, TurnSpec } from '../types.js';
 import { detectApiAuth, detectClaudeLogin, envForAuth, NO_API_AUTH_MESSAGE, NO_LOGIN_TOKEN_MESSAGE } from './auth.js';
 import { DEFAULT_LEAD_MODEL, DEFAULT_WORKER_MODEL, displayClaudeModel } from './models.js';
 
@@ -63,6 +63,28 @@ export type QueryFn = (params: { prompt: string | AsyncIterable<SDKUserMessage>;
 /** Limite dell'API per un'immagine in base64 (5 MB). */
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
+/** Il risultato di un tool del team per l'SDK: il testo e, se ci sono, le immagini (base64). */
+export function toolResultContent(r: TeamToolResult): Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: 'image/png' }> {
+  const out: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: 'image/png' }> = [{ type: 'text', text: r.text }];
+  for (const img of r.images ?? []) {
+    const data = readImage(img.path);
+    if (typeof data === 'string') out.push({ type: 'text', text: `${img.caption}: ${data}` });
+    else out.push({ type: 'text', text: img.caption }, { type: 'image', data: data.toString('base64'), mimeType: 'image/png' });
+  }
+  return out;
+}
+
+/** Il file di un'immagine, o il motivo per cui non si può allegare. */
+function readImage(file: string): Buffer | string {
+  let data: Buffer;
+  try {
+    data = fs.readFileSync(file);
+  } catch {
+    return 'schermata non disponibile';
+  }
+  return Math.ceil(data.length / 3) * 4 > MAX_IMAGE_BYTES ? 'schermata troppo grande per essere allegata' : data;
+}
+
 /**
  * Il messaggio dell'utente con testo e immagini (blocchi image in base64, ognuno preceduto dalla
  * sua didascalia). Un'immagine mancante o troppo grande diventa una riga di testo che lo dice.
@@ -71,14 +93,8 @@ export function userMessageWithImages(prompt: string, images: Array<{ path: stri
   type Block = { type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: 'image/png'; data: string } };
   const content: Block[] = [{ type: 'text', text: prompt }];
   for (const img of images) {
-    let data: Buffer | undefined;
-    try {
-      data = fs.readFileSync(img.path);
-    } catch {
-      data = undefined;
-    }
-    if (!data) content.push({ type: 'text', text: `${img.caption}: schermata non disponibile` });
-    else if (Math.ceil(data.length / 3) * 4 > MAX_IMAGE_BYTES) content.push({ type: 'text', text: `${img.caption}: schermata troppo grande per essere allegata` });
+    const data = readImage(img.path);
+    if (typeof data === 'string') content.push({ type: 'text', text: `${img.caption}: ${data}` });
     else content.push({ type: 'text', text: img.caption }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: data.toString('base64') } });
   }
   return { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null };
@@ -254,7 +270,7 @@ export class ClaudeEngine implements EngineAdapter {
           tools: spec.tools.map((t) =>
             sdkTool(t.name, t.description, t.schema.shape, async (args: Record<string, unknown>) => {
               const r = await t.run(args);
-              return { content: [{ type: 'text' as const, text: r.text }], ...(r.isError ? { isError: true } : {}) };
+              return { content: toolResultContent(r), ...(r.isError ? { isError: true } : {}) };
             }),
           ),
         }),

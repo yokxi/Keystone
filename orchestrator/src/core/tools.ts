@@ -1,7 +1,8 @@
 // I tool del team, uguali per ogni motore:
 //   send_message, ask_user, write_memory, read_memory, update_task, report_status, list_tasks
 //   solo lead: create_task, request_merge
-//   solo worker: submit_report (resoconto strutturato e pagine da verificare visivamente)
+//   solo worker: submit_report (resoconto strutturato e pagine da verificare visivamente),
+//                try_ui (Keystone avvia l'app dal worktree e prova delle pagine)
 // Ogni risultato porta con sé i messaggi non letti dell'agente: così un messaggio arriva anche
 // a metà turno.
 import { VisualCheck, type AgentState, type TaskStatus } from '@keystone/shared';
@@ -21,6 +22,8 @@ export interface ToolHooks {
   onTasksChanged(): void;
   /** una decisione aperta dal turno (per annullarla se il turno viene interrotto) */
   onDecisionOpened(decisionId: string): void;
+  /** prova interfaccia (solo worker): Keystone avvia l'app dal worktree ed esegue i passaggi */
+  tryUi?(taskId: string, checks: VisualCheck[]): Promise<TeamToolResult>;
 }
 
 /** Il turno a cui appartengono i tool: se è interrotto, i tool non agiscono più. */
@@ -200,6 +203,26 @@ export function teamTools(o: Orchestrator, agentId: string, role: 'lead' | 'work
           const repo = t.repoId ? o.repos.get(t.repoId) : undefined;
           const note = a.visual_checks?.length ? (repo?.visual ? ` Keystone verificherà ${a.visual_checks.length} pagine.` : ' (la verifica visuale non è configurata per questo repository: le pagine sono annotate ma non verificate)') : '';
           return reply(`Resoconto registrato per ${t.id}.${note} Ora: update_task("${t.id}", status "review", summary).`);
+        },
+      ),
+      tool(
+        'try_ui',
+        'Prova l\u2019interfaccia web PRIMA della review, se il repository ha la verifica visuale. Keystone (non tu) avvia l\u2019app dal tuo worktree, esegue i passaggi e ti restituisce l\u2019esito di ogni pagina, i messaggi della console, gli errori JavaScript e le richieste fallite (la schermata solo se l\u2019utente l\u2019ha consentita). ' +
+          'Stesso formato di visual_checks: [{ name, path (es. "/"), steps: [{ action: "click"|"fill"|"press"|"wait"|"goto", selector?, value?, key?, path? }], caption }], al massimo 3 pagine. Poche prove per turno: usalo per verificare, non per esplorare.',
+        { task_id: z.string().min(1), checks: z.array(VisualCheck).min(1).max(3) },
+        async (a) => {
+          const t = o.tasks.get(a.task_id);
+          if (!t) return fail(`nessun task ${a.task_id}`);
+          if (t.assignee !== agentId) return fail(`${t.id} non è un tuo task`);
+          for (const c of a.checks) {
+            for (const p of [c.path, ...c.steps.flatMap((s) => (s.action === 'goto' ? [s.path] : []))]) {
+              if (!p.startsWith('/') || p.startsWith('//')) return fail(`percorso "${p}" non valido: deve iniziare con / (una pagina della stessa app)`);
+            }
+          }
+          if (!hooks.tryUi) return fail('la prova dell\u2019interfaccia non è disponibile in questo turno');
+          const r = await hooks.tryUi(t.id, a.checks);
+          const withInbox = reply(r.text, r.isError);
+          return { ...withInbox, ...(r.images?.length ? { images: r.images } : {}) };
         },
       ),
     );

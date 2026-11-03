@@ -27,7 +27,7 @@ function VisualConfigForm({ repo, send }: { repo: Repo; send: Send }) {
   const [command, setCommand] = useState(v?.command ?? 'npm run dev');
   const [url, setUrl] = useState(v?.url ?? 'http://localhost:5173');
   const [timeout, setTimeoutSec] = useState(String(v?.startTimeoutSec ?? 60));
-  const [leadShots, setLeadShots] = useState(v?.leadScreenshots ?? false);
+  const [leadShots, setLeadShots] = useState(v?.agentScreenshots ?? false);
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
 
@@ -35,7 +35,7 @@ function VisualConfigForm({ repo, send }: { repo: Repo; send: Send }) {
     setCommand(v?.command ?? 'npm run dev');
     setUrl(v?.url ?? 'http://localhost:5173');
     setTimeoutSec(String(v?.startTimeoutSec ?? 60));
-    setLeadShots(v?.leadScreenshots ?? false);
+    setLeadShots(v?.agentScreenshots ?? false);
     setError(undefined);
     setEditing(true);
   };
@@ -61,7 +61,7 @@ function VisualConfigForm({ repo, send }: { repo: Repo; send: Send }) {
             <span className="mono ellipsis">
               {v.command} → {v.url}
             </span>
-            {v.leadScreenshots && <span className="badge">schermate al lead</span>}
+            {v.agentScreenshots && <span className="badge">schermate agli agenti</span>}
           </>
         ) : (
           <span className="badge">disattivata</span>
@@ -84,7 +84,7 @@ function VisualConfigForm({ repo, send }: { repo: Repo; send: Send }) {
             <span />
             <label className="row" style={{ gap: 6 }}>
               <input type="checkbox" checked={leadShots} onChange={(e) => setLeadShots(e.target.checked)} />
-              Il lead vede le schermate nella sua review <span className="faint">(costa token: disattivato di default)</span>
+              Gli agenti vedono le schermate: il lead nella review, il worker con la prova interfaccia <span className="faint">(costa token: disattivato di default)</span>
             </label>
           </div>
           <p className="note">
@@ -93,7 +93,7 @@ function VisualConfigForm({ repo, send }: { repo: Repo; send: Send }) {
           </p>
           {(error ?? invalid) && <div className="decision-error">{error ?? invalid}</div>}
           <div className="decision-actions" style={{ marginTop: 8 }}>
-            <button className="btn primary small" disabled={busy || !!invalid} onClick={() => void save({ command: command.trim(), url: url.trim(), startTimeoutSec: seconds, ...(leadShots ? { leadScreenshots: true } : {}) })}>
+            <button className="btn primary small" disabled={busy || !!invalid} onClick={() => void save({ command: command.trim(), url: url.trim(), startTimeoutSec: seconds, ...(leadShots ? { agentScreenshots: true } : {}) })}>
               Salva
             </button>
             {v && (

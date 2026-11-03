@@ -1,7 +1,8 @@
 // Prompt e istruzioni per gli agenti (uguali per ogni motore).
-import type { Goal, Task, VisualReport, Worktree } from '@keystone/shared';
+import { isConsoleProblem, onlyAfter, type FailedRequest, type Goal, type PageDiagnostics, type Task, type VisualReport, type Worktree } from '@keystone/shared';
+import type { VisualTryResult } from './visual.js';
 import type { DiffFile } from '@keystone/shared';
-import { lastLines } from '../util/text.js';
+import { lastLines, truncate } from '../util/text.js';
 import { diffToText } from './diff.js';
 import type { TestResult } from './repos.js';
 
@@ -42,9 +43,68 @@ export function visualSummary(r: VisualReport): string {
   for (const c of r.checks) {
     const side = (label: string, x: VisualReport['checks'][number]['before']) => `${label}: ${x.shot ? (x.shot.error ? `schermata, passaggio non riuscito (${x.shot.error})` : 'schermata') : `nessuna schermata (${x.error ?? '?'})`}`;
     lines.push(`- ${c.name}${c.caption ? ` (atteso: ${c.caption})` : ''}: ${side('prima', c.before)}; ${side('dopo', c.after)}`);
+    lines.push(...diagnosticsVsBefore(c.before.diagnostics, c.after.diagnostics));
   }
   for (const p of r.problems) lines.push(`- problema: ${p}`);
   return lines.join('\n');
+}
+
+/** Voci mostrate al massimo per tipo (errori, console, richieste) nei testi per gli agenti. */
+const DIAG_LIST_MAX = 5;
+
+export function requestText(r: FailedRequest): string {
+  return `${r.method ?? 'GET'} ${r.url} → ${r.blocked ? 'bloccata (non locale)' : (r.status ?? r.failure ?? 'fallita')}`;
+}
+
+const firstLine = (s: string) => truncate(s.split('\n')[0] ?? s, 200);
+
+/** Righe "  - …" per un elenco, con "e altre N" oltre il massimo. */
+function listLines(label: string, items: string[]): string[] {
+  const out = items.slice(0, DIAG_LIST_MAX).map((x) => `    - ${label}: ${x}`);
+  if (items.length > DIAG_LIST_MAX) out.push(`    - … e altre ${items.length - DIAG_LIST_MAX} (${label})`);
+  return out;
+}
+
+/**
+ * La diagnostica di una pagina per il lead: in evidenza ciò che compare solo "dopo" (errori JS,
+ * errori e avvisi in console, richieste fallite); il resto solo come conteggio.
+ */
+function diagnosticsVsBefore(before: PageDiagnostics | undefined, after: PageDiagnostics | undefined): string[] {
+  if (!after) return [];
+  const fresh = onlyAfter(before, after);
+  const freshConsole = fresh.console.filter(isConsoleProblem);
+  const lines: string[] = [];
+  if (before && (fresh.errors.length || freshConsole.length || fresh.failedRequests.length)) {
+    lines.push(`  solo dopo: ${fresh.errors.length} errori JavaScript, ${freshConsole.length} errori/avvisi in console, ${fresh.failedRequests.length} richieste fallite`);
+    lines.push(...listLines('errore JS', fresh.errors.map(firstLine)), ...listLines('console', freshConsole.map((c) => `[${c.type}] ${firstLine(c.text)}`)), ...listLines('richiesta', fresh.failedRequests.map(requestText)));
+  }
+  const total = after.errors.length + after.console.filter(isConsoleProblem).length + after.failedRequests.length;
+  const shown = fresh.errors.length + freshConsole.length + fresh.failedRequests.length;
+  if (!before && total) lines.push(`  dopo: ${after.errors.length} errori JavaScript, ${after.console.filter(isConsoleProblem).length} errori/avvisi in console, ${after.failedRequests.length} richieste fallite (lato "prima" non disponibile per il confronto)`);
+  else if (total > shown) lines.push(`  presenti anche prima: ${total - shown} tra errori, avvisi e richieste fallite`);
+  if (after.truncated) lines.push('  (diagnostica troncata: troppe voci)');
+  return lines;
+}
+
+/** Il resoconto di una prova dell'interfaccia (try_ui) per il worker. */
+export function tryReport(r: VisualTryResult, opts: { withImages: boolean }): string {
+  const lines = [`Prova dell'interfaccia eseguita da Keystone nel tuo worktree (${(r.durationMs / 1000).toFixed(1)} s): ${r.status === 'done' ? 'eseguita' : `NON RIUSCITA (${r.note ?? '?'})`}`];
+  for (const p of r.pages) {
+    const s = p.side;
+    const outcome = s.error ? `passaggio non riuscito: ${s.error}` : 'passaggi riusciti';
+    lines.push(`- ${p.name}${p.caption ? ` (atteso: ${p.caption})` : ''}: ${outcome}`);
+    const d = s.diagnostics;
+    if (!d) continue;
+    const problems = d.console.filter(isConsoleProblem);
+    lines.push(...listLines('errore JS', d.errors.map(firstLine)), ...listLines('console', problems.map((c) => `[${c.type}] ${firstLine(c.text)}`)), ...listLines('richiesta', d.failedRequests.map(requestText)));
+    const others = d.console.length - problems.length;
+    if (others) lines.push(`    - altri messaggi in console: ${others}`);
+    if (!d.errors.length && !problems.length && !d.failedRequests.length) lines.push('    - nessun errore, avviso o richiesta fallita');
+    if (d.truncated) lines.push('    - (diagnostica troncata: troppe voci)');
+  }
+  for (const p of r.problems) lines.push(`- problema: ${p}`);
+  if (r.pages.some((p) => p.side.shot)) lines.push(opts.withImages ? 'Le schermate sono allegate, nello stesso ordine delle pagine.' : "Schermate non allegate: l'utente non ha attivato le schermate per gli agenti in questo repository.");
+  return truncate(lines.join('\n'), 8000);
 }
 
 export interface PromptEnv {
@@ -93,6 +153,7 @@ export function workerInstructions(env: PromptEnv, wt: Worktree): string {
     '',
     `Sei un WORKER. Lavori solo nel tuo worktree: ${wt.path} (branch ${wt.branch}, base ${wt.base}).`,
     'Modifica i file, esegui i test, committa sul tuo branch con messaggi chiari.',
+    'Se il repository ha la verifica visuale, durante il lavoro puoi provare le pagine con try_ui: Keystone avvia l\'app dal tuo worktree e ti dice esito, console, errori JavaScript e richieste fallite. Le prove per turno sono poche.',
     'Quando hai finito: prima submit_report (richiesta, cosa hai cambiato e perché, come l\'hai verificato, problemi aperti; se il task tocca l\'interfaccia web, le pagine da verificare in visual_checks), poi update_task con status "review" e un summary. Se sei bloccato usa status "blocked" con blocked_reason.',
   ].join('\n');
 }

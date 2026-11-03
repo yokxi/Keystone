@@ -635,7 +635,7 @@ export class RepoManager {
     const r = this.require(repoId);
     if (cfg === null) delete r.visual;
     else {
-      const clean: VisualConfig = { command: cfg.command.trim(), url: cfg.url.trim(), startTimeoutSec: cfg.startTimeoutSec, ...(cfg.leadScreenshots ? { leadScreenshots: true } : {}) };
+      const clean: VisualConfig = { command: cfg.command.trim(), url: cfg.url.trim(), startTimeoutSec: cfg.startTimeoutSec, ...(cfg.agentScreenshots ? { agentScreenshots: true } : {}) };
       const bad = validateVisualConfig(clean);
       if (bad) throw new RepoError(bad, 'refused');
       r.visual = clean;

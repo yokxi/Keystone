@@ -16,7 +16,7 @@ import { Store } from './store.js';
 import { TaskError, TaskGraph } from './taskgraph.js';
 import { visualSummary } from './prompts.js';
 import { Team, type TeamMember, type TeamOptions } from './team.js';
-import { cleanupVisualLeftovers, findBrowser, installChromium, runVisual, shotFile, type BrowserChoice, type VisualRunInput } from './visual.js';
+import { cleanupVisualLeftovers, findBrowser, installChromium, runTry, runVisual, shotFile, type BrowserChoice, type VisualRunInput, type VisualTryInput, type VisualTryResult } from './visual.js';
 
 export const VERSION = '0.1.0';
 
@@ -63,6 +63,8 @@ export interface VisualDeps {
   /** scarica Chromium in ~/.keystone/browsers: SOLO dopo il permesso dell'utente */
   installBrowser(): Promise<{ ok: boolean; output: string }>;
   run(input: VisualRunInput): Promise<VisualReport>;
+  /** prova interfaccia del worker: solo il suo worktree */
+  tryRun(input: VisualTryInput): Promise<VisualTryResult>;
 }
 
 /**
@@ -104,6 +106,8 @@ export class Orchestrator {
   status: OrchestratorStatus;
   readonly visual: VisualDeps;
   private readonly dataDir: string;
+  /** una sola app avviata per volta per repository: la porta dell'URL è una */
+  private visualLocks = new Map<string, Promise<unknown>>();
   private listeners = new Set<Listener>();
 
   constructor(opts: OrchestratorOptions) {
@@ -120,6 +124,7 @@ export class Orchestrator {
       findBrowser: () => findBrowser(browsersDir),
       installBrowser: () => installChromium(browsersDir),
       run: runVisual,
+      tryRun: runTry,
       ...opts.visual,
     };
     this.cliUserName = opts.userName ? sanitizeUserName(opts.userName) : undefined;
@@ -147,6 +152,29 @@ export class Orchestrator {
   visualShotsDir(taskId: string): string {
     if (!/^[A-Za-z0-9_-]{1,80}$/.test(taskId)) throw new Error(`id di task non valido: ${taskId}`);
     return path.join(this.dataDir, 'visual', taskId);
+  }
+
+  /** Le schermate delle prove del worker (try_ui): ~/.keystone/<profilo>/visual/<task>-try. */
+  visualTryDir(taskId: string): string {
+    return `${this.visualShotsDir(taskId)}-try`;
+  }
+
+  /**
+   * Esegue `fn` quando nessun'altra verifica o prova dello stesso repository è in corso: usano tutte
+   * la stessa porta, e due app avviate insieme si scambierebbero le schermate.
+   */
+  withVisualLock<T>(repoId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.visualLocks.get(repoId) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.visualLocks.set(repoId, tail);
+    void tail.then(() => {
+      if (this.visualLocks.get(repoId) === tail) this.visualLocks.delete(repoId);
+    });
+    return run;
   }
 
   /** Il Chromium scaricato con il permesso dell'utente, condiviso tra i profili: ~/.keystone/browsers. */

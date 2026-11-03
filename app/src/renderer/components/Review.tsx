@@ -1,4 +1,4 @@
-import type { Decision, DiffFile, Task, ViewState, VisualReport } from '@keystone/shared';
+import { consoleKey, errorKey, isConsoleProblem, onlyAfter, requestKey, type Decision, type DiffFile, type FailedRequest, type PageDiagnostics, type Task, type ViewState, type VisualReport } from '@keystone/shared';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collapseContext } from '../lib/diff-view.js';
 
@@ -126,6 +126,81 @@ function Shot({ taskId, side, label, onOpen }: { taskId: string; side: VisualRep
   );
 }
 
+const requestLabel = (r: FailedRequest) => `${r.method ?? 'GET'} ${r.url} → ${r.blocked ? 'bloccata (non locale)' : (r.status ?? r.failure ?? 'fallita')}`;
+
+/** Console, errori JavaScript e richieste fallite di un lato; "solo dopo" segna le voci nuove. */
+function DiagColumn({ label, d, fresh }: { label: string; d: PageDiagnostics | undefined; fresh?: { console: Set<string>; errors: Set<string>; requests: Set<string> } }) {
+  if (!d) return <div className="diag-col faint">{label}: nessun dato</div>;
+  const problems = d.console.filter(isConsoleProblem);
+  const others = d.console.filter((c) => !isConsoleProblem(c));
+  const isNew = (set: Set<string> | undefined, key: string) => (set?.has(key) ? <span className="badge bad">solo dopo</span> : null);
+  const empty = !d.errors.length && !problems.length && !d.failedRequests.length;
+  return (
+    <div className="diag-col">
+      <div className="diag-title">{label}</div>
+      {empty && <div className="faint">nessun errore, avviso o richiesta fallita</div>}
+      {d.errors.map((e, i) => (
+        <div key={`e${i}`} className="diag-item error">
+          {isNew(fresh?.errors, errorKey(e))} <b>errore JS</b> <pre>{e}</pre>
+        </div>
+      ))}
+      {problems.map((c, i) => (
+        <div key={`c${i}`} className={`diag-item ${c.type === 'error' ? 'error' : 'warn'}`}>
+          {isNew(fresh?.console, consoleKey(c))} <b>console {c.type}</b> <pre>{c.text}</pre>
+        </div>
+      ))}
+      {d.failedRequests.map((r, i) => (
+        <div key={`r${i}`} className={`diag-item ${r.blocked ? '' : 'error'}`}>
+          {isNew(fresh?.requests, requestKey(r))} <b>richiesta</b> <span className="mono">{requestLabel(r)}</span>
+        </div>
+      ))}
+      {others.length > 0 && (
+        <details className="diag-others">
+          <summary>altri {others.length} messaggi in console</summary>
+          {others.map((c, i) => (
+            <div key={`o${i}`} className="diag-item">
+              {isNew(fresh?.console, consoleKey(c))} <span className="faint">{c.type}</span> <pre>{c.text}</pre>
+            </div>
+          ))}
+        </details>
+      )}
+      {d.truncated && <div className="faint">diagnostica troncata: troppe voci</div>}
+    </div>
+  );
+}
+
+/** Diagnostica di una pagina, prima e dopo affiancate, con il riepilogo di ciò che è nuovo. */
+function PageDiag({ check }: { check: VisualReport['checks'][number] }) {
+  const b = check.before.diagnostics;
+  const a = check.after.diagnostics;
+  if (!b && !a) return null;
+  const fresh = onlyAfter(b, a);
+  const freshProblems = fresh.errors.length + fresh.console.filter(isConsoleProblem).length + fresh.failedRequests.length;
+  const sets = { console: new Set(fresh.console.map(consoleKey)), errors: new Set(fresh.errors.map(errorKey)), requests: new Set(fresh.failedRequests.map(requestKey)) };
+  return (
+    <details className="diag" open={freshProblems > 0} data-testid="page-diagnostics">
+      <summary>
+        Console, errori e rete{' '}
+        {b && a ? (
+          freshProblems > 0 ? (
+            <span className="badge bad">
+              solo dopo: {fresh.errors.length} errori JS · {fresh.console.filter(isConsoleProblem).length} errori/avvisi in console · {fresh.failedRequests.length} richieste fallite
+            </span>
+          ) : (
+            <span className="badge ok">niente di nuovo dopo</span>
+          )
+        ) : (
+          <span className="badge">confronto non disponibile</span>
+        )}
+      </summary>
+      <div className="diag-pair">
+        <DiagColumn label="Prima" d={b} />
+        <DiagColumn label="Dopo" d={a} {...(b ? { fresh: sets } : {})} />
+      </div>
+    </details>
+  );
+}
+
 const VISUAL_STATUS: Record<VisualReport['status'], { label: string; cls: string }> = {
   running: { label: 'in corso', cls: 'warn' },
   done: { label: 'eseguita', cls: 'ok' },
@@ -163,6 +238,7 @@ function VisualPanel({ task, visual }: { task: Task; visual: VisualReport }) {
             <Shot taskId={task.id} side={c.before} label="Prima" onOpen={(src) => setZoom({ src, label: `${c.name} · prima` })} />
             <Shot taskId={task.id} side={c.after} label="Dopo" onOpen={(src) => setZoom({ src, label: `${c.name} · dopo` })} />
           </div>
+          <PageDiag check={c} />
         </div>
       ))}
       {zoom && (

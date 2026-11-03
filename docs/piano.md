@@ -26,9 +26,10 @@ modello vero.
 
 ## Fase 6b — Verifica visuale nella review
 
-Parte 1 fatta: schermate prima/dopo, resoconto del worker, permesso per il browser, schermate al
-lead come opzione. Dettagli e limiti in `docs/verifica-visuale.md`. Manca la parte 2, più sotto.
-Manca anche una prova con un modello vero.
+Fatta, in due parti. Parte 1: schermate prima/dopo, resoconto del worker, permesso per il browser,
+schermate agli agenti come opzione. Parte 2: console, errori JavaScript e richieste fallite nella
+review, e la prova interfaccia per il worker (`try_ui`). Dettagli e limiti in
+`docs/verifica-visuale.md`. Manca una prova con un modello vero.
 
 **Configurazione per repository.** Per ogni repository registrato si configurano:
 
@@ -68,9 +69,7 @@ passaggi da verificare: URL, clic, campi da compilare. Scrive anche un resoconto
 
 **Limite iniziale.** All'inizio solo app web, e il limite va documentato.
 
-### Parte 2 — da fare in una conversazione separata
-
-Dopo la parte 1 (verifica con schermate prima/dopo, descritta sopra), da fare dopo l'ok.
+### Parte 2 (fatta)
 
 **Console, errori e rete nella review.** Durante la verifica Keystone raccoglie, per ogni pagina e
 per ciascuno dei due lati (prima e dopo):

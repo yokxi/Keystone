@@ -13,7 +13,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import type { Repo, Task, VisualCheck, VisualConfig, VisualReport } from '@keystone/shared';
+import { DIAG_LIMITS, type PageDiagnostics, type Repo, type Task, type VisualCheck, type VisualConfig, type VisualReport, type VisualSide } from '@keystone/shared';
+import type { Page } from 'playwright-core';
 import { ensureDir } from '../util/fsx.js';
 import { git } from '../util/git.js';
 import { killTree } from '../util/proc.js';
@@ -166,18 +167,58 @@ async function startApp(dir: string, cfg: VisualConfig, env: Record<string, stri
   return { proc, output: () => out, error: `l'app non risponde su ${cfg.url} entro ${cfg.startTimeoutSec} s` };
 }
 
-type Side = 'before' | 'after';
+type Side = 'before' | 'after' | 'try';
+const SIDE_LABEL: Record<Side, string> = { before: 'prima', after: 'dopo', try: 'prova' };
 
 const VIEWPORT = { width: 1280, height: 800 };
 /** Altezza massima di una schermata, in pixel. */
 const MAX_SHOT_HEIGHT = 4000;
 
-/** Esegue i controlli in una istanza dell'app già avviata e cattura le schermate. */
-async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: VisualCheck[], side: Side, shotsDir: string, stepTimeoutMs: number) {
+/** Il testo di un errore JavaScript: messaggio e le prime righe dello stack. */
+function errorText(e: Error): string {
+  const stack = (e.stack ?? '')
+    .split('\n')
+    .slice(1, 4)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join('\n');
+  return `${e.message || e.name || 'errore'}${stack ? `\n${stack}` : ''}`;
+}
+
+/**
+ * Raccoglie console, errori JavaScript non gestiti e richieste fallite (errori di rete, 4xx/5xx,
+ * richieste bloccate perché non locali) di una pagina, entro i limiti di DIAG_LIMITS.
+ */
+function collectDiagnostics(page: Page): PageDiagnostics {
+  const d: PageDiagnostics = { console: [], errors: [], failedRequests: [] };
+  const add = <T>(list: T[], max: number, item: T) => {
+    if (list.length < max) list.push(item);
+    else d.truncated = true;
+  };
+  page.on('console', (m) => {
+    // il browser scrive in console ogni risorsa non caricata: è già tra le richieste fallite
+    if (/^Failed to load resource:/.test(m.text())) return;
+    add(d.console, DIAG_LIMITS.console, { type: m.type().slice(0, 20), text: truncate(m.text(), DIAG_LIMITS.text) });
+  });
+  page.on('pageerror', (e) => add(d.errors, DIAG_LIMITS.errors, truncate(errorText(e), DIAG_LIMITS.error)));
+  page.on('requestfailed', (r) => {
+    const failure = r.failure()?.errorText ?? 'errore di rete';
+    add(d.failedRequests, DIAG_LIMITS.requests, { url: truncate(r.url(), DIAG_LIMITS.url), method: r.method(), failure: truncate(failure, 200), ...(/BLOCKED_BY_CLIENT/i.test(failure) ? { blocked: true } : {}) });
+  });
+  page.on('response', (r) => {
+    if (r.status() >= 400) add(d.failedRequests, DIAG_LIMITS.requests, { url: truncate(r.url(), DIAG_LIMITS.url), method: r.request().method(), status: r.status() });
+  });
+  return d;
+}
+
+/** Esegue i controlli in una istanza dell'app già avviata: schermate e diagnostica per pagina. */
+async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: VisualCheck[], side: Side, shotsDir: string, opts: { stepTimeoutMs: number; deadline?: number }) {
   const { chromium } = await import('playwright-core');
   const b = await chromium.launch({ headless: true, ...(browser.channel ? { channel: browser.channel } : {}), ...(browser.executablePath ? { executablePath: browser.executablePath } : {}) });
   const blocked = new Set<string>();
-  const results: Array<{ shot?: { id: string; error?: string }; error?: string }> = [];
+  const results: VisualSide[] = [];
+  const late = () => opts.deadline !== undefined && Date.now() > opts.deadline;
+  const timeout = () => (opts.deadline === undefined ? opts.stepTimeoutMs : Math.max(1000, Math.min(opts.stepTimeoutMs, opts.deadline - Date.now())));
   try {
     const ctx = await b.newContext({ viewport: VIEWPORT, serviceWorkers: 'block', acceptDownloads: false });
     await ctx.route('**/*', (route) => {
@@ -196,17 +237,24 @@ async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: Vi
     });
     for (let i = 0; i < checks.length; i++) {
       const c = checks[i]!;
+      if (late()) {
+        results.push({ error: 'non eseguita: tempo massimo della prova superato' });
+        continue;
+      }
       const page = await ctx.newPage();
-      page.setDefaultTimeout(stepTimeoutMs);
+      const diagnostics = collectDiagnostics(page);
       let error: string | undefined;
       try {
+        page.setDefaultTimeout(timeout());
         await page.goto(pageUrl(cfg.url, c.path), { waitUntil: 'load' });
-        for (const s of c.steps) {
-          if (s.action === 'goto') await page.goto(pageUrl(cfg.url, s.path), { waitUntil: 'load' });
-          else if (s.action === 'click') await page.locator(s.selector).first().click();
-          else if (s.action === 'fill') await page.locator(s.selector).first().fill(s.value);
-          else if (s.action === 'press') await page.locator(s.selector).first().press(s.key);
-          else if (s.action === 'wait') await page.locator(s.selector).first().waitFor({ state: 'visible' });
+        for (const st of c.steps) {
+          if (late()) throw new Error('tempo massimo della prova superato');
+          page.setDefaultTimeout(timeout());
+          if (st.action === 'goto') await page.goto(pageUrl(cfg.url, st.path), { waitUntil: 'load' });
+          else if (st.action === 'click') await page.locator(st.selector).first().click();
+          else if (st.action === 'fill') await page.locator(st.selector).first().fill(st.value);
+          else if (st.action === 'press') await page.locator(st.selector).first().press(st.key);
+          else if (st.action === 'wait') await page.locator(st.selector).first().waitFor({ state: 'visible' });
         }
         await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => undefined);
       } catch (e) {
@@ -218,9 +266,9 @@ async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: Vi
         // pagina intera, ma al massimo MAX_SHOT_HEIGHT pixel: le pagine lunghissime pesano e non servono
         const height = await page.evaluate(() => Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0)).catch(() => VIEWPORT.height);
         await page.screenshot({ path: path.join(shotsDir, `${id}.png`), fullPage: true, clip: { x: 0, y: 0, width: VIEWPORT.width, height: Math.max(1, Math.min(height, MAX_SHOT_HEIGHT)) } });
-        results.push({ shot: { id, ...(error ? { error } : {}) }, ...(error ? { error } : {}) });
+        results.push({ shot: { id, ...(error ? { error } : {}) }, ...(error ? { error } : {}), diagnostics });
       } catch (e) {
-        results.push({ error: error ?? `schermata non catturata: ${(e as Error).message}` });
+        results.push({ error: error ?? `schermata non catturata: ${(e as Error).message}`, diagnostics });
       }
       await page.close();
     }
@@ -229,6 +277,43 @@ async function captureSide(browser: BrowserChoice, cfg: VisualConfig, checks: Vi
   }
   return { results, blocked: [...blocked] };
 }
+
+/** Un lato: avvia l'app nella cartella, esegue le pagine, ferma l'app. */
+async function runSide(o: {
+  repoPath: string;
+  dir: string;
+  side: Side;
+  cfg: VisualConfig;
+  env: Record<string, string>;
+  checks: VisualCheck[];
+  browser: BrowserChoice;
+  shotsDir: string;
+  stepTimeoutMs: number;
+  deadline?: number;
+}): Promise<{ results?: VisualSide[]; problems: string[] }> {
+  const problems: string[] = [];
+  const label = SIDE_LABEL[o.side];
+  const linked = await linkDependencies(o.repoPath, o.dir);
+  const app = await startApp(o.dir, o.cfg, o.env);
+  let results: VisualSide[] | undefined;
+  try {
+    if (app.error) problems.push(`${label}: ${app.error}${app.output().trim() ? `\n${lastLines(app.output(), 8)}` : ''}`);
+    else {
+      const r = await captureSide(o.browser, o.cfg, o.checks, o.side, o.shotsDir, { stepTimeoutMs: o.stepTimeoutMs, ...(o.deadline !== undefined ? { deadline: o.deadline } : {}) });
+      results = r.results;
+      if (r.blocked.length) problems.push(`${label}: richieste di rete esterne bloccate (${r.blocked.slice(0, 5).join(', ')})`);
+    }
+  } catch (e) {
+    problems.push(`${label}: ${truncate((e as Error).message ?? String(e), 300)}`);
+  } finally {
+    stopApp(app.proc);
+    if (linked) removeLink(linked);
+    if (!(await waitFree(o.cfg.url, 10_000))) problems.push(`${label}: l'app risponde ancora su ${o.cfg.url} dopo essere stata fermata`);
+  }
+  return { ...(results ? { results } : {}), problems };
+}
+
+const busyNote = (url: string) => `qualcosa risponde già su ${url} prima dell'avvio: ferma l'altra app o scegli un'altra porta`;
 
 export interface VisualRunInput {
   repo: Repo & { visual: VisualConfig };
@@ -259,10 +344,10 @@ export async function runVisual(input: VisualRunInput): Promise<VisualReport> {
   fs.rmSync(input.shotsDir, { recursive: true, force: true });
   ensureDir(input.shotsDir);
   const baseDir = path.join(path.dirname(input.shotsDir), `${path.basename(input.shotsDir)}-base`);
-  const sides: Record<Side, Awaited<ReturnType<typeof captureSide>>['results'] | undefined> = { before: undefined, after: undefined };
+  const sides: Partial<Record<'before' | 'after', VisualSide[]>> = {};
   const env = appEnv(input.env, cfg.url);
   // un'altra app risponde già sull'URL: le schermate sarebbero sue, non del branch
-  if (await responds(cfg.url)) return report('failed', `qualcosa risponde già su ${cfg.url} prima dell'avvio: ferma l'altra app o scegli un'altra porta`);
+  if (await responds(cfg.url)) return report('failed', busyNote(cfg.url));
   try {
     // il branch di partenza, in un worktree temporaneo (il tuo checkout non viene toccato)
     await removeBaseWorktree(input.repo.path, baseDir);
@@ -270,23 +355,9 @@ export async function runVisual(input: VisualRunInput): Promise<VisualReport> {
     if (add.code !== 0) problems.push(`impossibile preparare il branch di partenza: ${truncate(add.stderr.trim(), 200)}`);
     for (const [side, dir] of [['before', add.code === 0 ? baseDir : undefined], ['after', input.worktreePath]] as const) {
       if (!dir) continue;
-      const linked = await linkDependencies(input.repo.path, dir);
-      const app = await startApp(dir, cfg, env);
-      try {
-        if (app.error) {
-          problems.push(`${side === 'before' ? 'prima' : 'dopo'}: ${app.error}${app.output().trim() ? `\n${lastLines(app.output(), 8)}` : ''}`);
-          continue;
-        }
-        const r = await captureSide(input.browser, cfg, checks, side, input.shotsDir, input.stepTimeoutMs ?? 10_000);
-        sides[side] = r.results;
-        if (r.blocked.length) problems.push(`${side === 'before' ? 'prima' : 'dopo'}: richieste di rete esterne bloccate (${r.blocked.slice(0, 5).join(', ')})`);
-      } catch (e) {
-        problems.push(`${side === 'before' ? 'prima' : 'dopo'}: ${truncate((e as Error).message ?? String(e), 300)}`);
-      } finally {
-        stopApp(app.proc);
-        if (linked) removeLink(linked);
-        if (!(await waitFree(cfg.url, 10_000))) problems.push(`${side === 'before' ? 'prima' : 'dopo'}: l'app risponde ancora su ${cfg.url} dopo essere stata fermata`);
-      }
+      const r = await runSide({ repoPath: input.repo.path, dir, side, cfg, env, checks, browser: input.browser, shotsDir: input.shotsDir, stepTimeoutMs: input.stepTimeoutMs ?? 10_000 });
+      problems.push(...r.problems);
+      if (r.results) sides[side] = r.results;
     }
   } finally {
     await removeBaseWorktree(input.repo.path, baseDir);
@@ -299,6 +370,57 @@ export async function runVisual(input: VisualRunInput): Promise<VisualReport> {
   }));
   if (!sides.before && !sides.after) return report('failed', "l'app non si è avviata", rows);
   return report('done', undefined, rows);
+}
+
+export interface VisualTryInput {
+  repo: Repo & { visual: VisualConfig };
+  checks: VisualCheck[];
+  /** il worktree del worker */
+  worktreePath: string;
+  /** cartella delle schermate delle prove: ~/.keystone/<profilo>/visual/<task>-try */
+  shotsDir: string;
+  browser: BrowserChoice;
+  env: Record<string, string | undefined>;
+  /** tempo massimo per i passaggi della prova (l'avvio ha il suo limite) */
+  maxMs: number;
+  stepTimeoutMs?: number;
+}
+
+export interface VisualTryResult {
+  status: 'done' | 'failed';
+  note?: string;
+  pages: Array<{ name: string; caption: string; side: VisualSide }>;
+  problems: string[];
+  durationMs: number;
+}
+
+/**
+ * "Prova interfaccia" per il worker: Keystone avvia l'app dal suo worktree, esegue i passaggi e
+ * restituisce esito, console, errori, richieste fallite e schermate. Solo il lato del worktree.
+ */
+export async function runTry(input: VisualTryInput): Promise<VisualTryResult> {
+  const start = Date.now();
+  const cfg = input.repo.visual;
+  const done = (status: VisualTryResult['status'], note: string | undefined, pages: VisualTryResult['pages'], problems: string[]): VisualTryResult => ({ status, ...(note ? { note } : {}), pages, problems, durationMs: Date.now() - start });
+  const bad = validateVisualConfig(cfg);
+  if (bad) return done('failed', `configurazione non valida: ${bad}`, [], []);
+  fs.rmSync(input.shotsDir, { recursive: true, force: true });
+  ensureDir(input.shotsDir);
+  if (await responds(cfg.url)) return done('failed', busyNote(cfg.url), [], []);
+  const r = await runSide({
+    repoPath: input.repo.path,
+    dir: input.worktreePath,
+    side: 'try',
+    cfg,
+    env: appEnv(input.env, cfg.url),
+    checks: input.checks,
+    browser: input.browser,
+    shotsDir: input.shotsDir,
+    stepTimeoutMs: input.stepTimeoutMs ?? 10_000,
+    deadline: start + input.maxMs,
+  });
+  const pages = input.checks.map((c, i) => ({ name: c.name, caption: c.caption, side: r.results?.[i] ?? { error: 'non eseguita' } }));
+  return r.results ? done('done', undefined, pages, r.problems) : done('failed', "l'app non si è avviata", pages, r.problems);
 }
 
 /** Toglie il worktree temporaneo del branch di partenza (prima il collegamento a node_modules, mai seguito). */

@@ -37,10 +37,10 @@ documentato qui.
 | Entità | Campi |
 |---|---|
 | `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens` |
-| `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `report?` (resoconto del worker), `visualChecks?` (pagine da verificare), `visual?` (esito della verifica visuale), `createdBy`, `createdAt`, `updatedAt` |
+| `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `report?` (resoconto del worker), `visualChecks?` (pagine da verificare), `visual?` (esito della verifica visuale: per pagina `before` e `after`, ciascuno con `shot?`, `error?` e `diagnostics?` = `{ console[], errors[], failedRequests[], truncated? }`), `createdBy`, `createdAt`, `updatedAt` |
 | `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`paused`/`done`/`failed`/`cancelled`; `paused` = fermo perché ha raggiunto il tetto di spesa), `progress` 0..1, `repoId?`, `costUsd` (spesa registrata), `budgetUsd?` (tetto di spesa; assente = nessun tetto), `pausedFrom?`, `createdAt` |
 | `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`/`budget`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `command?` (permesso: il comando completo, senza tagli), `alwaysAsk?` (permesso: richiede sempre approvazione, niente "Consenti sempre"), `createdAt`, `answeredAt?` |
-| `Repo` | `id`, `name`, `path`, `branch`, `dirty`, `ci`, `worktrees[]`, `mergeTarget?`, `branches?`, `visual?` (`{ command, url, startTimeoutSec, leadScreenshots? }`) |
+| `Repo` | `id`, `name`, `path`, `branch`, `dirty`, `ci`, `worktrees[]`, `mergeTarget?`, `branches?`, `visual?` (`{ command, url, startTimeoutSec, agentScreenshots? }`) |
 | `Worktree` | `id` (`<agente>-<task>`), `repoId`, `agentId`, `taskId?`, `branch` (`Keystone/<agente>/<task>-<slug>`), `base`, `path`, `status` (`active`/`merged`/`abandoned`), `files`, `additions`, `deletions` |
 | `MemoryEntry` | `id` (`shared/<slug>` o `<agente>/<slug>`), `scope`, `title`, `body` (markdown), `author?`, `updated` |
 | `FeedItem` | `ts`, `kind`, `text`, `agentId?`, `to?` |
@@ -211,9 +211,10 @@ com'è, `null` torna al default; serve almeno uno dei due campi.
   branch deve esistere e non può essere `Keystone/*`. I nuovi worktree partono da quel branch. Se
   non è estratto nel tuo checkout, il merge sposta solo il riferimento con `update-ref` e il
   controllo del valore precedente: il tuo checkout non cambia.
-- `visual`: la verifica visuale, `{ command, url, startTimeoutSec, leadScreenshots? }`. `null` =
+- `visual`: la verifica visuale, `{ command, url, startTimeoutSec, agentScreenshots? }`. `null` =
   disattivata. `url` deve essere locale (`localhost`, `127.0.0.1` o `[::1]`), `startTimeoutSec`
-  tra 5 e 600. `leadScreenshots: true` allega le schermate alla review del lead. Dettagli in
+  tra 5 e 600. `agentScreenshots: true` allega le schermate alla review del lead e ai risultati di `try_ui` del
+  worker. Dettagli in
   `docs/verifica-visuale.md`.
 
 Risultato: `{ repoId, mergeTarget, visual }` (i valori dopo la modifica, `null` se assenti).
@@ -266,7 +267,8 @@ nella forma restituita da `EngineAdapter.displayModel()`.
 `{ callId, tool, input }`: l'agente usa un tool. Il vocabolario è comune a tutti i motori:
 `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`, `PowerShell`, oppure un tool del team
 (`send_message`, `ask_user`, `write_memory`, `read_memory`, `update_task`, `report_status`,
-`list_tasks`, `create_task`, `request_merge`, `submit_report`).
+`list_tasks`, `create_task`, `request_merge`, `submit_report`, `try_ui`). `submit_report` e `try_ui`
+sono solo dei worker, `create_task` e `request_merge` solo del lead.
 
 ### `tool_result`
 `{ callId, ok, output }`: esito di una tool call.
