@@ -1,5 +1,6 @@
 import { ServerMessage, type ClientPayload } from '@keystone/shared';
 import { describe, expect, it } from 'vitest';
+import net from 'node:net';
 import WebSocket from 'ws';
 import { silentLogger } from '../src/core/context.js';
 import { OrchestratorServer, refuseReason } from '../src/server.js';
@@ -28,8 +29,14 @@ async function connect(port: number, headers: Record<string, string> = {}): Prom
   ws.on('message', (d) => received.push(JSON.parse(String(d)) as Record<string, unknown>));
   await new Promise<void>((resolve, reject) => {
     ws.once('open', () => resolve());
-    ws.once('error', reject);
-    ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP ${res.statusCode}`)));
+    // `on`, non `once`: dopo un rifiuto il server chiude la connessione e su Windows può arrivare
+    // anche un ECONNRESET, un secondo errore che senza ascoltatore resterebbe non gestito
+    ws.on('error', reject);
+    ws.once('unexpected-response', (req, res) => {
+      reject(new Error(`HTTP ${res.statusCode}`));
+      res.resume();
+      req.destroy();
+    });
   });
   onCleanup(() => ws.close());
   return {
@@ -49,6 +56,22 @@ describe('server WebSocket', () => {
     expect(refuseReason({ headers: { host: 'localhost:7931' } })).toBeUndefined();
     expect(refuseReason({ headers: { host: '[::1]:7931' } })).toBeUndefined();
     expect(refuseReason({ headers: { host: '127.0.0.1.evil.com' } })).toMatch(/Host/);
+  });
+
+  it('un client rifiutato che resetta la connessione non fa cadere il server', async () => {
+    const { port } = await setup();
+    for (let i = 0; i < 20; i++) {
+      const sock = net.connect(port, '127.0.0.1');
+      sock.on('error', () => undefined);
+      await new Promise<void>((r) => sock.once('connect', () => r()));
+      const lines = ['GET / HTTP/1.1', `Host: 127.0.0.1:${port}`, 'Origin: https://evil.example', 'Upgrade: websocket', 'Connection: Upgrade', 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13', '', ''];
+      sock.write(lines.join(String.fromCharCode(13, 10)));
+      sock.resetAndDestroy();
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    const c = await connect(port);
+    c.send({ type: 'hello', client: 'test', protocol: 1 });
+    await c.next((m) => m.type === 'snapshot', 'snapshot dopo i reset');
   });
 
   it('ascolta solo su 127.0.0.1', async () => {

@@ -62,6 +62,9 @@ export class OrchestratorServer {
       const why = refuseReason(req);
       if (why) {
         this.opts.log.warn(`connessione rifiutata: ${why}`);
+        // dopo l'upgrade il server http non gestisce più gli errori del socket: un client che
+        // resetta la connessione (ECONNRESET) non deve far cadere l'orchestratore
+        socket.on('error', () => socket.destroy());
         socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
         return;
       }
