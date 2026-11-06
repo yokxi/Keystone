@@ -6,7 +6,7 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
 
 1. Fase Skill (regole per gli agenti e review sul riassunto) — fatta
 2. Fase 7 — File di configurazione — fatta
-3. Fase 8 — Pacchetto dell'app
+3. Fase 8 — Pacchetto dell'app — fatta (app portabile; l'installatore è tra le cose da fare)
 4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
 5. Fase 6c — Accesso al database in sola lettura: spostata dopo la pubblicazione
 
@@ -68,9 +68,18 @@ agenti. `--codex-path`, `--ci` e `--record` restano solo da riga di comando. Det
 mostrare l'errore se `config.json` non è valido (oggi l'orchestratore si ferma e lo scrive nel
 suo log).
 
-## Fase 8 — Pacchetto dell'app
+## Fase 8 — Pacchetto dell'app (fatta, senza installatore)
 
 L'app installabile, che avvia da sola l'orchestratore senza i sorgenti.
+
+Fatta: `npm run package -w app` crea l'app portabile (cartella con `Keystone.exe`, e uno zip con
+`--zip`) con l'orchestratore in bundle, le fuse di Electron irrigidite e l'errore d'avvio mostrato
+nell'app. Dettagli in `docs/pacchetto.md`; resoconto in `docs/resoconti/fase-8.md`.
+
+- [ ] **Installatore (NSIS con electron-builder).** Rinviato: electron-builder 26.18 porta
+  `minimatch` con l'avviso GHSA-g3hv-75wg-m249; la versione corretta (11.0.1, del 27 ottobre 2026)
+  avrà 14 giorni dal 10 novembre 2026, insieme alla sua nuova dipendenza. Allora: override di
+  `minimatch` (con il lockfile rigenerato solo per quel ramo), `npm audit` pulito, installatore.
 
 ## Pubblicazione — da fare prima
 
