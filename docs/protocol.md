@@ -36,7 +36,7 @@ documentato qui.
 
 | Entità | Campi |
 |---|---|
-| `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens` |
+| `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens`, `skills?` (le skill ricevute nell'ultimo turno: `{ id, source, name }[]`; assente = nessun turno ancora) |
 | `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `report?` (resoconto del worker), `visualChecks?` (pagine da verificare), `visual?` (esito della verifica visuale: per pagina `before` e `after`, ciascuno con `shot?`, `error?` e `diagnostics?` = `{ console[], errors[], failedRequests[], truncated? }`), `createdBy`, `createdAt`, `updatedAt` |
 | `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`paused`/`done`/`failed`/`cancelled`; `paused` = fermo perché ha raggiunto il tetto di spesa), `progress` 0..1, `repoId?`, `costUsd` (spesa registrata), `budgetUsd?` (tetto di spesa; assente = nessun tetto), `pausedFrom?`, `createdAt` |
 | `Decision` | `id` (d1…), `agentId`, `kind` (`question`/`permission`/`merge`/`budget`), `question`, `options[]`, `context?`, `status` (`open`/`answered`/`cancelled`), `answer?` {`option?`, `text?`}, `cancelReason?`, `taskId?`, `repoId?`, `worktree?`, `tool?`, `command?` (permesso: il comando completo, senza tagli), `alwaysAsk?` (permesso: richiede sempre approvazione, niente "Consenti sempre"), `createdAt`, `answeredAt?` |
@@ -46,6 +46,7 @@ documentato qui.
 | `FeedItem` | `ts`, `kind`, `text`, `agentId?`, `to?` |
 | `LogEntry` | `ts`, `kind` (`text`/`tool`/`result`/`error`/`diff`/`test`/`permission`), `text` |
 | `OrchestratorStatus` | `version`, `auth` (`ok`/`failed`/`unknown`), `message`, `costUsd`, `tokens`, `userName`, `userNameSource`, `profile`, `billing`, `costIncomplete` |
+| `Skill` | `id` (nome del file senza `.md`), `source` (`repo`/`personal`), `repoId?`, `branch?` (il branch da cui è letta), `draft?` (contenuto valido: `name`, `description?`, `appliesTo` `lead`/`worker`/`tutti`, `when[]` `sempre`/`piano`/`lavoro`/`review`, `files[]` schemi di file, `enabled`, `body`), `error?` (file non valido), `override?` (attivazione solo tua), `effective` (viene consegnata agli agenti), `pending?` (`new`/`modified`/`deleted`: il tuo checkout è diverso dal branch), `local?` / `localError?` (la versione nel checkout), `unconfirmed?` (solo personali: impronta SHA-256 del file creato o cambiato fuori dall'app, che gli agenti non ricevono finché non lo confermi con `skill.confirm`). Formato del file in `docs/skill.md` |
 | `DiffFile` | `path`, `oldPath?`, `status` (`added`/`modified`/`deleted`/`renamed`), `binary`, `additions`, `deletions`, `hunks[]` {`header`, `oldStart`, `newStart`, `lines[]` {`kind`: `add`/`del`/`ctx`, `text`, `oldNo?`, `newNo?`}} |
 
 **Stati di un agente:** `idle`, `thinking`, `reading`, `editing`, `running`, `testing`,
@@ -82,7 +83,7 @@ worktree diventa `done` solo tramite merge approvato dall'utente.
 
 ### `snapshot`
 Lo stato completo, inviato in risposta a `hello`.
-`{ status, agents[], tasks[], goals[], decisions[], repos[], memory[], feed[], logs: { [agentId]: LogEntry[] } }`
+`{ status, agents[], tasks[], goals[], decisions[], repos[], memory[], feed[], skills[], logs: { [agentId]: LogEntry[] } }`
 (per i log, solo le ultime righe di ogni agente).
 
 ### `agent.upsert`
@@ -125,6 +126,11 @@ client che l'ha chiesta.
 `{ requestId, dataUrl?, error? }`: risposta a `visual.shot.request`, inviata solo al client che l'ha
 chiesta. `dataUrl` è la schermata come `data:image/png;base64,…`; se la schermata non esiste o non
 appartiene alla verifica del task arriva solo `error`.
+
+### `skills`
+`{ skills: Skill[] }`: l'elenco completo delle skill (personali e dei repository registrati), ogni
+volta che cambia: dopo un comando sulle skill, un merge, la registrazione di un repository o il
+cambio del branch di destinazione.
 
 ### `notify`
 `{ level: info|warn|need_user, text }`: notifica da mostrare. `need_user` indica che una decisione
@@ -224,6 +230,33 @@ Risultato: `{ repoId, mergeTarget, visual }` (i valori dopo la modifica, `null` 
 è uno degli id nell'esito `task.visual` (es. `before-1`, `after-2`): altri id non vengono
 serviti, e un percorso non può mai arrivare dal client. La risposta è un messaggio `visual.shot`.
 Risultato: `{ found }`.
+
+### `skill.save`
+`{ source: repo|personal, repoId?, skillId, create, draft }`: crea (`create: true`, rifiutato se
+esiste già) o modifica una skill. `repoId` serve per le skill del repository e solo per quelle.
+Personale: scrive `~/.keystone/skills/<skillId>.md`, che vale da subito (Keystone ne ricorda
+l'impronta: è un contenuto confermato da te). Del repository: scrive
+`.keystone/skills/<skillId>.md` nel tuo checkout; gli agenti la ricevono solo dopo il commit sul
+branch di destinazione. Cartelle o file che sono link simbolici o junction vengono rifiutati.
+Risultato: `{ skillId, file, needsCommit }`.
+
+### `skill.delete`
+`{ source, repoId?, skillId }`: cancella il file della skill (del repository: nel checkout, la
+cancellazione va committata). Risultato: `{ skillId, file, needsCommit }`.
+
+### `skill.toggle`
+`{ source, repoId?, skillId, enabled: boolean|null }`: attiva o disattiva una skill solo per te,
+senza toccare il file (salvato nelle impostazioni del profilo). `null` torna al valore `attiva`
+del file. Con `enabled` vero o falso la skill deve esistere. Risultato: `{ skillId, enabled }`.
+
+### `skill.confirm`
+`{ skillId, hash }`: conferma una skill personale creata o cambiata fuori dall'app, così gli agenti
+la ricevono. `hash` è il valore di `Skill.unconfirmed` mostrato all'utente: se nel frattempo il
+file è cambiato di nuovo la conferma è rifiutata. Risultato: `{ skillId }`.
+
+### `skills.refresh`
+`{}`: rilegge le skill (per esempio dopo un commit fatto fuori da Keystone) e manda `skills`.
+Risultato: `{ skills }` (quante sono).
 
 ### `worktrees.prune`
 `{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o

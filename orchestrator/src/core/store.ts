@@ -79,7 +79,13 @@ export interface StateData {
   team: TeamState;
   worktreeMeta: Record<string, WorktreeMeta>;
   /** impostazioni modificabili dall'interfaccia */
-  settings: { userName?: string };
+  settings: {
+    userName?: string;
+    /** skill attivate o disattivate solo per te (chiave: core/skills.ts overrideKey) */
+    skillOverrides?: Record<string, boolean>;
+    /** impronte (SHA-256) delle skill personali salvate o confermate nell'app: id -> impronta */
+    personalSkillHashes?: Record<string, string>;
+  };
 }
 
 export const FEED_LIMIT = 300;

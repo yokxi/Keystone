@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MERGE_OPTIONS, type Agent, type ClientMessage, type Decision, type Goal, type LogKind, type NotifyLevel, type OrchestratorStatus, type Outbound, type Task, type VisualReport } from '@keystone/shared';
+import { MERGE_OPTIONS, type Agent, type ClientMessage, type Decision, type Goal, type LogKind, type NotifyLevel, type OrchestratorStatus, type Outbound, type Skill, type Task, type VisualReport } from '@keystone/shared';
 import { readGitUserName } from '../util/git.js';
 import { truncate } from '../util/text.js';
 import { MessageBus } from './bus.js';
@@ -12,6 +12,7 @@ import { consoleLogger, type Ctx, type Logger } from './context.js';
 import { DecisionError, DecisionQueue, type NewDecision } from './decisions.js';
 import { Memory, MemoryError } from './memory.js';
 import { RepoError, RepoManager, type RepoManagerOptions } from './repos.js';
+import { SkillError, SkillManager } from './skills.js';
 import { Store } from './store.js';
 import { TaskError, TaskGraph } from './taskgraph.js';
 import { visualSummary } from './prompts.js';
@@ -53,6 +54,8 @@ export interface OrchestratorOptions {
   storeDebounceMs?: number;
   /** solo test: verifica visuale simulata */
   visual?: Partial<VisualDeps>;
+  /** cartella delle skill personali (default: ~/.keystone/skills, accanto ai profili) */
+  personalSkillsDir?: string;
 }
 
 type Listener = (msg: Outbound) => void;
@@ -105,6 +108,11 @@ export class Orchestrator {
   readonly defaultGoalLimits: { turns?: number; minutes?: number };
   status: OrchestratorStatus;
   readonly visual: VisualDeps;
+  readonly skills: SkillManager;
+  /** l'ultimo elenco delle skill mandato all'interfaccia */
+  private skillList: Skill[] = [];
+  private skillRefresh: Promise<void> | undefined;
+  private skillRefreshAgain = false;
   private readonly dataDir: string;
   /** una sola app avviata per volta per repository: la porta dell'URL è una */
   private visualLocks = new Map<string, Promise<unknown>>();
@@ -141,6 +149,31 @@ export class Orchestrator {
       guardFile: opts.guardFile ?? path.join(path.dirname(path.resolve(opts.dataDir)), 'git', 'agent-guard.gitconfig'),
       ...(opts.repoFaults ? { faults: opts.repoFaults } : {}),
       ...(opts.keepMergedBranches ? { keepMergedBranches: true } : {}),
+    });
+    this.skills = new SkillManager({
+      personalDir: opts.personalSkillsDir ?? path.join(path.dirname(this.dataDir), 'skills'),
+      repos: () => this.repos.list(),
+      targetBranch: (id) => this.repos.targetBranch(id),
+      withRepoLock: (id, fn) => this.repos.withRepoLock(id, fn),
+      overrides: () => this.store.data.settings.skillOverrides ?? {},
+      setOverride: (key, enabled) => {
+        const o = { ...(this.store.data.settings.skillOverrides ?? {}) };
+        if (enabled === null) delete o[key];
+        else o[key] = enabled;
+        if (Object.keys(o).length) this.store.data.settings.skillOverrides = o;
+        else delete this.store.data.settings.skillOverrides;
+        this.store.markDirty();
+      },
+      approvedPersonal: () => this.store.data.settings.personalSkillHashes ?? {},
+      setApprovedPersonal: (id, hash) => {
+        const h = { ...(this.store.data.settings.personalSkillHashes ?? {}) };
+        if (hash === null) delete h[id];
+        else h[id] = hash;
+        if (Object.keys(h).length) this.store.data.settings.personalSkillHashes = h;
+        else delete this.store.data.settings.personalSkillHashes;
+        this.store.markDirty();
+      },
+      userName: () => this.userName,
     });
     const costUsd = this.store.data.agents.reduce((s, a) => s + a.costUsd, 0);
     const tokens = this.store.data.agents.reduce((s, a) => s + a.tokens, 0);
@@ -201,6 +234,7 @@ export class Orchestrator {
     );
     // una verifica rimasta "in corso" non riparte da sola: la review la rifà
     for (const t of this.tasks.list()) if (t.visual?.status === 'running') this.tasks.update(t.id, { visual: null });
+    await this.refreshSkills();
     await this.team.start();
   }
 
@@ -241,8 +275,33 @@ export class Orchestrator {
       repos: d.repos.map((r) => ({ ...r, worktrees: r.worktrees.map((w) => ({ ...w })) })),
       memory: this.memory.list(),
       feed: d.feed.slice(-200),
+      skills: this.skillList.map((x) => ({ ...x })),
       logs,
     };
+  }
+
+  /**
+   * Rilegge le skill e manda l'elenco all'interfaccia. Le chiamate che arrivano mentre una lettura
+   * è in corso ne fanno partire un'altra alla fine (l'ultima vede sempre lo stato più recente).
+   */
+  refreshSkills(): Promise<void> {
+    if (this.skillRefresh) {
+      this.skillRefreshAgain = true;
+      return this.skillRefresh;
+    }
+    const run = async () => {
+      do {
+        this.skillRefreshAgain = false;
+        try {
+          this.skillList = await this.skills.list();
+          this.emit({ type: 'skills', skills: this.skillList.map((x) => ({ ...x })) });
+        } catch (e) {
+          this.log.warn(`lettura delle skill: ${(e as Error).message}`);
+        }
+      } while (this.skillRefreshAgain);
+    };
+    this.skillRefresh = run().finally(() => (this.skillRefresh = undefined));
+    return this.skillRefresh;
   }
 
   notify(level: NotifyLevel, text: string): void {
@@ -479,6 +538,8 @@ export class Orchestrator {
           agentIdentity: { name: `Keystone ${this.nameOf(agentId)}`, email: `${agentId}@keystone.local` },
         });
         if (t) this.tasks.setStatus(t.id, 'done', { merged: true });
+        // il merge può aver cambiato le skill sul branch di destinazione
+        void this.refreshSkills();
         this.bus.feed('merge', `Unito ${res.branch} in ${res.base} (${res.sha}, ${res.files} file); branch ${res.branchDeleted ? 'eliminato' : `conservato: ${res.branchKeptReason ?? ''}`}`);
         if (t?.assignee && this.agent(t.assignee)?.taskId === t.id) this.setAgent(t.assignee, { state: 'idle', activity: `${t.id} unito`, taskId: undefined, worktree: undefined });
         this.team.tick();
@@ -548,7 +609,7 @@ export class Orchestrator {
     try {
       return await this.dispatch(msg, reply);
     } catch (e) {
-      if (e instanceof TaskError || e instanceof DecisionError || e instanceof RepoError || e instanceof MemoryError) throw new ClientError(e.message);
+      if (e instanceof TaskError || e instanceof DecisionError || e instanceof RepoError || e instanceof MemoryError || e instanceof SkillError) throw new ClientError(e.message);
       throw e;
     }
   }
@@ -626,6 +687,7 @@ export class Orchestrator {
       }
       case 'repo.add': {
         const r = await this.repos.add(msg.path, { confirmGuard: msg.confirmGuard === true });
+        void this.refreshSkills();
         return { repoId: r.id };
       }
       case 'goal.budget': {
@@ -652,7 +714,37 @@ export class Orchestrator {
           r = await this.repos.setMergeTarget(msg.repoId, msg.mergeTarget && msg.mergeTarget.trim() ? msg.mergeTarget.trim() : null);
           this.bus.feed('system', `${r.name}: i merge vanno in ${r.mergeTarget ?? `${r.branch} (il branch aperto)`}`);
         }
+        if (msg.mergeTarget !== undefined) void this.refreshSkills();
         return { repoId: r.id, mergeTarget: r.mergeTarget ?? null, visual: r.visual ?? null };
+      }
+      case 'skill.save': {
+        const where = { source: msg.source, repoId: msg.repoId, id: msg.skillId };
+        const file = await this.skills.save(where, msg.draft, msg.create);
+        await this.refreshSkills();
+        const repo = msg.repoId ? this.repos.get(msg.repoId) : undefined;
+        this.bus.feed('system', `Skill "${msg.draft.name}" ${msg.create ? 'creata' : 'modificata'} ${repo ? `nel checkout di ${repo.name}: gli agenti la ricevono dopo il commit sul branch di destinazione` : '(personale)'}`);
+        return { skillId: msg.skillId, file, needsCommit: msg.source === 'repo' };
+      }
+      case 'skill.delete': {
+        const file = await this.skills.remove({ source: msg.source, repoId: msg.repoId, id: msg.skillId });
+        await this.refreshSkills();
+        this.bus.feed('system', `Skill "${msg.skillId}" cancellata${msg.source === 'repo' ? ' dal checkout: committa la cancellazione' : ''}`);
+        return { skillId: msg.skillId, file, needsCommit: msg.source === 'repo' };
+      }
+      case 'skill.toggle': {
+        await this.skills.toggle({ source: msg.source, repoId: msg.repoId, id: msg.skillId }, msg.enabled);
+        await this.refreshSkills();
+        return { skillId: msg.skillId, enabled: msg.enabled };
+      }
+      case 'skill.confirm': {
+        this.skills.confirm(msg.skillId, msg.hash);
+        await this.refreshSkills();
+        this.bus.feed('system', `Skill personale "${msg.skillId}" confermata: gli agenti la ricevono dai prossimi turni`);
+        return { skillId: msg.skillId };
+      }
+      case 'skills.refresh': {
+        await this.refreshSkills();
+        return { skills: this.skillList.length };
       }
       case 'visual.shot.request': {
         const t = this.tasks.get(msg.taskId);

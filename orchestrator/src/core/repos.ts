@@ -207,6 +207,20 @@ export class RepoManager {
     return this.opts.guardFile;
   }
 
+  /**
+   * Il branch di destinazione del repository: quello configurato o, se manca, il branch aperto nel
+   * checkout ('HEAD' se staccato). Da qui partono i worktree e qui si fanno i merge.
+   */
+  async targetBranch(repoId: string): Promise<string> {
+    const r = this.require(repoId);
+    return r.mergeTarget ?? (await this.currentBranch(r.path));
+  }
+
+  /** Esegue `fn` in coda alle altre operazioni sullo stesso repository (merge, worktree). */
+  withRepoLock<T>(repoId: string, fn: () => Promise<T>): Promise<T> {
+    return this.serial(repoId, fn);
+  }
+
   private async currentBranch(dir: string): Promise<string> {
     const r = await git(dir, ['symbolic-ref', '--quiet', '--short', 'HEAD'], { allowFail: true });
     return r.code === 0 ? r.stdout.trim() : 'HEAD';

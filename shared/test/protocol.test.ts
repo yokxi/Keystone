@@ -58,6 +58,7 @@ describe('applyServerMessage (stato della vista)', () => {
       decisions: [],
       repos: [],
       memory: [],
+      skills: [],
       feed: [],
       logs: {},
     });

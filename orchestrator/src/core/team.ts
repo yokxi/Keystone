@@ -13,7 +13,7 @@
 //
 // Gli eventi dei motori (EngineEvent) vengono tradotti qui, in un punto solo, in log, stato
 // dell'agente, costi e richieste di permesso.
-import { BUDGET_OPTIONS, PERMISSION_OPTIONS, type AgentState, type Decision, type EngineEvent, type Goal, type Role, type Task, type TurnEndStatus, type VisualCheck, type VisualReport } from '@keystone/shared';
+import { BUDGET_OPTIONS, PERMISSION_OPTIONS, REPO_SKILLS_DIR, type AgentState, type Decision, type EngineEvent, type Goal, type Repo, type Role, type SkillContext, type Task, type TurnEndStatus, type VisualCheck, type VisualReport } from '@keystone/shared';
 import type { EngineAdapter, EngineTurn, TeamToolResult, TurnSpec } from '../engines/types.js';
 import { git } from '../util/git.js';
 import { lastLines, truncate } from '../util/text.js';
@@ -505,19 +505,57 @@ export class Team {
   /**
    * Percorsi che l'agente non può modificare: la cartella del guardiano git (~/.keystone/git), il
    * .git/config del repository (contiene l'include del guardiano), i dati dei worktree in
-   * .git/worktrees e il collegamento .git del worktree.
+   * .git/worktrees, il collegamento .git del worktree, le skill (.keystone/skills/ nella cartella
+   * di lavoro e nel checkout, ~/.keystone/skills/) e i file dello stato del profilo.
    */
   private async protectedPathsFor(job: Job, cwd: string): Promise<string[]> {
-    const out = [path.dirname(this.o.repos.guardFile)];
+    const skillsIn = (dir: string) => path.join(dir, ...REPO_SKILLS_DIR.split('/'));
+    // lo stato del profilo (contiene le impronte delle skill personali confermate)
+    const state = [this.o.store.file, `${this.o.store.file}.bak`];
+    const out = [path.dirname(this.o.repos.guardFile), this.o.skills.personalDir, skillsIn(cwd), ...state];
     const goal = job.goalId ? this.o.goal(job.goalId) : undefined;
     const t = job.taskId ? this.o.tasks.get(job.taskId) : undefined;
     const repoId = t?.repoId ?? goal?.repoId ?? this.o.repos.defaultRepo()?.id;
     if (repoId) {
       const common = await this.o.repos.commonDir(repoId);
-      out.push(path.join(common, 'config'), path.join(common, 'worktrees'));
+      out.push(path.join(common, 'config'), path.join(common, 'worktrees'), skillsIn(this.o.repos.require(repoId).path));
     }
     if (this.member(job.agentId)?.role === 'worker') out.push(path.join(cwd, '.git'));
     return out;
+  }
+
+  /**
+   * Le skill di un turno. Repository e branch: per il lead quello dell'obiettivo e il suo branch di
+   * destinazione; per il worker quello del task e la base del worktree (il branch in cui verrà
+   * unito). Mai il worktree dell'agente: vedi core/skills.ts.
+   */
+  private async skillsForJob(job: Job, role: Role): Promise<{ text: string; refs: Array<{ id: string; source: 'repo' | 'personal'; name: string }>; omitted: string[]; problems: string[] }> {
+    const task = job.taskId ? this.o.tasks.get(job.taskId) : undefined;
+    let repo: Repo | undefined;
+    let branch: string | undefined;
+    let files: string[] = [];
+    let text = '';
+    let phase: SkillContext['phase'];
+    if (role === 'lead') {
+      const goal = job.goalId ? this.o.goal(job.goalId) : this.o.currentGoal();
+      repo = (task?.repoId && this.o.repos.get(task.repoId)) || (goal?.repoId && this.o.repos.get(goal.repoId)) || this.o.repos.defaultRepo();
+      branch = repo ? await this.o.repos.targetBranch(repo.id) : undefined;
+      phase = job.kind === 'review' || (job.kind === 'followup' && task) ? 'review' : 'piano';
+      text = phase === 'review' && task ? [task.title, task.description ?? '', task.summary ?? ''].join(' ') : (goal?.text ?? '');
+    } else {
+      repo = task?.repoId ? this.o.repos.get(task.repoId) : undefined;
+      const wt = repo && task?.worktree ? this.o.repos.findWorktree(repo.id, task.worktree) : undefined;
+      branch = wt?.base;
+      phase = 'lavoro';
+      text = task ? [task.title, task.description ?? ''].join(' ') : '';
+    }
+    if (repo && task?.worktree && (role === 'worker' || phase === 'review')) {
+      files = await this.o.repos.diff(repo.id, task.worktree).then(
+        (ds) => ds.flatMap((f) => (f.oldPath ? [f.path, f.oldPath] : [f.path])),
+        () => [],
+      );
+    }
+    return this.o.skills.forTurn({ repo, branch, ctx: { role, phase, files, text } });
   }
 
   private cwdFor(job: Job): string {
@@ -551,6 +589,8 @@ export class Team {
         this.o.notify('warn', `Turno di ${m.name} non avviato: il guardiano git non è attivo in ${cwd}`);
         throw new Error(`guardiano git non attivo in ${cwd}: turno non avviato`);
       }
+      // le skill si leggono prima di segnare il turno come in corso: la lettura usa git (asincrona)
+      const skills = await this.skillsForJob(job, m.role).catch((e: Error) => ({ text: '', refs: [], omitted: [], problems: [`skill non lette: ${e.message}`] }));
       const session = this.o.store.data.sessions[job.sessionKey];
       const resume = !job.fresh && session && session.engine === m.engine.id ? session.sessionId : undefined;
       const inflight: InflightJob = { kind: job.kind, sessionKey: job.sessionKey, prompt: job.prompt, startedAt: this.o.now(), ...(job.taskId ? { taskId: job.taskId } : {}), ...(job.goalId ? { goalId: job.goalId } : {}) };
@@ -559,8 +599,14 @@ export class Team {
 
       const task = job.taskId ? this.o.tasks.get(job.taskId) : undefined;
       const goal = job.goalId ? this.o.goal(job.goalId) : undefined;
-      const instructions =
+      let instructions =
         m.role === 'lead' ? leadInstructions(this.promptEnv(), this.workers()) : workerInstructions(this.promptEnv(), this.o.repos.requireWorktree(task!.repoId!, task!.worktree!));
+      // le skill: stesse istruzioni per ogni motore, lette dal branch di destinazione
+      instructions += skills.text;
+      this.o.setAgent(agentId, { skills: skills.refs });
+      if (skills.refs.length) this.o.agentLog(agentId, 'text', `Skill ricevute: ${skills.refs.map((r) => `${r.name} (${r.source === 'repo' ? 'repository' : 'personale'})`).join(', ')}`);
+      if (skills.omitted.length) this.o.agentLog(agentId, 'error', `Skill non consegnate per il limite di lunghezza: ${skills.omitted.join(', ')}`);
+      for (const p of skills.problems.slice(0, 5)) this.o.agentLog(agentId, 'error', p);
       const unread = this.o.bus.inbox(agentId, { markRead: true });
       const prompt = unread.length ? `${job.prompt}\n\n[Nuovi messaggi]\n${unread.map((x) => `- da ${x.from === 'user' ? this.o.userName : this.o.nameOf(x.from)}: ${x.text}`).join('\n')}` : job.prompt;
       const model = this.modelOf(m);

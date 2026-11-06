@@ -6,6 +6,7 @@
 //
 // Ogni messaggio è un oggetto JSON in un frame WebSocket: { v: 1, type, id?, ...payload }.
 import { z } from 'zod';
+import { Skill, SkillDraft, SkillRef, SkillSource, SKILL_ID_RE } from './skills.js';
 
 export const PROTOCOL_VERSION = 1 as const;
 
@@ -77,6 +78,8 @@ export const Agent = z.object({
   active: z.boolean(),
   costUsd: z.number().nonnegative(),
   tokens: z.number().int().nonnegative(),
+  /** le skill ricevute nell'ultimo turno (assente: nessun turno ancora) */
+  skills: z.array(SkillRef).optional(),
 });
 export type Agent = z.infer<typeof Agent>;
 
@@ -365,6 +368,8 @@ export const SnapshotMsg = z.object({
   repos: z.array(Repo),
   memory: z.array(MemoryEntry),
   feed: z.array(FeedItem),
+  /** le skill: personali e dei repository registrati */
+  skills: z.array(Skill),
   /** coda recente del log di ogni agente */
   logs: z.record(z.string(), z.array(LogEntry)),
 });
@@ -387,6 +392,8 @@ export const DiffMsg = z.object({
   worktree: Id,
   files: z.array(DiffFile),
 });
+/** L'elenco completo delle skill, ogni volta che cambia. */
+export const SkillsMsg = z.object({ ...envelope('skills'), skills: z.array(Skill) });
 export const NotifyMsg = z.object({ ...envelope('notify'), level: NotifyLevel, text: z.string() });
 export const AckMsg = z.object({
   ...envelope('ack'),
@@ -412,6 +419,7 @@ export const ServerMessage = z.discriminatedUnion('type', [
   StatusMsg,
   DiffMsg,
   VisualShotMsg,
+  SkillsMsg,
   NotifyMsg,
   AckMsg,
   ErrorMsg,
@@ -495,6 +503,28 @@ export const RepoConfigMsg = z.object({
 /** Una schermata della verifica visuale di un task (la risposta è un messaggio visual.shot). */
 export const VisualShotRequestMsg = z.object({ ...envelope('visual.shot.request'), requestId: z.string().min(1).max(100), taskId: Id, shotId: z.string().regex(/^[a-z0-9-]{1,80}$/) });
 
+/** Dove sta una skill: personale, oppure del repository indicato. */
+const SkillWhere = { source: SkillSource, repoId: Id.optional(), skillId: z.string().regex(SKILL_ID_RE) };
+const needsRepo = (m: { source: string; repoId?: string | undefined }) => (m.source === 'repo') === !!m.repoId;
+const repoMessage = { message: 'repoId serve per le skill del repository e solo per quelle' };
+/**
+ * Crea o modifica una skill. Personale: ~/.keystone/skills/<id>.md. Del repository: il file nel
+ * tuo checkout (.keystone/skills/<id>.md), che gli agenti ricevono solo dopo il commit sul branch
+ * di destinazione. create: true rifiuta se esiste già.
+ */
+export const SkillSaveMsg = z.object({ ...envelope('skill.save'), ...SkillWhere, create: z.boolean(), draft: SkillDraft }).refine(needsRepo, repoMessage);
+/** Cancella il file di una skill (del repository: nel tuo checkout, da committare). */
+export const SkillDeleteMsg = z.object({ ...envelope('skill.delete'), ...SkillWhere }).refine(needsRepo, repoMessage);
+/** Attiva o disattiva una skill solo per te, senza toccare il file; null = vale il file. */
+export const SkillToggleMsg = z.object({ ...envelope('skill.toggle'), ...SkillWhere, enabled: z.boolean().nullable() }).refine(needsRepo, repoMessage);
+/**
+ * Conferma una skill personale creata o cambiata fuori dall'app: vale solo se il file ha ancora
+ * l'impronta mostrata (`Skill.unconfirmed`), così non si conferma un contenuto mai visto.
+ */
+export const SkillConfirmMsg = z.object({ ...envelope('skill.confirm'), skillId: z.string().regex(SKILL_ID_RE), hash: z.string().regex(/^[0-9a-f]{64}$/) });
+/** Rilegge le skill (dopo un commit o una modifica fatta fuori da Keystone). */
+export const SkillsRefreshMsg = z.object({ ...envelope('skills.refresh') });
+
 export const ClientMessage = z.discriminatedUnion('type', [
   HelloMsg,
   GoalSubmitMsg,
@@ -510,6 +540,11 @@ export const ClientMessage = z.discriminatedUnion('type', [
   SettingsSetMsg,
   RepoConfigMsg,
   VisualShotRequestMsg,
+  SkillSaveMsg,
+  SkillDeleteMsg,
+  SkillToggleMsg,
+  SkillConfirmMsg,
+  SkillsRefreshMsg,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 

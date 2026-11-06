@@ -1,6 +1,7 @@
 // Stato della vista lato interfaccia: lo snapshot iniziale più gli aggiornamenti incrementali.
 // Funzione pura, usata dal processo main di Electron (e nei test).
 import type { Agent, Decision, FeedItem, Goal, LogEntry, MemoryEntry, OrchestratorStatus, Repo, ServerMessage, Task } from './protocol.js';
+import type { Skill } from './skills.js';
 
 export interface ViewState {
   connected: boolean;
@@ -12,6 +13,7 @@ export interface ViewState {
   repos: Repo[];
   memory: MemoryEntry[];
   feed: FeedItem[];
+  skills: Skill[];
   logs: Record<string, LogEntry[]>;
 }
 
@@ -19,7 +21,7 @@ export const VIEW_FEED_LIMIT = 300;
 export const VIEW_LOG_LIMIT = 500;
 
 export function emptyViewState(): ViewState {
-  return { connected: false, agents: [], tasks: [], goals: [], decisions: [], repos: [], memory: [], feed: [], logs: {} };
+  return { connected: false, agents: [], tasks: [], goals: [], decisions: [], repos: [], memory: [], feed: [], skills: [], logs: {} };
 }
 
 function upsert<T>(list: T[], item: T, key: (x: T) => string): T[] {
@@ -45,6 +47,7 @@ export function applyServerMessage(s: ViewState, m: ServerMessage): ViewState {
         repos: m.repos,
         memory: m.memory,
         feed: m.feed.slice(-VIEW_FEED_LIMIT),
+        skills: m.skills,
         logs: m.logs,
       };
     case 'status':
@@ -65,6 +68,8 @@ export function applyServerMessage(s: ViewState, m: ServerMessage): ViewState {
       return { ...s, repos: upsert(s.repos, m.repo, (r) => r.id) };
     case 'memory.upsert':
       return { ...s, memory: upsert(s.memory, m.entry, (e) => e.id) };
+    case 'skills':
+      return { ...s, skills: m.skills };
     case 'feed.add':
       return { ...s, feed: [...s.feed, m.item].slice(-VIEW_FEED_LIMIT) };
     default:

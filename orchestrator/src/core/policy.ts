@@ -123,16 +123,33 @@ function isProtected(protectedPaths: readonly string[], abs: string): boolean {
   return protectedPaths.some((p) => insideRoot(p, abs) || isInsideOrEqual(p, abs));
 }
 
-function protectedDenial(prog: string, target: string): Finding {
-  return deny(`${prog}: ${target} è un percorso protetto di Keystone (guardiano git, configurazione del repository o collegamento del worktree): gli agenti non possono modificarlo`);
+/** `abs` contiene un percorso protetto (cancellarlo o spostarlo toccherebbe anche quello)? */
+function containsProtected(protectedPaths: readonly string[], abs: string): boolean {
+  return protectedPaths.some((p) => isInsideOrEqual(abs, p));
 }
 
-function checkPath(scope: Scope, word: Word, mode: 'r' | 'w', prog: string): Finding | undefined {
+/** Programmi che cancellano: su una cartella valgono per tutto ciò che contiene. */
+const REMOVERS = new Set(['rm', 'rmdir', 'rd', 'del', 'erase', 'unlink', 'shred', 'remove-item', 'ri', 'wipe']);
+/** Programmi che spostano: valgono per tutto il contenuto delle sorgenti, non della destinazione. */
+const MOVERS = new Set(['mv', 'move', 'ren', 'rename', 'move-item', 'mi', 'rename-item', 'rni']);
+
+function protectedDenial(prog: string, target: string): Finding {
+  return deny(`${prog}: ${target} è un percorso protetto di Keystone (guardiano git, configurazione del repository, collegamento del worktree o skill): gli agenti non possono modificarlo`);
+}
+
+/**
+ * `whole`: l'operazione riguarda il percorso con tutto ciò che contiene (cancellare, o spostare una
+ * sorgente): è negata anche se il percorso contiene un percorso protetto.
+ */
+function checkPath(scope: Scope, word: Word, mode: 'r' | 'w', prog: string, whole = REMOVERS.has(prog)): Finding | undefined {
   if (NULL_DEVICES.has(word.text.toLowerCase())) return undefined;
   if (word.dynamic) return ask(`${prog}: percorso non verificabile "${word.text}"`, `Bash:path:${prog}:${hash(word.text)}`, true);
   if (!scope.cwd) return ask(`${prog}: cartella corrente non nota (cd con variabile)`, `Bash:path:${prog}:${hash(word.text)}`, true);
   const abs = path.resolve(scope.cwd, word.text);
   if (mode === 'w' && isProtected(scope.protectedPaths, abs)) return protectedDenial(prog, word.text);
+  // cancellare o spostare una cartella che contiene un percorso protetto (per esempio .keystone, o
+  // la cartella di lavoro stessa) è negato come agire sul percorso protetto
+  if (mode === 'w' && whole && containsProtected(scope.protectedPaths, abs)) return protectedDenial(prog, word.text);
   if (hasGitSegment(path.relative(scope.root, abs)) || hasGitSegment(word.text)) {
     if (mode === 'w') return ask(`${prog} scrive in un percorso .git (configurazione, hook o collegamento del worktree): ${word.text}`, exactKey('Bash', `${prog} .git ${word.text}`), false);
   }
@@ -616,6 +633,36 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
     if (prog === 'ln' || prog === 'mklink') {
       // un link può portare fuori: anche il bersaglio deve essere dentro il worktree
       paths('w');
+      return out;
+    }
+    if (MOVERS.has(prog)) {
+      // sorgenti: si spostano con tutto il contenuto; destinazione (l'ultima, o quella di -t /
+      // -Destination): ci si scrive dentro, quindi `mv x .` resta un'operazione normale
+      const nonOpts: Word[] = [];
+      let dest: Word | undefined;
+      for (let k = 0; k < rest.length; k++) {
+        const w = rest[k]!;
+        const t = w.text.toLowerCase();
+        if (!w.dynamic && (t === '-t' || t === '--target-directory' || t === '-destination')) {
+          dest = rest[++k];
+          continue;
+        }
+        if (!w.dynamic && t.startsWith('--target-directory=')) {
+          dest = { ...w, text: w.text.slice(w.text.indexOf('=') + 1) };
+          continue;
+        }
+        if (w.text.startsWith('-') && !w.dynamic) continue;
+        nonOpts.push(w);
+      }
+      if (!dest) dest = nonOpts.pop();
+      for (const w of nonOpts) {
+        const f = checkPath(scope, w, 'w', prog, true);
+        if (f) out.push(f);
+      }
+      if (dest) {
+        const f = checkPath(scope, dest, 'w', prog, false);
+        if (f) out.push(f);
+      }
       return out;
     }
     if (prog === 'cp' || prog === 'copy' || prog === 'copy-item' || prog === 'cpi') {

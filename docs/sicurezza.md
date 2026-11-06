@@ -287,6 +287,34 @@ viene eseguito codice del branch, come per i test.
 
 Dettagli e limiti in `docs/verifica-visuale.md`.
 
+## 6ter. Skill
+
+Le skill sono regole in markdown che Keystone aggiunge alle istruzioni degli agenti (dettagli in
+`docs/skill.md`).
+
+- Le skill del repository si leggono dal **branch di destinazione**, dagli oggetti git: mai dal
+  worktree dell'agente, dal tuo checkout o da un branch `Keystone/*`. Una skill modificata da un
+  agente nel suo worktree non ha effetto finché non approvi il merge, e la review segnala la
+  modifica come primo rischio.
+- `.keystone/skills/` (nel worktree e nel checkout) e `~/.keystone/skills/` sono percorsi
+  protetti: le scritture degli agenti sono negate, non chieste.
+- Cancellare o spostare una cartella che contiene un percorso protetto (per esempio `.keystone`,
+  `~/.keystone` o la cartella di lavoro stessa) con `rm`, `mv` e simili è negato allo stesso modo.
+- Limite: la policy blocca le scritture dirette che riconosce (`Edit`/`Write`, redirezioni, `cp`,
+  `mv`, `rm`, `tee`, `sed -i`, …), non quelle fatte da script o da comandi git nel worktree (per
+  esempio uno script dei test, che esegue Keystone, o un `git checkout` di un altro branch). Per
+  questo il blocco delle scritture non basta, e c'è una seconda difesa per ciascun posto:
+  - skill del repository: la lettura dal branch di destinazione (cambiano solo con un merge tuo);
+  - skill personali: Keystone consegna solo i file con l'impronta (SHA-256) di un contenuto che hai
+    salvato o confermato nell'app. Un file creato o cambiato da fuori resta "da confermare" e non
+    arriva agli agenti; la cartella non può essere un link o una junction.
+- Limite residuo: le impronte stanno nello stato del profilo (`state.json`, percorso protetto nella
+  policy come le skill), che però uno script può modificare come qualunque altro file
+  dell'utente. Rendere la manomissione visibile richiederebbe
+  di firmare lo stato con una chiave in `safeStorage`; per ora è annotato come limite, come gli
+  altri effetti degli script (§5).
+- Le funzioni native dei motori restano spente; le skill passano come testo nelle istruzioni.
+
 ## 7. Motore Claude
 
 Dettagli in `docs/motore-claude.md`. In sintesi:

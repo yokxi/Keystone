@@ -224,6 +224,16 @@ describe('motore Codex: un turno (app-server finto)', () => {
     expect(usage.reduce((s, u) => s + u.inputTokens + u.outputTokens, 0)).toBe(800);
     expect(events.at(-1)).toMatchObject({ type: 'turn_end', status: 'success' });
   });
+
+  it('skill: le istruzioni di Keystone, skill comprese, arrivano tali e quali sia all\'avvio sia alla ripresa', async () => {
+    const instructions = 'istruzioni di Keystone\n\n## Skill: regole del progetto\n### Regola (skill del repository demo, branch main)\nREGOLA-DAL-BRANCH';
+    const a = fake({ account: { type: 'apiKey' }, steps: [] });
+    await drain(a.engine.startSession(spec(tmpDir(), { instructions })));
+    expect(a.entries().find((e) => e.msg?.method === 'thread/start')!.msg.params.developerInstructions.startsWith(instructions)).toBe(true);
+    const b = fake({ account: { type: 'apiKey' }, steps: [] });
+    await drain(b.engine.resumeSession('th-precedente', spec(tmpDir(), { instructions })));
+    expect(b.entries().find((e) => e.msg?.method === 'thread/resume')!.msg.params.developerInstructions.startsWith(instructions)).toBe(true);
+  });
 });
 
 describe('motore Codex nel team (app-server finto)', () => {
