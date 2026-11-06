@@ -83,6 +83,10 @@ nell'app. Dettagli in `docs/pacchetto.md`; resoconto in `docs/resoconti/fase-8.m
 
 ## Pubblicazione — da fare prima
 
+**Codex è rinviato a un rilascio successivo** (6 novembre 2026): non è incluso in questa versione
+(`ENGINE_DISABLED` in `shared/src/engines.ts`, vedi `docs/motore-codex.md`). Le tre prove di Codex
+qui sotto si fanno per quel rilascio; non servono per pubblicare questa versione.
+
 - [ ] **Prova reale del motore Codex con una chiave API OpenAI.** Su un repository di prova:
   piano, lavoro, review e merge; permessi, sandbox, commit e conteggio dei token, con
   `--record` per le trascrizioni.
@@ -90,16 +94,21 @@ nell'app. Dettagli in `docs/pacchetto.md`; resoconto in `docs/resoconti/fase-8.m
   cartella di Keystone).
 - [ ] **Prova con un team misto**, per esempio lead Claude e worker Codex (`--lead-engine claude
   --worker-engine codex`): sessioni separate per motore, spesa e limiti, review e merge.
+- [ ] **Prova reale dei database** con un PostgreSQL e un SQL Server di sviluppo e un utente in sola
+  lettura: tabelle, descrizione, query, limite di righe, tempo massimo (anche con una query che cambia
+  `statement_timeout`), password dall'app, approvazione. Poi si toglie l'etichetta "sperimentale".
 - [ ] **Confronto dei costi con la Console Anthropic** usando una chiave API: spesa mostrata da
   Keystone e spesa nella Console per lo stesso obiettivo, compresa una sessione ripresa.
 
 Solo dopo le due prove reali di Codex si toglie l'etichetta "sperimentale · non ancora verificato
 con un modello reale" (`shared/src/engines.ts` e README).
 
-## Fase 6c — Accesso al database in sola lettura
+## Fase 6c — Accesso al database in sola lettura (fatta)
 
-Spostata dopo la pubblicazione. Non è ancora implementata (un inizio non committato è stato
-scartato).
+Fatta prima della pubblicazione, su tua richiesta (non c'è ancora un database con cui provarla).
+SQLite è provato davvero; PostgreSQL e SQL Server sono **sperimentali**: testati con driver simulati,
+da provare con un server reale (vedi "Pubblicazione — da fare prima"). Dettagli in
+`docs/database.md`; resoconto in `docs/resoconti/fase-6c.md`.
 
 **Configurazione per repository.** Per ogni repository registrato si configurano una o più
 connessioni a database: SQL Server, PostgreSQL o SQLite.
