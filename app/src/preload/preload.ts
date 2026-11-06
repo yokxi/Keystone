@@ -23,6 +23,8 @@ const api: KeystoneApi = {
   pickFolder: () => ipcRenderer.invoke(CHANNELS.pickFolder),
   connection: () => ipcRenderer.invoke(CHANNELS.connection),
   startOrchestrator: (profile) => ipcRenderer.invoke(CHANNELS.start, profile),
+  setDbPassword: (repoId, connectionId, password, destination) => ipcRenderer.invoke(CHANNELS.dbPassword, repoId, connectionId, password, destination),
+  dbPasswordKeys: () => ipcRenderer.invoke(CHANNELS.dbPasswordKeys),
 };
 
 contextBridge.exposeInMainWorld('keystone', api);

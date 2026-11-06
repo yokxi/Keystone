@@ -330,6 +330,11 @@ textarea.input:focus, input.input:focus { border-color: var(--accent); }
 .visual-config { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 10px; font-size: 13px; }
 .visual-config .grid { display: grid; grid-template-columns: 170px 1fr; gap: 6px 10px; align-items: center; margin: 8px 0; }
 .visual-config .note { color: var(--text-muted); font-size: 12.5px; margin: 6px 0; }
+.db-row { padding: 6px 0; border-bottom: 1px dashed var(--border); }
+.db-row:last-child { border-bottom: none; }
+.db-warning { margin: 8px 0; padding: 8px 10px; border-left: 4px solid var(--warn); background: var(--warn-soft); border-radius: var(--radius-sm); font-size: 12.5px; }
+.db-confirm { align-items: flex-start; margin: 8px 0; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); font-size: 12.5px; }
+.db-confirm input { margin-top: 2px; }
 
 /* ---- memoria ---- */
 .memory { display: grid; grid-template-columns: 280px 1fr; gap: 16px; height: 100%; min-height: 0; }

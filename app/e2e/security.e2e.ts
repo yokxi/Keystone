@@ -6,7 +6,10 @@
 //     modifica il .git/config;
 //  3. il merge parte solo dal pulsante nella schermata di review;
 //  4. la review si apre sul riassunto (diff in una scheda a parte) e "Richiedi modifiche" può
-//     salvare la correzione come skill, che poi l'agente riceve.
+//     salvare la correzione come skill, che poi l'agente riceve;
+//  5. database: il server non si salva senza la conferma di sola lettura; la password scritta
+//     nell'interfaccia arriva all'orchestratore solo in memoria e su disco solo cifrata, e viene
+//     rimandata a ogni collegamento.
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -28,6 +31,7 @@ async function setup(opts: { workers?: number; goal?: string } = {}) {
   await o.start();
   const server = new OrchestratorServer(o, { port: 0, log: silentLogger });
   const port = await server.listen();
+  openServers.push({ port, server });
   onCleanup(() => server.close());
   const app: ElectronApplication = await electron.launch({
     executablePath: electronPath,
@@ -176,4 +180,60 @@ describe('interfaccia: comportamenti di sicurezza', () => {
     await page.locator('.agent-card', { hasText: 'Bruno' }).click();
     await page.getByTestId('agent-skills').getByText('Scrivi sempre i commenti in italiano').waitFor();
   });
+
+  it('database: senza la conferma di sola lettura non si salva; la password va all\'orchestratore solo in memoria e su disco solo cifrata, anche dopo un nuovo collegamento', async () => {
+    const SECRET = 'Pw-e2e-9f3a-segreta';
+    const { o, page, home } = await setup();
+    const repo = o.repos.list()[0]!;
+    await nav(page, 'Repository');
+    const box = page.getByTestId(`db-config-${repo.id}`);
+    await box.getByTestId('db-add').click();
+    const form = page.getByTestId(`db-form-${repo.id}`);
+    await form.getByText('I risultati delle query vengono inviati al fornitore del modello').waitFor();
+    await form.getByLabel('Nome', { exact: true }).fill('Sviluppo');
+    await form.getByLabel('Tipo', { exact: true }).selectOption('postgres');
+    await form.getByLabel('Database', { exact: true }).fill('app');
+    await form.getByLabel('Utente', { exact: true }).fill('lettore');
+    await form.getByLabel('Password', { exact: true }).fill(SECRET);
+    // la conferma non è già spuntata, e senza conferma non si salva
+    const confirmBox = form.getByTestId('db-readonly-confirm').locator('input');
+    expect(await confirmBox.isChecked()).toBe(false);
+    expect(await form.getByTestId('db-save').isDisabled()).toBe(true);
+    await confirmBox.check();
+    await form.getByTestId('db-save').click();
+    await waitFor(() => o.db.hasSecret(repo.id, 'sviluppo'), 'password arrivata all\'orchestratore');
+    expect(o.repos.get(repo.id)?.db?.[0]).toMatchObject({ id: 'sviluppo', kind: 'postgres', user: 'lettore', readOnlyUserConfirmed: true });
+    await box.getByText('password salvata').waitFor();
+
+    // su disco: cifrata (safeStorage) nel profilo, mai in chiaro; nello stato e nello snapshot niente
+    o.store.flush();
+    const secretsFile = path.join(home, 'test', 'db-secrets.json');
+    expect(fs.existsSync(secretsFile)).toBe(true);
+    const onDisk = [secretsFile, path.join(home, 'test', 'state.json')].map((f) => fs.readFileSync(f, 'utf8')).join('\n');
+    expect(onDisk).not.toContain(SECRET);
+    expect(JSON.stringify(o.snapshot())).not.toContain(SECRET);
+
+    // l'orchestratore la perde (riavvio): al nuovo collegamento l'app la rimanda
+    o.db.setSecret(repo.id, 'sviluppo', null);
+    const port = Number(new URL((await page.evaluate(() => window.keystone.connection())).url).port);
+    // si chiude il server in ascolto e se ne apre uno nuovo sulla stessa porta
+    await closeServersOn(port);
+    const again = new OrchestratorServer(o, { port, log: silentLogger });
+    await again.listen();
+    onCleanup(() => again.close());
+    await waitFor(() => o.db.hasSecret(repo.id, 'sviluppo'), 'password rimandata al nuovo collegamento', 60_000);
+
+    // togliere la connessione toglie anche la password salvata
+    page.once('dialog', (d) => void d.accept());
+    await page.getByTestId('db-row-sviluppo').getByRole('button', { name: 'Togli' }).click();
+    await waitFor(() => !o.repos.get(repo.id)?.db, 'connessione tolta');
+    await waitFor(() => !fs.readFileSync(secretsFile, 'utf8').includes('sviluppo'), 'password salvata tolta');
+    expect(o.db.hasSecret(repo.id, 'sviluppo')).toBe(false);
+  });
 });
+
+/** I server aperti da setup(), per poterli chiudere a metà test. */
+const openServers: Array<{ port: number; server: OrchestratorServer }> = [];
+async function closeServersOn(port: number): Promise<void> {
+  for (const s of openServers.filter((x) => x.port === port)) await s.server.close();
+}

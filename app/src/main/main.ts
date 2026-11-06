@@ -8,9 +8,10 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, Notification, session, shell, type IpcMainInvokeEvent } from 'electron';
-import type { DiffFile, ServerMessage, ViewState } from '@keystone/shared';
+import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, session, shell, type IpcMainInvokeEvent } from 'electron';
+import { dbDestination, type DiffFile, type ServerMessage, type ViewState } from '@keystone/shared';
 import { CHANNELS, type Ack, type ConnectionInfo, type UiEvent } from './api.js';
+import { DbSecrets } from './db-secrets.js';
 import { isTrustedSender, validateCommand } from './ipc-validate.js';
 import { earlyExit, findOrchestrator, openStartLog, orchestratorArgs, startLogFile, tailLines } from './orchestrator-launch.js';
 import { listProfiles, resolveStartProfile } from './profiles.js';
@@ -36,6 +37,12 @@ const url = `ws://127.0.0.1:${port}`;
 const client = new OrchestratorClient({ url, clientName: 'keystone-app', retryDelayMs: 500, maxDelayMs: 5000 });
 const rendererHtml = path.join(__dirname, '..', 'renderer', 'index.html');
 const smokeDir = process.env.KEYSTONE_SMOKE_DIR;
+/** password dei database: cifrate con safeStorage nel profilo dell'app, mai in chiaro */
+const dbSecrets = new DbSecrets(path.join(home, profile, 'db-secrets.json'), {
+  available: () => safeStorage.isEncryptionAvailable(),
+  encrypt: (s) => safeStorage.encryptString(s),
+  decrypt: (b) => safeStorage.decryptString(b),
+});
 let win: BrowserWindow | undefined;
 let appUrl = '';
 
@@ -67,8 +74,25 @@ client.onMessage$((m: ServerMessage) => {
     if (m.level === 'need_user' && win && !win.isFocused() && Notification.isSupported()) new Notification({ title: 'Keystone', body: m.text }).show();
   } else if (m.type === 'agent.say') {
     sendEvent({ type: 'say', agentId: m.agentId, ...(m.to ? { to: m.to } : {}), text: m.text, ts: m.ts });
+  } else if (m.type === 'snapshot') {
+    // a ogni collegamento l'orchestratore riceve le password dei database (le tiene solo in memoria);
+    // dopo lo snapshot, quando il client risulta collegato
+    setTimeout(() => void pushDbSecrets(), 0);
   }
 });
+
+/** Manda all'orchestratore le password delle connessioni che esistono ancora. */
+async function pushDbSecrets(): Promise<void> {
+  let all: ReturnType<DbSecrets['all']>;
+  try {
+    all = dbSecrets.all();
+  } catch {
+    return;
+  }
+  // solo alle connessioni che vanno ancora dove andavano quando hai scritto la password
+  const same = (r: string, c: string, dest: string) => client.state.repos.some((x) => x.id === r && x.db?.some((d) => d.id === c && dbDestination(d) === dest));
+  for (const s of all) if (same(s.repoId, s.connectionId, s.destination)) await client.request({ type: 'db.secret', repoId: s.repoId, connectionId: s.connectionId, password: s.password, destination: s.destination });
+}
 
 function sendEvent(e: UiEvent): void {
   win?.webContents.send(CHANNELS.event, e);
@@ -92,7 +116,16 @@ function registerIpc(): void {
     guard(e);
     const v = validateCommand(payload);
     if (!v.ok) return { ok: false, error: v.error };
-    return client.request(v.msg);
+    const ack = await client.request(v.msg);
+    // una connessione tolta perde anche la password salvata
+    if (ack.ok && v.msg.type === 'db.delete') {
+      try {
+        dbSecrets.set(v.msg.repoId, v.msg.connectionId, null);
+      } catch {
+        /* id non valido: niente da togliere */
+      }
+    }
+    return ack;
   });
   ipcMain.handle(CHANNELS.diff, async (e, repoId: unknown, worktree: unknown) => {
     guard(e);
@@ -121,6 +154,25 @@ function registerIpc(): void {
     // al renderer arriva solo un'immagine PNG in base64, mai altro
     if (r.dataUrl && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(r.dataUrl)) return { ok: true, dataUrl: r.dataUrl };
     return { ok: false, error: r.error ?? 'schermata non valida' };
+  });
+  ipcMain.handle(CHANNELS.dbPassword, async (e, repoId: unknown, connectionId: unknown, password: unknown, destination: unknown): Promise<Ack> => {
+    guard(e);
+    if (typeof repoId !== 'string' || typeof connectionId !== 'string') return { ok: false, error: 'connessione non valida' };
+    if (password !== null && (typeof destination !== 'string' || destination.length > 3000)) return { ok: false, error: 'destinazione non valida' };
+    if (password !== null && (typeof password !== 'string' || password.length < 4 || password.length > 1000)) return { ok: false, error: 'password non valida (da 4 a 1000 caratteri)' };
+    let where: ReturnType<DbSecrets['set']>;
+    try {
+      where = dbSecrets.set(repoId, connectionId, password, typeof destination === 'string' ? destination : '');
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+    const ack = await client.request({ type: 'db.secret', repoId, connectionId, password, ...(password !== null && typeof destination === 'string' ? { destination } : {}) });
+    // la password non torna mai al renderer
+    return { ok: true, result: { stored: where, orchestrator: ack.ok ? 'ricevuta' : (ack.error ?? 'non collegato') } };
+  });
+  ipcMain.handle(CHANNELS.dbPasswordKeys, (e): string[] => {
+    guard(e);
+    return dbSecrets.keys();
   });
   ipcMain.handle(CHANNELS.preview, async (e, p: unknown) => {
     guard(e);

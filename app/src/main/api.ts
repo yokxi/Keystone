@@ -34,6 +34,13 @@ export interface KeystoneApi {
   connection(): Promise<ConnectionInfo>;
   /** avvia l'orchestratore (motore sim) con il profilo dell'app, o con quello indicato */
   startOrchestrator(profile?: string): Promise<Ack>;
+  /**
+   * Password di una connessione a database: il main la cifra con safeStorage e la passa
+   * all'orchestratore (null = toglila). Il renderer non la rilegge mai.
+   */
+  setDbPassword(repoId: string, connectionId: string, password: string | null, destination?: string): Promise<Ack>;
+  /** Le connessioni che hanno una password ("repoId/connectionId"), mai le password. */
+  dbPasswordKeys(): Promise<string[]>;
 }
 
 export const CHANNELS = {
@@ -47,4 +54,6 @@ export const CHANNELS = {
   pickFolder: 'ks:pick-folder',
   connection: 'ks:connection',
   start: 'ks:start-orchestrator',
+  dbPassword: 'ks:db-password',
+  dbPasswordKeys: 'ks:db-password-keys',
 } as const;

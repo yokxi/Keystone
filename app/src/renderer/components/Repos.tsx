@@ -1,5 +1,6 @@
 import type { Repo, RepoPreview, ViewState } from '@keystone/shared';
 import { useEffect, useState } from 'react';
+import { DbConnections } from './DbConnections.js';
 
 type Send = (cmd: Parameters<Window['keystone']['send']>[0]) => Promise<string | undefined>;
 
@@ -158,6 +159,7 @@ export function Repos({ state, openRegister, send }: Props) {
             {r.mergeTarget && r.mergeTarget !== r.branch && <span className="faint">diverso dal branch aperto: il merge sposta solo il riferimento, il tuo checkout resta com'è</span>}
           </label>
           <VisualConfigForm repo={r} send={send} />
+          <DbConnections repo={r} send={send} />
           {r.worktrees.filter((w) => w.status === 'active').length === 0 && <div className="faint">Nessun worktree attivo.</div>}
           {r.worktrees
             .filter((w) => w.status === 'active')
