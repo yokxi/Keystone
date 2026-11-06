@@ -24,7 +24,8 @@ describe('ripresa dopo riavvio', () => {
     await a.o.repos.add(repo, { confirmGuard: true });
     await a.o.start();
     await a.o.handle({ v: 1, type: 'goal.submit', text: 'Aggiungi un saluto' }, noReply);
-    await waitFor(() => a.o.tasks.get('t1')?.status === 'doing' && a.o.store.data.team.inflight.bruno, 'bruno al lavoro su t1');
+    // la sessione arriva dal motore poco dopo l'inizio del turno: si aspetta anche lei
+    await waitFor(() => a.o.tasks.get('t1')?.status === 'doing' && a.o.store.data.team.inflight.bruno && a.o.store.data.sessions['bruno:t1'], 'bruno al lavoro su t1, con la sessione');
     const session = a.o.store.data.sessions['bruno:t1']?.sessionId;
     expect(session).toBeTruthy();
     await a.o.stop();
