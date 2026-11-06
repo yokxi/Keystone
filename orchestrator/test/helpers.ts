@@ -77,7 +77,12 @@ export function testOrchestrator(opts: TestOrchestratorOptions = {}): { o: Orche
   return { o, cfg };
 }
 
-export async function waitFor<T>(fn: () => T | undefined | false | null, what: string, timeoutMs = 20_000): Promise<T> {
+/**
+ * Aspetta che `fn` restituisca un valore. Il limite predefinito (45 s, sotto i 60 s di ogni test)
+ * copre i flussi con molte operazioni git, che su Windows rallentano molto sotto carico (per esempio
+ * durante una scansione antivirus): con 20 s alcuni flussi sim con merge sono falliti una volta.
+ */
+export async function waitFor<T>(fn: () => T | undefined | false | null, what: string, timeoutMs = 45_000): Promise<T> {
   const start = Date.now();
   for (;;) {
     const v = fn();
