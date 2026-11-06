@@ -10,10 +10,11 @@ import { Memory } from './components/Memory.js';
 import { RegisterRepoDialog, Repos } from './components/Repos.js';
 import { Review, type ReviewTarget } from './components/Review.js';
 import { Settings } from './components/Settings.js';
+import { Skills } from './components/Skills.js';
 import { completeAgent, HELP, parseConsole } from './lib/console.js';
 import { goalLimitsText, money, spendLabel, time, tokens } from './lib/format.js';
 
-type View = 'board' | 'agents' | 'decisions' | 'review' | 'memory' | 'repos' | 'settings';
+type View = 'board' | 'agents' | 'decisions' | 'review' | 'memory' | 'skills' | 'repos' | 'settings';
 type Theme = 'system' | 'light' | 'dark';
 interface FeedLine {
   ts: number;
@@ -156,6 +157,7 @@ export function App() {
         <NavItem icon="!" label="Decisioni" active={view === 'decisions'} onClick={() => setView('decisions')} count={openDecisions} />
         <NavItem icon="±" label="Review" active={view === 'review'} onClick={() => setView('review')} />
         <NavItem icon="❐" label="Memoria" active={view === 'memory'} onClick={() => setView('memory')} />
+        <NavItem icon="✎" label="Skill" active={view === 'skills'} onClick={() => setView('skills')} />
         <NavItem icon="⎇" label="Repository" active={view === 'repos'} onClick={() => setView('repos')} />
         <NavItem icon="⚙" label="Impostazioni" active={view === 'settings'} onClick={() => setView('settings')} />
         <div className="side-section">Team</div>
@@ -211,8 +213,9 @@ export function App() {
         {view === 'board' && <Board state={state} send={sendVoid} openReview={openReviewTask} />}
         {view === 'agents' && <Agents state={state} selected={agentId} select={setAgentId} send={sendVoid} />}
         {view === 'decisions' && <Decisions state={state} answer={answer} openMerge={openMerge} />}
-        {view === 'review' && <Review state={state} target={review} answer={answer} close={() => setView('decisions')} />}
+        {view === 'review' && <Review state={state} target={review} answer={answer} send={send} close={() => setView('decisions')} />}
         {view === 'memory' && <Memory state={state} />}
+        {view === 'skills' && <Skills state={state} send={send} />}
         {view === 'repos' && <Repos state={state} send={send} openRegister={(p) => setRegister({ ...(p ? { path: p } : {}) })} />}
         {view === 'settings' && <Settings state={state} send={sendVoid} />}
       </main>

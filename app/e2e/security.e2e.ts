@@ -4,7 +4,9 @@
 //     "Nega" e mostrano il comando completo;
 //  2. la registrazione di un repository mostra le righe del guardiano e, senza conferma, non
 //     modifica il .git/config;
-//  3. il merge parte solo dal pulsante nella schermata di review.
+//  3. il merge parte solo dal pulsante nella schermata di review;
+//  4. la review si apre sul riassunto (diff in una scheda a parte) e "Richiedi modifiche" può
+//     salvare la correzione come skill, che poi l'agente riceve.
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -125,11 +127,53 @@ describe('interfaccia: comportamenti di sicurezza', () => {
     expect(o.decisions.get(d.id)?.status).toBe('open');
     expect(await gitOut(repo, ['rev-parse', 'HEAD'])).toBe(head);
 
-    // la console ha aperto la review: il merge parte dal suo pulsante
+    // la console ha aperto la review, sul riassunto: il diff è nella sua scheda
+    await page.getByTestId('review-summary').waitFor();
+    await page.getByRole('tab', { name: /Diff/ }).click();
     await page.locator('.diff-file').first().waitFor();
     await page.locator('.review-side').getByRole('button', { name: 'Merge', exact: true }).click();
     await waitFor(() => o.tasks.get(d.taskId!)?.status === 'done', 'task unito', 60_000);
     expect(await gitOut(repo, ['rev-parse', 'HEAD'])).not.toBe(head);
     expect(await gitOut(repo, ['status', '--porcelain'])).toBe('');
+  });
+
+  it('review sul riassunto; "Richiedi modifiche" salva la correzione come skill e il worker la riceve', async () => {
+    const { o, page, home } = await setup({ goal: 'Aggiungi un saluto' });
+    await waitDecisions(o, (k) => k.includes('merge'), 'decisione di merge');
+    const d = o.decisions.open().find((x) => x.kind === 'merge')!;
+    await nav(page, 'Decisioni');
+    await page.getByTestId(`decision-${d.id}`).getByRole('button', { name: 'Apri la review' }).click();
+
+    // si apre sul riassunto: richiesta, file, test, rischi; niente diff finché non si apre la scheda
+    const summary = page.getByTestId('review-summary');
+    await summary.waitFor();
+    await page.getByTestId('review-risks').waitFor();
+    await page.getByTestId('review-tests').waitFor();
+    expect(await page.locator('.diff-file').count()).toBe(0);
+    await page.getByRole('tab', { name: /Diff/ }).click();
+    await page.locator('.diff-file').first().waitFor();
+    await page.getByRole('tab', { name: 'Riassunto' }).click();
+    await summary.waitFor();
+
+    // la correzione diventa una skill personale
+    await page.getByPlaceholder('Cosa va cambiato…').fill('Scrivi sempre i commenti in italiano');
+    await page.getByTestId('save-as-skill').check();
+    await page.getByTestId('skill-inline').waitFor();
+    await page.getByRole('button', { name: 'Richiedi modifiche e salva la skill' }).click();
+    const file = path.join(home, 'skills', 'scrivi-sempre-i-commenti-in-italiano.md');
+    await waitFor(() => fs.existsSync(file), 'file della skill');
+    expect(fs.readFileSync(file, 'utf8')).toContain('per: worker');
+    await waitFor(() => o.decisions.get(d.id)?.status === 'answered', 'richiesta di modifiche');
+    expect(o.decisions.get(d.id)?.answer).toEqual({ option: 'Richiedi modifiche', text: 'Scrivi sempre i commenti in italiano' });
+
+    // la pagina Skill la mostra
+    await nav(page, 'Skill');
+    await page.getByTestId('skill-list').getByText('Scrivi sempre i commenti in italiano').waitFor();
+
+    // il worker riprende il task con la skill, e il suo pannello lo dice
+    await waitFor(() => o.agent('bruno')?.skills?.some((s) => s.id === 'scrivi-sempre-i-commenti-in-italiano'), 'skill consegnata al worker', 60_000);
+    await nav(page, 'Agenti');
+    await page.locator('.agent-card', { hasText: 'Bruno' }).click();
+    await page.getByTestId('agent-skills').getByText('Scrivi sempre i commenti in italiano').waitFor();
   });
 });

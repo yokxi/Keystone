@@ -106,6 +106,20 @@ export function Agents({ state, selected, select, send }: Props) {
               )}
             </div>
           </div>
+          <div className="agent-skills" data-testid="agent-skills">
+            <span className="muted">skill ricevute nell'ultimo turno</span>
+            {agent.skills === undefined ? (
+              <span className="faint">nessun turno ancora</span>
+            ) : agent.skills.length === 0 ? (
+              <span className="faint">nessuna</span>
+            ) : (
+              agent.skills.map((s) => (
+                <span key={`${s.source}:${s.id}`} className={`badge ${s.source === 'repo' ? 'accent' : ''}`} title={s.source === 'repo' ? 'del repository (dal branch di destinazione)' : 'personale'}>
+                  {s.name}
+                </span>
+              ))
+            )}
+          </div>
           <LogView entries={state.logs[agent.id] ?? []} />
           <div className="message-row">
             <input

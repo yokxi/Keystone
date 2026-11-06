@@ -98,6 +98,20 @@ describe('validazione IPC nel processo main', () => {
     expect(validateCommand({ type: 'repo.config', repoId: 'r1' })).toMatchObject({ ok: false });
     // le schermate passano da un canale dedicato del main, non dal renderer
     expect(validateCommand({ type: 'visual.shot.request', requestId: 'q', taskId: 't1', shotId: 'after-1' })).toMatchObject({ ok: false });
+    // skill: id e posto validati; un percorso non può arrivare dal renderer
+    const draft = { name: 'Regola', appliesTo: 'worker', when: ['lavoro'], files: [], enabled: true, body: 'testo' };
+    expect(validateCommand({ type: 'skill.save', source: 'personal', skillId: 'regola', create: true, draft })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'skill.save', source: 'repo', repoId: 'r1', skillId: 'regola', create: false, draft })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'skill.save', source: 'repo', skillId: 'regola', create: true, draft })).toMatchObject({ ok: false });
+    expect(validateCommand({ type: 'skill.save', source: 'personal', repoId: 'r1', skillId: 'regola', create: true, draft })).toMatchObject({ ok: false });
+    for (const skillId of ['../config', '..', 'a/b', 'A', 'a\\b', '']) expect(validateCommand({ type: 'skill.delete', source: 'personal', skillId }), skillId).toMatchObject({ ok: false });
+    expect(validateCommand({ type: 'skill.save', source: 'personal', skillId: 'x', create: true, draft: { ...draft, name: 'a\nb' } })).toMatchObject({ ok: false });
+    expect(validateCommand({ type: 'skill.toggle', source: 'personal', skillId: 'regola', enabled: null })).toMatchObject({ ok: true });
+    expect(validateCommand({ type: 'skills.refresh' })).toMatchObject({ ok: true });
+    // conferma di una skill personale: solo id e impronta, niente percorsi né contenuti
+    expect(validateCommand({ type: 'skill.confirm', skillId: 'regola', hash: 'a'.repeat(64) })).toMatchObject({ ok: true });
+    for (const hash of ['', 'a'.repeat(63), 'G'.repeat(64), '../'.repeat(22)]) expect(validateCommand({ type: 'skill.confirm', skillId: 'regola', hash }), hash).toMatchObject({ ok: false });
+    expect(validateCommand({ type: 'skill.confirm', skillId: '../x', hash: 'a'.repeat(64) })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'hello', client: 'x', protocol: 1 })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'snapshot' })).toMatchObject({ ok: false });
     expect(validateCommand({ type: 'task.action', taskId: 't1', action: 'rm -rf' })).toMatchObject({ ok: false });

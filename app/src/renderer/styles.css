@@ -367,3 +367,18 @@ textarea.input:focus, input.input:focus { border-color: var(--accent); }
 .help-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .help-table td { padding: 6px 8px; border-top: 1px solid var(--border); }
 .help-table td:first-child { font-family: var(--mono); white-space: nowrap; color: var(--accent); }
+
+/* ---- skill e riassunto della review ---- */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: 7px 12px; cursor: pointer; color: var(--text-muted); margin-bottom: -1px; }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.review-summary { display: flex; flex-direction: column; gap: 12px; }
+.risk-list { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.risk-list li.bad { color: var(--danger); }
+.risk-list li.warn { color: var(--warn); }
+.skill-inline { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.skill-inline .note, .memory-doc .note { color: var(--text-muted); font-size: 12.5px; margin: 6px 0; }
+.skill-form .grid { display: grid; grid-template-columns: 130px 1fr; gap: 6px 10px; align-items: center; margin: 8px 0; }
+.skill-body { border-top: 1px solid var(--border); padding-top: 10px; }
+.skill-info { padding: 8px 12px; margin-bottom: 10px; font-size: 13px; }
+.agent-skills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; }

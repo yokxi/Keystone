@@ -32,4 +32,5 @@ Con un motore vero: `--engine claude` o `--engine codex`. Per un team misto: `--
 - `docs/interfaccia.md`: le pagine dell'app.
 - `docs/protocol.md`: il protocollo tra orchestratore e app.
 - `docs/verifica-visuale.md`: le schermate prima/dopo nella review, eseguite da Keystone.
+- `docs/skill.md`: le regole in markdown per gli agenti (del repository e personali).
 - `docs/piano.md`: le fasi successive.

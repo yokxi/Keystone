@@ -1,6 +1,7 @@
-import { consoleKey, errorKey, isConsoleProblem, onlyAfter, requestKey, type Decision, type DiffFile, type FailedRequest, type PageDiagnostics, type Task, type ViewState, type VisualReport } from '@keystone/shared';
+import { consoleKey, errorKey, isConsoleProblem, onlyAfter, requestKey, reviewRisks, type Decision, type DiffFile, type FailedRequest, type PageDiagnostics, type SkillAudience, type Task, type ViewState, type VisualReport } from '@keystone/shared';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collapseContext } from '../lib/diff-view.js';
+import { AUDIENCE_LABEL, freeSkillId, PlaceNote, PlaceSelect, saveCommand, type SkillPlace } from './Skills.js';
 
 export interface ReviewTarget {
   repoId: string;
@@ -13,6 +14,8 @@ interface Props {
   state: ViewState;
   target: ReviewTarget | undefined;
   answer: (d: Decision, option?: string, text?: string) => Promise<string | undefined>;
+  /** comando all'orchestratore; restituisce l'errore, se c'è */
+  send: (cmd: Parameters<Window['keystone']['send']>[0]) => Promise<string | undefined>;
   close: () => void;
 }
 
@@ -258,11 +261,109 @@ function VisualPanel({ task, visual }: { task: Task; visual: VisualReport }) {
   );
 }
 
-export function Review({ state, target, answer, close }: Props) {
+const CI_LABEL: Record<Task['ci'], { label: string; cls: string }> = {
+  pass: { label: 'superati', cls: 'ok' },
+  fail: { label: 'falliti', cls: 'bad' },
+  running: { label: 'in corso', cls: 'warn' },
+  unknown: { label: 'non eseguiti', cls: '' },
+};
+
+/** Le prime parole della correzione, come nome della skill. */
+function nameFromText(text: string): string {
+  const words = text.replace(/\s+/g, ' ').trim().split(' ').slice(0, 8).join(' ');
+  return (words.length > 80 ? `${words.slice(0, 80)}…` : words) || 'Correzione dalla review';
+}
+
+/** Il riassunto della review: richiesta, cosa è stato fatto e perché, file, test, schermate, rischi. */
+function ReviewSummary({ task, decision, files, showFile }: { task: Task | undefined; decision: Decision | undefined; files: DiffFile[] | undefined; showFile: (path: string) => void }) {
+  const r = task?.report;
+  const risks = reviewRisks(task, files);
+  const ci = task ? CI_LABEL[task.ci] : undefined;
+  return (
+    <div className="review-summary" data-testid="review-summary">
+      <div className="card summary-box">
+        <h4>Richiesta</h4>
+        <pre>{r?.request || task?.description || task?.title || '—'}</pre>
+      </div>
+      <div className="card summary-box" data-testid="work-report">
+        <h4>Cosa è stato fatto e perché</h4>
+        {r ? (
+          <dl className="report">
+            <dt>Cosa ha cambiato</dt>
+            <dd>{r.changes}</dd>
+            <dt>Perché</dt>
+            <dd>{r.why}</dd>
+            <dt>Come l’ha verificato (secondo il worker)</dt>
+            <dd>{r.verification}</dd>
+          </dl>
+        ) : (
+          <pre>{task?.summary ?? 'Il worker non ha mandato un resoconto.'}</pre>
+        )}
+        {r && task?.summary && (
+          <details className="diag-others">
+            <summary>riassunto del worker</summary>
+            <pre>{task.summary}</pre>
+          </details>
+        )}
+      </div>
+      <div className="card summary-box">
+        <h4>
+          File toccati {files ? `(${files.length})` : ''}
+          {files && (
+            <>
+              {' '}
+              <span className="add-n">+{files.reduce((n, f) => n + f.additions, 0)}</span> <span className="del-n">−{files.reduce((n, f) => n + f.deletions, 0)}</span>
+            </>
+          )}
+        </h4>
+        {!files && <div className="faint">carico…</div>}
+        {files?.length === 0 && <div className="faint">nessuna modifica</div>}
+        {files?.map((f) => (
+          <button key={f.path} className="file-item" onClick={() => showFile(f.path)} title="Apri nel diff">
+            <span className={`file-status ${f.status}`}>{STATUS_CHAR[f.status]}</span>
+            <span className="grow ellipsis">{f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}</span>
+            <span className="add-n">+{f.additions}</span>
+            <span className="del-n">−{f.deletions}</span>
+          </button>
+        ))}
+      </div>
+      <div className="card summary-box" data-testid="review-tests">
+        <h4>
+          Test eseguiti da Keystone {ci && <span className={`badge ${ci.cls}`}>{ci.label}</span>}
+        </h4>
+        {decision?.context ? <pre>{decision.context}</pre> : <div className="faint">Nessuna nota: la review del lead non è ancora arrivata.</div>}
+      </div>
+      {task?.visual && <VisualPanel task={task} visual={task.visual} />}
+      <div className="card summary-box" data-testid="review-risks">
+        <h4>Rischi</h4>
+        {risks.length === 0 && !r?.openIssues && <div className="faint">Nessun rischio rilevato da Keystone e nessun problema aperto dichiarato dal worker.</div>}
+        <ul className="risk-list">
+          {risks.map((x, i) => (
+            <li key={i} className={x.level}>
+              {x.text}
+            </li>
+          ))}
+          {r?.openIssues && (
+            <li className="warn">
+              Problemi aperti secondo il worker: <span style={{ whiteSpace: 'pre-wrap' }}>{r.openIssues}</span>
+            </li>
+          )}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+export function Review({ state, target, answer, send, close }: Props) {
   const [files, setFiles] = useState<DiffFile[]>();
   const [error, setError] = useState<string>();
   const [active, setActive] = useState<string>();
+  const [tab, setTab] = useState<'summary' | 'diff'>('summary');
   const [changes, setChanges] = useState('');
+  const [asSkill, setAsSkill] = useState(false);
+  const [skillName, setSkillName] = useState('');
+  const [skillFor, setSkillFor] = useState<SkillAudience>('worker');
+  const [skillPlace, setSkillPlace] = useState<SkillPlace>('personal');
   const [busy, setBusy] = useState(false);
   const decision = target?.decisionId ? state.decisions.find((d) => d.id === target.decisionId) : state.decisions.find((d) => d.kind === 'merge' && d.status === 'open' && d.worktree === target?.worktree);
   const task = state.tasks.find((t) => t.id === (target?.taskId ?? decision?.taskId));
@@ -276,6 +377,9 @@ export function Review({ state, target, answer, close }: Props) {
     void window.keystone.requestDiff(target.repoId, target.worktree).then((r) => (r.ok ? setFiles(r.files) : setError(r.error)));
   }, [target?.repoId, target?.worktree, wt?.files, wt?.status]);
 
+  // una review nuova si apre sempre sul riassunto
+  useEffect(() => setTab('summary'), [target?.repoId, target?.worktree]);
+
   const totals = useMemo(() => (files ?? []).reduce((s, f) => ({ a: s.a + f.additions, d: s.d + f.deletions }), { a: 0, d: 0 }), [files]);
 
   if (!target) return <div className="view empty">Scegli un task con un worktree dal tabellone, o una decisione di merge.</div>;
@@ -286,6 +390,29 @@ export function Review({ state, target, answer, close }: Props) {
     const err = await answer(decision, option, text);
     setBusy(false);
     if (err) setError(err);
+  };
+  const requestChanges = async () => {
+    const text = changes.trim();
+    if (!decision || !text) return;
+    setError(undefined);
+    if (asSkill) {
+      // prima la skill: se non si salva, la richiesta di modifiche non parte (puoi togliere la spunta)
+      const name = skillName.trim() || nameFromText(text);
+      const when = skillFor === 'worker' ? (['lavoro'] as const) : skillFor === 'lead' ? (['review'] as const) : (['sempre'] as const);
+      setBusy(true);
+      const err = await send(saveCommand(skillPlace, freeSkillId(state, skillPlace, name), { name, appliesTo: skillFor, when: [...when], files: [], enabled: true, body: text }, true));
+      setBusy(false);
+      if (err) {
+        setError(`Skill non salvata: ${err}`);
+        return;
+      }
+    }
+    await act('Richiedi modifiche', text);
+  };
+  const showFile = (p: string) => {
+    setTab('diff');
+    setActive(p);
+    requestAnimationFrame(() => document.getElementById(`file-${p}`)?.scrollIntoView({ block: 'start' }));
   };
   const canDecide = decision?.status === 'open';
 
@@ -302,59 +429,16 @@ export function Review({ state, target, answer, close }: Props) {
           </span>
         )}
       </div>
+      <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === 'summary'} className={`tab ${tab === 'summary' ? 'active' : ''}`} onClick={() => setTab('summary')}>
+          Riassunto
+        </button>
+        <button role="tab" aria-selected={tab === 'diff'} className={`tab ${tab === 'diff' ? 'active' : ''}`} onClick={() => setTab('diff')}>
+          Diff {files ? `· ${files.length} file` : ''} <span className="add-n">+{totals.a}</span> <span className="del-n">−{totals.d}</span>
+        </button>
+      </div>
       <div className="review grow">
         <div className="review-side">
-          <div className="card file-list">
-            <div className="row" style={{ padding: '4px 8px 8px', fontSize: 12.5 }}>
-              <b>{files?.length ?? '…'} file</b>
-              <span className="add-n">+{totals.a}</span>
-              <span className="del-n">−{totals.d}</span>
-            </div>
-            {(files ?? []).map((f) => (
-              <button
-                key={f.path}
-                className={`file-item ${active === f.path ? 'active' : ''}`}
-                onClick={() => {
-                  setActive(f.path);
-                  document.getElementById(`file-${f.path}`)?.scrollIntoView({ block: 'start' });
-                }}
-              >
-                <span className={`file-status ${f.status}`}>{STATUS_CHAR[f.status]}</span>
-                <span className="grow ellipsis">{f.path}</span>
-                <span className="add-n">+{f.additions}</span>
-                <span className="del-n">−{f.deletions}</span>
-              </button>
-            ))}
-          </div>
-          {task?.summary && (
-            <div className="card summary-box">
-              <h4>Riassunto del worker</h4>
-              <pre>{task.summary}</pre>
-            </div>
-          )}
-          {task?.report && (
-            <div className="card summary-box" data-testid="work-report">
-              <h4>Resoconto del worker</h4>
-              <dl className="report">
-                <dt>Richiesta</dt>
-                <dd>{task.report.request}</dd>
-                <dt>Cosa ha cambiato</dt>
-                <dd>{task.report.changes}</dd>
-                <dt>Perché</dt>
-                <dd>{task.report.why}</dd>
-                <dt>Come l’ha verificato</dt>
-                <dd>{task.report.verification}</dd>
-                <dt>Problemi aperti</dt>
-                <dd>{task.report.openIssues || 'nessuno'}</dd>
-              </dl>
-            </div>
-          )}
-          {decision?.context && (
-            <div className="card summary-box">
-              <h4>Note della review e test</h4>
-              <pre>{decision.context}</pre>
-            </div>
-          )}
           {decision && (
             <div className="card summary-box">
               <h4>Decisione {decision.id}</h4>
@@ -369,8 +453,26 @@ export function Review({ state, target, answer, close }: Props) {
                     </button>
                   </div>
                   <textarea className="input" rows={3} placeholder="Cosa va cambiato…" value={changes} onChange={(e) => setChanges(e.target.value)} />
-                  <button className="btn" style={{ marginTop: 6 }} disabled={busy || !changes.trim()} onClick={() => void act('Richiedi modifiche', changes.trim())}>
-                    Richiedi modifiche
+                  <label className="row" style={{ gap: 6, marginTop: 6, fontSize: 13 }}>
+                    <input type="checkbox" checked={asSkill} data-testid="save-as-skill" onChange={(e) => setAsSkill(e.target.checked)} />
+                    Salva la correzione come skill
+                  </label>
+                  {asSkill && (
+                    <div className="skill-inline" data-testid="skill-inline">
+                      <input className="input small" placeholder={nameFromText(changes)} value={skillName} maxLength={100} onChange={(e) => setSkillName(e.target.value)} aria-label="Nome della skill" />
+                      <select className="input small" value={skillFor} onChange={(e) => setSkillFor(e.target.value as SkillAudience)} aria-label="Per chi">
+                        {(['worker', 'lead', 'tutti'] as const).map((a) => (
+                          <option key={a} value={a}>
+                            per {AUDIENCE_LABEL[a]}
+                          </option>
+                        ))}
+                      </select>
+                      <PlaceSelect state={state} value={skillPlace} onChange={setSkillPlace} />
+                      <PlaceNote state={state} place={skillPlace} />
+                    </div>
+                  )}
+                  <button className="btn" style={{ marginTop: 6 }} disabled={busy || !changes.trim()} onClick={() => void requestChanges()}>
+                    Richiedi modifiche{asSkill ? ' e salva la skill' : ''}
                   </button>
                 </>
               ) : (
@@ -379,15 +481,43 @@ export function Review({ state, target, answer, close }: Props) {
               {error && <div className="decision-error">{error}</div>}
             </div>
           )}
+          {tab === 'diff' && (
+            <div className="card file-list">
+              <div className="row" style={{ padding: '4px 8px 8px', fontSize: 12.5 }}>
+                <b>{files?.length ?? '…'} file</b>
+                <span className="add-n">+{totals.a}</span>
+                <span className="del-n">−{totals.d}</span>
+              </div>
+              {(files ?? []).map((f) => (
+                <button
+                  key={f.path}
+                  className={`file-item ${active === f.path ? 'active' : ''}`}
+                  onClick={() => {
+                    setActive(f.path);
+                    document.getElementById(`file-${f.path}`)?.scrollIntoView({ block: 'start' });
+                  }}
+                >
+                  <span className={`file-status ${f.status}`}>{STATUS_CHAR[f.status]}</span>
+                  <span className="grow ellipsis">{f.path}</span>
+                  <span className="add-n">+{f.additions}</span>
+                  <span className="del-n">−{f.deletions}</span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         <div className="review-main">
-          {task?.visual && <VisualPanel task={task} visual={task.visual} />}
           {error && !decision && <div className="card empty">{error}</div>}
-          {!files && !error && <div className="card empty">Carico il diff…</div>}
-          {files?.length === 0 && <div className="card empty">Nessuna modifica in questo worktree.</div>}
-          {files?.map((f) => (
-            <FileDiff key={f.path} f={f} />
-          ))}
+          {tab === 'summary' && <ReviewSummary task={task} decision={decision} files={files} showFile={showFile} />}
+          {tab === 'diff' && (
+            <>
+              {!files && !error && <div className="card empty">Carico il diff…</div>}
+              {files?.length === 0 && <div className="card empty">Nessuna modifica in questo worktree.</div>}
+              {files?.map((f) => (
+                <FileDiff key={f.path} f={f} />
+              ))}
+            </>
+          )}
         </div>
       </div>
     </div>
