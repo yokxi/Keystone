@@ -56,6 +56,7 @@ export function buildOrchestrator(cfg: OrchestratorConfig, opts: BuildOptions = 
     ...(opts.logger ? { logger: opts.logger } : {}),
     ...(opts.repoFaults ? { repoFaults: opts.repoFaults } : {}),
     ...(cfg.keepMergedBranches ? { keepMergedBranches: true } : {}),
+    ...(cfg.configFiles?.length ? { configFiles: cfg.configFiles } : {}),
     ...(cfg.goalLimits ? { defaultGoalLimits: cfg.goalLimits } : {}),
     ...(opts.storeDebounceMs !== undefined ? { storeDebounceMs: opts.storeDebounceMs } : {}),
     ...(opts.visual ? { visual: opts.visual } : {}),

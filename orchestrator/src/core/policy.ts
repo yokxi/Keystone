@@ -134,7 +134,7 @@ const REMOVERS = new Set(['rm', 'rmdir', 'rd', 'del', 'erase', 'unlink', 'shred'
 const MOVERS = new Set(['mv', 'move', 'ren', 'rename', 'move-item', 'mi', 'rename-item', 'rni']);
 
 function protectedDenial(prog: string, target: string): Finding {
-  return deny(`${prog}: ${target} è un percorso protetto di Keystone (guardiano git, configurazione del repository, collegamento del worktree o skill): gli agenti non possono modificarlo`);
+  return deny(`${prog}: ${target} è un percorso protetto di Keystone (guardiano git, configurazione del repository, collegamento del worktree, skill, stato o configurazione): gli agenti non possono modificarlo`);
 }
 
 /**

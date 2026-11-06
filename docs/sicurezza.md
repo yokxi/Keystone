@@ -315,6 +315,24 @@ Le skill sono regole in markdown che Keystone aggiunge alle istruzioni degli age
   altri effetti degli script (§5).
 - Le funzioni native dei motori restano spente; le skill passano come testo nelle istruzioni.
 
+## 6quater. File di configurazione
+
+`~/.keystone/config.json` (dettagli in `docs/configurazione.md`):
+
+- schema rigido: chiavi sconosciute o valori fuori dai limiti fermano l'avvio; non ci sono campi
+  per chiavi API o token, né per le modalità dei permessi;
+- il binario di Codex (`--codex-path`), il comando dei test (`--ci`) e la cartella delle
+  trascrizioni (`--record`) restano solo da riga di comando: un file che resta sul disco non
+  decide cosa viene eseguito;
+- il file (e quello indicato con `--config`) è un percorso protetto: le scritture degli agenti
+  sono negate, non chieste; un link simbolico o una junction al posto del file non vengono letti;
+- il login personale (`useClaudeLogin`, `useCodexLogin`) attivato dal file è segnalato con un
+  avviso a ogni avvio, perché un file dimenticato non lo attivi senza che tu lo veda;
+- limite: come per le skill personali, la policy non vede dentro gli script (§5). Il file si legge
+  solo all'avvio e il log di avvio elenca da dove viene la configurazione e cosa imposta. Tra il
+  controllo (file normale) e la lettura non c'è atomicità: il rischio è basso perché il file è
+  protetto per gli agenti.
+
 ## 7. Motore Claude
 
 Dettagli in `docs/motore-claude.md`. In sintesi:

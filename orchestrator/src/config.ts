@@ -1,6 +1,5 @@
-// Configurazione dell'orchestratore. Fase 2: valori predefiniti + opzioni da riga di comando.
-// Il file ~/.keystone/config.json (motore e modello per agente, effort, numero di worker) arriva
-// in Fase 7.
+// Configurazione dell'orchestratore: valori predefiniti. Il file ~/.keystone/config.json e le
+// opzioni da riga di comando si applicano sopra (config-file.ts, main.ts).
 import os from 'node:os';
 import path from 'node:path';
 import type { EngineId, Role } from '@keystone/shared';
@@ -30,6 +29,8 @@ export interface OrchestratorConfig {
   ciTimeoutMs: number;
   userName?: string;
   sim: { stepDelayMs: number };
+  /** file di configurazione: percorsi protetti per gli agenti */
+  configFiles?: string[];
   /** conserva il branch dell'agente dopo un merge riuscito (default: eliminato) */
   keepMergedBranches?: boolean;
   /** limiti per obiettivo: turni degli agenti e minuti di lavoro (senza le attese di una tua risposta) */

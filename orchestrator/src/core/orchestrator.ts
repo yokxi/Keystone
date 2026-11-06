@@ -56,6 +56,8 @@ export interface OrchestratorOptions {
   visual?: Partial<VisualDeps>;
   /** cartella delle skill personali (default: ~/.keystone/skills, accanto ai profili) */
   personalSkillsDir?: string;
+  /** file di configurazione (config.json): percorsi protetti per gli agenti */
+  configFiles?: string[];
 }
 
 type Listener = (msg: Outbound) => void;
@@ -109,6 +111,8 @@ export class Orchestrator {
   status: OrchestratorStatus;
   readonly visual: VisualDeps;
   readonly skills: SkillManager;
+  /** file di configurazione: gli agenti non possono modificarli */
+  readonly configFiles: readonly string[];
   /** l'ultimo elenco delle skill mandato all'interfaccia */
   private skillList: Skill[] = [];
   private skillRefresh: Promise<void> | undefined;
@@ -150,6 +154,8 @@ export class Orchestrator {
       ...(opts.repoFaults ? { faults: opts.repoFaults } : {}),
       ...(opts.keepMergedBranches ? { keepMergedBranches: true } : {}),
     });
+    // config.json nella radice dello stato è sempre protetto, anche se non esiste ancora
+    this.configFiles = [...new Set([...(opts.configFiles ?? []), path.join(path.dirname(this.dataDir), 'config.json')].map((f) => path.resolve(f)))];
     this.skills = new SkillManager({
       personalDir: opts.personalSkillsDir ?? path.join(path.dirname(this.dataDir), 'skills'),
       repos: () => this.repos.list(),

@@ -24,7 +24,8 @@ npm run app                           # l'interfaccia (in un altro terminale)
 ```
 
 Con un motore vero: `--engine claude` o `--engine codex`. Per un team misto: `--lead-engine` e
-`--worker-engine`. Tutte le opzioni: `npm run orchestrator -- --help`.
+`--worker-engine`. Tutte le opzioni: `npm run orchestrator -- --help`. Le stesse impostazioni si
+possono scrivere in `~/.keystone/config.json` (vedi `docs/configurazione.md`).
 
 ## Documenti
 
@@ -33,4 +34,5 @@ Con un motore vero: `--engine claude` o `--engine codex`. Per un team misto: `--
 - `docs/protocol.md`: il protocollo tra orchestratore e app.
 - `docs/verifica-visuale.md`: le schermate prima/dopo nella review, eseguite da Keystone.
 - `docs/skill.md`: le regole in markdown per gli agenti (del repository e personali).
+- `docs/configurazione.md`: il file `~/.keystone/config.json`.
 - `docs/piano.md`: le fasi successive.

@@ -506,13 +506,13 @@ export class Team {
    * Percorsi che l'agente non può modificare: la cartella del guardiano git (~/.keystone/git), il
    * .git/config del repository (contiene l'include del guardiano), i dati dei worktree in
    * .git/worktrees, il collegamento .git del worktree, le skill (.keystone/skills/ nella cartella
-   * di lavoro e nel checkout, ~/.keystone/skills/) e i file dello stato del profilo.
+   * di lavoro e nel checkout, ~/.keystone/skills/), i file dello stato del profilo e config.json.
    */
   private async protectedPathsFor(job: Job, cwd: string): Promise<string[]> {
     const skillsIn = (dir: string) => path.join(dir, ...REPO_SKILLS_DIR.split('/'));
     // lo stato del profilo (contiene le impronte delle skill personali confermate)
     const state = [this.o.store.file, `${this.o.store.file}.bak`];
-    const out = [path.dirname(this.o.repos.guardFile), this.o.skills.personalDir, skillsIn(cwd), ...state];
+    const out = [path.dirname(this.o.repos.guardFile), this.o.skills.personalDir, skillsIn(cwd), ...state, ...this.o.configFiles];
     const goal = job.goalId ? this.o.goal(job.goalId) : undefined;
     const t = job.taskId ? this.o.tasks.get(job.taskId) : undefined;
     const repoId = t?.repoId ?? goal?.repoId ?? this.o.repos.defaultRepo()?.id;

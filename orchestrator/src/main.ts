@@ -3,7 +3,9 @@
 //   npm run orchestrator -- --demo                  team simulato su un repository di prova
 //   npm run orchestrator -- --repo C:\percorso\repo  team simulato sul tuo repository
 //   opzioni: --home <dir> --profile <nome> --port <n> --workers <n> --goal "<testo>"
-//            --sim-delay <ms> --reset
+//            --sim-delay <ms> --reset --config <file> --no-config --show-config
+//   le impostazioni si possono scrivere anche in ~/.keystone/config.json (vedi config-file.ts e
+//   docs/configurazione.md); la riga di comando ha la precedenza
 //   manutenzione: --prune-worktrees, --remove-git-guard <repo>
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,7 +14,8 @@ import { parseArgs } from 'node:util';
 import { buildOrchestrator } from './bootstrap.js';
 import { ENGINE_EXPERIMENTAL } from '@keystone/shared';
 import { parseCodexPrices } from './engines/codex/codex-engine.js';
-import { applyLoginBudget, applyLoginLimits, dataDir, defaultAgents, defaultConfig } from './config.js';
+import { dataDir, defaultConfig } from './config.js';
+import { applySettings, ConfigFile, configFileWarnings, defaultConfigFile, describeConfigFile, envSettings, loadConfigFile, mergeSettings, type Settings } from './config-file.js';
 import { consoleLogger } from './core/context.js';
 import { VERSION } from './core/orchestrator.js';
 import { createDemoRepo, isKeystoneDemo } from './demo.js';
@@ -62,7 +65,14 @@ manutenzione (non avviano l'orchestratore):
 
   --confirm-guard      conferma senza chiedere la riga da aggiungere al .git/config dei repository
                        passati con --repo (la riga viene comunque mostrata)
+  --config <file>      file di configurazione (default: config.json nella radice dello stato)
+  --no-config          ignora il file di configurazione
+  --show-config        mostra le impostazioni che valgono (file, ambiente, riga di comando) ed esce
   --help               questo aiuto
+
+Le stesse impostazioni (motore, modello ed effort, anche per singolo agente, worker, limiti,
+tetto di spesa, porta, login) si possono scrivere in ~/.keystone/config.json: vedi
+docs/configurazione.md. La riga di comando ha la precedenza sul file e sull'ambiente.
 `;
 
 function askYesNo(question: string): Promise<boolean> {
@@ -108,6 +118,9 @@ async function main(): Promise<void> {
       budget: { type: 'string' },
       'use-claude-login': { type: 'boolean' },
       record: { type: 'string' },
+      config: { type: 'string' },
+      'no-config': { type: 'boolean' },
+      'show-config': { type: 'boolean' },
       help: { type: 'boolean' },
     },
   });
@@ -120,63 +133,35 @@ async function main(): Promise<void> {
   if (values.home) cfg.home = path.resolve(values.home);
   cfg.profile = values.profile ?? (values.demo ? 'demo' : 'default');
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/.test(cfg.profile)) throw new Error(`profilo non valido: ${cfg.profile} (lettere, cifre, - e _)`);
-  if (values.port) cfg.port = Number(values.port);
-  const engineOf = (v: string | undefined, label: string): 'sim' | 'claude' | 'codex' => {
-    const e = v ?? 'sim';
-    if (e !== 'sim' && e !== 'claude' && e !== 'codex') throw new Error(`${label} non valido: ${e} (sim, claude o codex)`);
-    return e;
-  };
-  const engine = engineOf(values.engine, 'motore');
-  const leadEngine = engineOf(values['lead-engine'] ?? engine, 'motore del lead');
-  const workerEngine = engineOf(values['worker-engine'] ?? engine, 'motore dei worker');
-  cfg.agents = defaultAgents({ lead: leadEngine, worker: workerEngine }, values.workers ? Number(values.workers) : 3);
-  for (const e of new Set([leadEngine, workerEngine])) if (ENGINE_EXPERIMENTAL[e]) log.warn(`motore ${e}: ${ENGINE_EXPERIMENTAL[e]}. Usalo solo per prove.`);
-  // --lead-model / --worker-model valgono per il motore di quel ruolo
-  if (values['lead-model']) cfg[leadEngine === 'codex' ? 'codex' : 'claude'].leadModel = values['lead-model'];
-  if (values['worker-model']) cfg[workerEngine === 'codex' ? 'codex' : 'claude'].workerModel = values['worker-model'];
-  if (values.effort) {
-    if (!['low', 'medium', 'high', 'xhigh', 'max'].includes(values.effort)) throw new Error(`effort non valido: ${values.effort}`);
-    cfg.claude.effort = values.effort as 'low';
-    cfg.claude.leadEffort = values.effort as 'low';
-    cfg.codex.effort = values.effort as 'low';
-    cfg.codex.leadEffort = values.effort as 'low';
-  }
-  if (values['use-codex-login']) cfg.codex.useCodexLogin = true;
+  const configFile = values.config ? path.resolve(values.config) : defaultConfigFile(cfg.home);
+  const fromFile = values['no-config'] ? undefined : loadConfigFile(configFile);
+  const settings = mergeSettings(fromFile, envSettings(), cliSettings(values));
+  for (const note of applySettings(cfg, settings)) log.info(note);
+  // il file di configurazione (quello usato e quello predefinito) è protetto per gli agenti
+  cfg.configFiles = [...new Set([configFile, defaultConfigFile(cfg.home)])];
+  for (const e of new Set(cfg.agents.map((a) => a.engine))) if (ENGINE_EXPERIMENTAL[e]) log.warn(`motore ${e}: ${ENGINE_EXPERIMENTAL[e]}. Usalo solo per prove.`);
+  // solo da riga di comando: decidono cosa viene eseguito o dove finiscono le trascrizioni
   if (values['codex-path']) cfg.codex.binPath = path.resolve(values['codex-path']);
-  if (values['codex-prices']) cfg.codex.prices = parseCodexPrices(values['codex-prices']);
-  if (values.budget !== undefined) {
-    const b = Number(values.budget);
-    if (!Number.isFinite(b) || b < 0) throw new Error(`tetto di spesa non valido: ${values.budget}`);
-    cfg.budgetUsdPerGoal = b;
-  }
-  const limitArg = (name: 'goal-turns' | 'goal-minutes'): number | undefined => {
-    const v = values[name];
-    if (v === undefined) return undefined;
-    const n = Number(v);
-    if (!Number.isFinite(n) || n < 0 || (name === 'goal-turns' && !Number.isInteger(n))) throw new Error(`--${name} non valido: ${v}`);
-    return n;
-  };
-  const explicitLimits = { ...(limitArg('goal-turns') !== undefined ? { turns: limitArg('goal-turns')! } : {}), ...(limitArg('goal-minutes') !== undefined ? { minutes: limitArg('goal-minutes')! } : {}) };
-  if (values['use-claude-login']) {
-    cfg.claude.useClaudeLogin = true;
-    log.info(applyLoginBudget(cfg, values.budget !== undefined || !!process.env.KEYSTONE_BUDGET_USD?.trim()));
-    log.info(applyLoginLimits(cfg, explicitLimits));
-  } else if (leadEngine === 'codex' || workerEngine === 'codex') {
-    // Codex riporta solo token, non dollari: il freno sono i turni e il tempo
-    log.info(applyLoginLimits(cfg, explicitLimits).replace('login personale', 'Codex'));
-    if (leadEngine === 'codex' && workerEngine === 'codex' && !cfg.codex.prices && values.budget === undefined && !process.env.KEYSTONE_BUDGET_USD?.trim()) {
-      cfg.budgetUsdPerGoal = 0;
-      log.info('Codex riporta token, non dollari: nessun tetto di spesa');
-    }
-  } else if (explicitLimits.turns || explicitLimits.minutes) {
-    cfg.goalLimits = { ...(explicitLimits.turns ? { turns: explicitLimits.turns } : {}), ...(explicitLimits.minutes ? { minutes: explicitLimits.minutes } : {}) };
-  }
   if (values.record) cfg.claude.recordDir = cfg.codex.recordDir = path.resolve(values.record);
-  if (values['keep-branches']) cfg.keepMergedBranches = true;
-  if (values['user-name']?.trim()) cfg.userName = values['user-name'].trim();
-  if (values['sim-delay']) cfg.sim.stepDelayMs = Number(values['sim-delay']);
   if (values.ci) cfg.ciCommand = values.ci;
-  if (values.port !== undefined && (!Number.isInteger(cfg.port) || cfg.port < 0 || cfg.port > 65535)) throw new Error(`porta non valida: ${values.port}`);
+
+  if (fromFile) {
+    log.info(describeConfigFile(configFile, fromFile));
+    for (const w of configFileWarnings(configFile, fromFile)) log.warn(w);
+  }
+
+  if (values['show-config']) {
+    process.stdout.write(
+      [
+        `file di configurazione: ${values['no-config'] ? 'ignorato (--no-config)' : fromFile ? configFile : `${configFile} (assente)`}`,
+        `impostazioni (file < ambiente < riga di comando): ${JSON.stringify(settings, null, 2)}`,
+        `agenti: ${cfg.agents.map((a) => `${a.name} (${a.role}, ${a.engine}${a.model ? `, ${a.model}` : ''}${a.effort ? `, effort ${a.effort}` : ''})`).join('; ')}`,
+        `tetto per obiettivo: ${cfg.budgetUsdPerGoal > 0 ? `$${cfg.budgetUsdPerGoal}` : 'nessuno'}; limiti: ${cfg.goalLimits ? JSON.stringify(cfg.goalLimits) : 'nessuno'}`,
+        '',
+      ].join('\n'),
+    );
+    return;
+  }
 
   if (values['remove-git-guard']) {
     await removeGuard(path.resolve(values['remove-git-guard']));
@@ -276,6 +261,47 @@ async function main(): Promise<void> {
   await o.start();
   log.info(`Keystone in ascolto su ws://127.0.0.1:${port} · profilo ${cfg.profile} · stato in ${dir}`);
   if (values.goal) await o.handle({ v: 1, type: 'goal.submit', text: values.goal }, () => undefined);
+}
+
+/** Le opzioni da riga di comando come impostazioni, controllate con lo stesso schema del file. */
+function cliSettings(values: Record<string, string | boolean | string[] | undefined>): Settings {
+  const str = (k: string) => (typeof values[k] === 'string' ? (values[k] as string) : undefined);
+  const num = (k: string) => (str(k) !== undefined ? Number(str(k)) : undefined);
+  const raw: Record<string, unknown> = {
+    engine: str('engine'),
+    leadEngine: str('lead-engine'),
+    workerEngine: str('worker-engine'),
+    workers: num('workers'),
+    leadModel: str('lead-model'),
+    workerModel: str('worker-model'),
+    effort: str('effort'),
+    budgetUsd: num('budget'),
+    goalTurns: num('goal-turns'),
+    goalMinutes: num('goal-minutes'),
+    port: num('port'),
+    simDelayMs: num('sim-delay'),
+    keepBranches: values['keep-branches'] ? true : undefined,
+    userName: str('user-name')?.trim() || undefined,
+    useClaudeLogin: values['use-claude-login'] ? true : undefined,
+    useCodexLogin: values['use-codex-login'] ? true : undefined,
+  };
+  const prices = str('codex-prices');
+  if (prices) {
+    const p = parseCodexPrices(prices);
+    raw.codexPrices = { input: p.inputPerMTok, output: p.outputPerMTok, ...(p.cachedInputPerMTok !== undefined ? { cached: p.cachedInputPerMTok } : {}) };
+  }
+  const clean = Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== undefined));
+  const r = ConfigFile.safeParse(clean);
+  if (!r.success) {
+    const flag: Record<string, string> = { leadEngine: 'lead-engine', workerEngine: 'worker-engine', leadModel: 'lead-model', workerModel: 'worker-model', budgetUsd: 'budget', goalTurns: 'goal-turns', goalMinutes: 'goal-minutes', simDelayMs: 'sim-delay', userName: 'user-name' };
+    const i = r.error.issues[0]!;
+    const k = String(i.path[0] ?? '');
+    // il valore come l'hai scritto (non il numero convertito, che sarebbe NaN)
+    const shown = str(flag[k] ?? k) ?? String(clean[k]);
+    if (k === 'port') throw new Error(`porta non valida: ${shown}`);
+    throw new Error(`--${flag[k] ?? k} non valido: ${shown} (${i.message})`);
+  }
+  return r.data;
 }
 
 main().catch((e) => {
