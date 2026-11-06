@@ -12,7 +12,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { parseArgs } from 'node:util';
 import { buildOrchestrator } from './bootstrap.js';
-import { ENGINE_EXPERIMENTAL } from '@keystone/shared';
+import { ENGINE_DISABLED, ENGINE_EXPERIMENTAL } from '@keystone/shared';
 import { parseCodexPrices } from './engines/codex/codex-engine.js';
 import { dataDir, defaultConfig } from './config.js';
 import { applySettings, ConfigFile, configFileWarnings, defaultConfigFile, describeConfigFile, envSettings, loadConfigFile, mergeSettings, type Settings } from './config-file.js';
@@ -36,8 +36,8 @@ const HELP = `Keystone orchestratore ${VERSION}
   --sim-delay <ms>     pausa tra i passi del motore sim (default 400)
   --reset              cancella lo stato del profilo prima di partire
   --ci "<comando>"     comando dei test del repository (default: rilevato, es. npm test)
-  --engine sim|claude|codex  motore degli agenti (default sim, senza API)
-                       codex: ${ENGINE_EXPERIMENTAL.codex}
+  --engine sim|claude  motore degli agenti (default sim, senza API)
+                       codex: non incluso in questa versione (per prove: KEYSTONE_ENABLE_CODEX=1)
   --lead-engine <m>    motore del lead (team misto); --worker-engine <m> motore dei worker
   --use-codex-login    Codex con il login ChatGPT fatto nella cartella di Keystone (solo uso personale)
   --codex-path <file>  binario codex da usare (default: quello del pacchetto @openai/codex)
@@ -139,7 +139,11 @@ async function main(): Promise<void> {
   for (const note of applySettings(cfg, settings)) log.info(note);
   // il file di configurazione (quello usato e quello predefinito) è protetto per gli agenti
   cfg.configFiles = [...new Set([configFile, defaultConfigFile(cfg.home)])];
-  for (const e of new Set(cfg.agents.map((a) => a.engine))) if (ENGINE_EXPERIMENTAL[e]) log.warn(`motore ${e}: ${ENGINE_EXPERIMENTAL[e]}. Usalo solo per prove.`);
+  for (const e of new Set(cfg.agents.map((a) => a.engine))) {
+    // motori non inclusi in questa versione (Codex): solo con KEYSTONE_ENABLE_CODEX=1, per prove
+    if (ENGINE_DISABLED[e] && !(e === 'codex' && process.env.KEYSTONE_ENABLE_CODEX === '1')) throw new Error(ENGINE_DISABLED[e]);
+    if (ENGINE_EXPERIMENTAL[e]) log.warn(`motore ${e}: ${ENGINE_EXPERIMENTAL[e]}. Usalo solo per prove.`);
+  }
   // solo da riga di comando: decidono cosa viene eseguito o dove finiscono le trascrizioni
   if (values['codex-path']) cfg.codex.binPath = path.resolve(values['codex-path']);
   if (values.record) cfg.claude.recordDir = cfg.codex.recordDir = path.resolve(values.record);

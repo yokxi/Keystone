@@ -10,3 +10,12 @@ export const ENGINE_LABELS: Record<EngineId, string> = { sim: 'Sim', claude: 'Cl
 export const ENGINE_EXPERIMENTAL: Partial<Record<EngineId, string>> = {
   codex: 'sperimentale · non ancora verificato con un modello reale',
 };
+
+/**
+ * Motori non inclusi in questa versione: il codice c'è ed è testato, ma non si possono scegliere
+ * finché non sono provati con un modello reale. Si riattivano togliendoli da qui (o, solo per
+ * sviluppo e prove, con KEYSTONE_ENABLE_CODEX=1).
+ */
+export const ENGINE_DISABLED: Partial<Record<EngineId, string>> = {
+  codex: 'il motore Codex non è incluso in questa versione: arriverà in un rilascio successivo, dopo la prova con un modello reale',
+};

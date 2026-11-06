@@ -1,5 +1,11 @@
 # Motore Codex
 
+> **Non incluso in questa versione** (decisione del 6 novembre 2026: per ora non si può provare con
+> un modello reale). Il codice e i test restano; l'orchestratore rifiuta `--engine codex`,
+> `--lead-engine codex`, `--worker-engine codex` e Codex in `config.json`. Per prove di sviluppo:
+> `KEYSTONE_ENABLE_CODEX=1`. Si riattiva togliendo `codex` da `ENGINE_DISABLED`
+> (`shared/src/engines.ts`) dopo le prove reali elencate in `docs/piano.md`.
+
 > **Stato: sperimentale · non ancora verificato con un modello reale.** L'etichetta compare
 > nell'interfaccia accanto agli agenti Codex, nella barra di stato, nell'aiuto e all'avvio
 > dell'orchestratore. Si toglie solo dopo la prova reale (`docs/piano.md`).

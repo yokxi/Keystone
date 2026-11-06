@@ -9,7 +9,7 @@ merge che approvi tu.
 |---|---|---|
 | Sim | simulato, senza API: per provare il flusso | — |
 | Claude | Claude Agent SDK, chiave API o login personale | `docs/motore-claude.md` |
-| Codex | **sperimentale · non ancora verificato con un modello reale** | `docs/motore-codex.md` |
+| Codex | **non incluso in questa versione** (il codice c'è; arriva dopo la prova con un modello reale) | `docs/motore-codex.md` |
 
 Il motore Codex è stato verificato sulla CLI vera con un modello locale finto, ma non ancora con un
 modello vero. L'etichetta resta finché la prova reale non è stata fatta: vedi `docs/piano.md`, "Da
@@ -25,7 +25,8 @@ npm run app                           # l'interfaccia (in un altro terminale)
 
 Per l'app portabile (senza sorgenti né Node): `npm run package -w app` (vedi `docs/pacchetto.md`).
 
-Con un motore vero: `--engine claude` o `--engine codex`. Per un team misto: `--lead-engine` e
+Con un motore vero: `--engine claude` (Codex non è incluso in questa versione; per prove di
+sviluppo: `KEYSTONE_ENABLE_CODEX=1`). Per un team misto: `--lead-engine` e
 `--worker-engine`. Tutte le opzioni: `npm run orchestrator -- --help`. Le stesse impostazioni si
 possono scrivere in `~/.keystone/config.json` (vedi `docs/configurazione.md`).
 
@@ -38,4 +39,5 @@ possono scrivere in `~/.keystone/config.json` (vedi `docs/configurazione.md`).
 - `docs/skill.md`: le regole in markdown per gli agenti (del repository e personali).
 - `docs/configurazione.md`: il file `~/.keystone/config.json`.
 - `docs/pacchetto.md`: l'app portabile e come avvia l'orchestratore.
+- `docs/database.md`: l'accesso degli agenti ai database, in sola lettura.
 - `docs/piano.md`: le fasi successive.
