@@ -36,6 +36,7 @@ documentato qui.
 
 | Entità | Campi |
 |---|---|
+| `Repo.db` | le connessioni a database del repository (`DbConnection[]`), senza password |
 | `Agent` | `id`, `name`, `role` (`lead`/`worker`), `engine` (`sim`/`claude`/`codex`), `model` (nome visualizzato, es. "Opus 5.5"), `state`, `activity`, `taskId?`, `worktree?`, `paused`, `active`, `costUsd`, `tokens`, `skills?` (le skill ricevute nell'ultimo turno: `{ id, source, name }[]`; assente = nessun turno ancora) |
 | `Task` | `id` (t1…), `title`, `description?`, `status`, `deps[]`, `assignee?`, `priority`, `goalId?`, `repoId?`, `branch?`, `worktree?`, `ci`, `summary?`, `blockedReason?`, `report?` (resoconto del worker), `visualChecks?` (pagine da verificare), `visual?` (esito della verifica visuale: per pagina `before` e `after`, ciascuno con `shot?`, `error?` e `diagnostics?` = `{ console[], errors[], failedRequests[], truncated? }`), `createdBy`, `createdAt`, `updatedAt` |
 | `Goal` | `id` (g1…), `text`, `status` (`planning`/`active`/`paused`/`done`/`failed`/`cancelled`; `paused` = fermo perché ha raggiunto il tetto di spesa), `progress` 0..1, `repoId?`, `costUsd` (spesa registrata), `budgetUsd?` (tetto di spesa; assente = nessun tetto), `pausedFrom?`, `createdAt` |
@@ -47,6 +48,7 @@ documentato qui.
 | `LogEntry` | `ts`, `kind` (`text`/`tool`/`result`/`error`/`diff`/`test`/`permission`), `text` |
 | `OrchestratorStatus` | `version`, `auth` (`ok`/`failed`/`unknown`), `message`, `costUsd`, `tokens`, `userName`, `userNameSource`, `profile`, `billing`, `costIncomplete` |
 | `Skill` | `id` (nome del file senza `.md`), `source` (`repo`/`personal`), `repoId?`, `branch?` (il branch da cui è letta), `draft?` (contenuto valido: `name`, `description?`, `appliesTo` `lead`/`worker`/`tutti`, `when[]` `sempre`/`piano`/`lavoro`/`review`, `files[]` schemi di file, `enabled`, `body`), `error?` (file non valido), `override?` (attivazione solo tua), `effective` (viene consegnata agli agenti), `pending?` (`new`/`modified`/`deleted`: il tuo checkout è diverso dal branch), `local?` / `localError?` (la versione nel checkout), `unconfirmed?` (solo personali: impronta SHA-256 del file creato o cambiato fuori dall'app, che gli agenti non ricevono finché non lo confermi con `skill.confirm`). Formato del file in `docs/skill.md` |
+| `DbConnection` | `id` (minuscole, cifre, trattini: è il nome che usano gli agenti), `name`, `kind` (`sqlite`/`postgres`/`sqlserver`), `file?` (SQLite: assoluto o relativo al repository), `host?`, `port?`, `database?`, `user?`, `tls?` (default sì), `trustServerCertificate?`, `maxRows` (1-5000), `timeoutSec` (1-300), `approveEachQuery`, `readOnlyUserConfirmed` (obbligatorio per i server). **Mai la password**: vedi `db.secret`. Dettagli in `docs/database.md` |
 | `DiffFile` | `path`, `oldPath?`, `status` (`added`/`modified`/`deleted`/`renamed`), `binary`, `additions`, `deletions`, `hunks[]` {`header`, `oldStart`, `newStart`, `lines[]` {`kind`: `add`/`del`/`ctx`, `text`, `oldNo?`, `newNo?`}} |
 
 **Stati di un agente:** `idle`, `thinking`, `reading`, `editing`, `running`, `testing`,
@@ -257,6 +259,26 @@ file è cambiato di nuovo la conferma è rifiutata. Risultato: `{ skillId }`.
 ### `skills.refresh`
 `{}`: rilegge le skill (per esempio dopo un commit fatto fuori da Keystone) e manda `skills`.
 Risultato: `{ skills }` (quante sono).
+
+### `db.save`
+`{ repoId, connection: DbConnection }`: crea o sostituisce (stesso `id`) una connessione a database
+del repository, al massimo 10 per repository. Arriva a tutti come `repo.upsert` (`Repo.db`).
+Risultato: `{ repoId, connectionId }`.
+
+### `db.delete`
+`{ repoId, connectionId }`: toglie la connessione e la sua password dalla memoria
+dell'orchestratore. Risultato: `{ repoId, connectionId }`.
+
+### `db.secret`
+`{ repoId, connectionId, password: string|null }` (da 4 a 1000 caratteri): la password di una connessione, mandata dal
+processo main dell'app (che la conserva cifrata con `safeStorage`). L'orchestratore la tiene solo in
+memoria: mai nello stato, nei log, nel registro delle query, nei prompt o nell'ambiente degli agenti,
+e la toglie dai messaggi d'errore. `null` la toglie. Il renderer non può mandare questo messaggio.
+Risultato: `{ connectionId, loaded }` (mai la password).
+
+### `db.test`
+`{ repoId, connectionId }`: prova la connessione (apre, elenca le tabelle, chiude).
+Risultato: `{ connectionId, text }`; un errore arriva come ack con `ok: false`.
 
 ### `worktrees.prune`
 `{}`: pulizia manuale dei worktree. Chiude i worktree attivi di task finiti, annullati o

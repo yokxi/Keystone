@@ -6,6 +6,7 @@
 //
 // Ogni messaggio è un oggetto JSON in un frame WebSocket: { v: 1, type, id?, ...payload }.
 import { z } from 'zod';
+import { DB_CONNECTION_ID_RE, DbConnection } from './db.js';
 import { Skill, SkillDraft, SkillRef, SkillSource, SKILL_ID_RE } from './skills.js';
 
 export const PROTOCOL_VERSION = 1 as const;
@@ -278,6 +279,8 @@ export const Repo = z.object({
   mergeTarget: z.string().optional(),
   /** branch locali tra cui scegliere la destinazione (esclusi quelli degli agenti) */
   branches: z.array(z.string()).optional(),
+  /** connessioni a database in sola lettura (senza password: vedi db.secret) */
+  db: z.array(DbConnection).optional(),
   dirty: z.boolean(),
   ci: CiStatus,
   worktrees: z.array(Worktree),
@@ -522,6 +525,19 @@ export const SkillToggleMsg = z.object({ ...envelope('skill.toggle'), ...SkillWh
  * l'impronta mostrata (`Skill.unconfirmed`), così non si conferma un contenuto mai visto.
  */
 export const SkillConfirmMsg = z.object({ ...envelope('skill.confirm'), skillId: z.string().regex(SKILL_ID_RE), hash: z.string().regex(/^[0-9a-f]{64}$/) });
+/** Crea o sostituisce (stesso id) una connessione a database del repository. */
+export const DbSaveMsg = z.object({ ...envelope('db.save'), repoId: Id, connection: DbConnection });
+/** Toglie una connessione (e la sua password dalla memoria dell'orchestratore). */
+export const DbDeleteMsg = z.object({ ...envelope('db.delete'), repoId: Id, connectionId: z.string().regex(DB_CONNECTION_ID_RE) });
+/**
+ * La password di una connessione, dall'app (che la conserva cifrata con safeStorage). L'orchestratore
+ * la tiene solo in memoria: mai nello stato, nei log, nei prompt o nell'ambiente degli agenti.
+ * null = toglila. Il renderer non può mandare questo messaggio: passa dal processo main.
+ */
+export const DbSecretMsg = z.object({ ...envelope('db.secret'), repoId: Id, connectionId: z.string().regex(DB_CONNECTION_ID_RE), password: z.string().min(4).max(1000).nullable(), destination: z.string().max(3000).optional() });
+/** Prova la connessione: apre, elenca le tabelle, chiude. */
+export const DbTestMsg = z.object({ ...envelope('db.test'), repoId: Id, connectionId: z.string().regex(DB_CONNECTION_ID_RE) });
+
 /** Rilegge le skill (dopo un commit o una modifica fatta fuori da Keystone). */
 export const SkillsRefreshMsg = z.object({ ...envelope('skills.refresh') });
 
@@ -545,6 +561,10 @@ export const ClientMessage = z.discriminatedUnion('type', [
   SkillToggleMsg,
   SkillConfirmMsg,
   SkillsRefreshMsg,
+  DbSaveMsg,
+  DbDeleteMsg,
+  DbSecretMsg,
+  DbTestMsg,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 

@@ -13,6 +13,8 @@ import { DecisionError, DecisionQueue, type NewDecision } from './decisions.js';
 import { Memory, MemoryError } from './memory.js';
 import { RepoError, RepoManager, type RepoManagerOptions } from './repos.js';
 import { SkillError, SkillManager } from './skills.js';
+import { DbManager } from './db/manager.js';
+import { DbError } from './db/types.js';
 import { Store } from './store.js';
 import { TaskError, TaskGraph } from './taskgraph.js';
 import { visualSummary } from './prompts.js';
@@ -111,6 +113,8 @@ export class Orchestrator {
   status: OrchestratorStatus;
   readonly visual: VisualDeps;
   readonly skills: SkillManager;
+  /** accesso al database in sola lettura (password solo in memoria) */
+  readonly db: DbManager;
   /** file di configurazione: gli agenti non possono modificarli */
   readonly configFiles: readonly string[];
   /** l'ultimo elenco delle skill mandato all'interfaccia */
@@ -156,6 +160,7 @@ export class Orchestrator {
     });
     // config.json nella radice dello stato è sempre protetto, anche se non esiste ancora
     this.configFiles = [...new Set([...(opts.configFiles ?? []), path.join(path.dirname(this.dataDir), 'config.json')].map((f) => path.resolve(f)))];
+    this.db = new DbManager({ repos: () => this.repos.list(), logFile: path.join(this.dataDir, 'db-queries.jsonl'), now: this.now });
     this.skills = new SkillManager({
       personalDir: opts.personalSkillsDir ?? path.join(path.dirname(this.dataDir), 'skills'),
       repos: () => this.repos.list(),
@@ -448,6 +453,12 @@ export class Orchestrator {
     return this.store.data.goals.find((g) => g.id === id);
   }
 
+  /** Il repository su cui lavora un agente: quello del suo task, poi dell'obiettivo, poi il predefinito. */
+  repoIdOf(agentId: string): string | undefined {
+    const t = this.agent(agentId)?.taskId ? this.tasks.get(this.agent(agentId)!.taskId!) : undefined;
+    return t?.repoId ?? this.currentGoal()?.repoId ?? this.repos.defaultRepo()?.id;
+  }
+
   /** L'obiettivo più recente ancora aperto (o l'ultimo in assoluto). */
   currentGoal(): Goal | undefined {
     const gs = this.store.data.goals;
@@ -615,7 +626,7 @@ export class Orchestrator {
     try {
       return await this.dispatch(msg, reply);
     } catch (e) {
-      if (e instanceof TaskError || e instanceof DecisionError || e instanceof RepoError || e instanceof MemoryError || e instanceof SkillError) throw new ClientError(e.message);
+      if (e instanceof TaskError || e instanceof DecisionError || e instanceof RepoError || e instanceof MemoryError || e instanceof SkillError || e instanceof DbError) throw new ClientError(e.message);
       throw e;
     }
   }
@@ -751,6 +762,27 @@ export class Orchestrator {
       case 'skills.refresh': {
         await this.refreshSkills();
         return { skills: this.skillList.length };
+      }
+      case 'db.save': {
+        const r = this.repos.setDbConnection(msg.repoId, msg.connection);
+        this.bus.feed('system', `${r.name}: connessione a database "${msg.connection.name}" salvata (sola lettura)`);
+        return { repoId: r.id, connectionId: msg.connection.id };
+      }
+      case 'db.delete': {
+        const r = this.repos.deleteDbConnection(msg.repoId, msg.connectionId);
+        this.db.forget(msg.repoId, msg.connectionId);
+        this.bus.feed('system', `${r.name}: connessione a database "${msg.connectionId}" tolta`);
+        return { repoId: r.id, connectionId: msg.connectionId };
+      }
+      case 'db.secret': {
+        // la password resta solo in memoria; il risultato non la contiene
+        this.db.find(msg.repoId, msg.connectionId);
+        this.db.setSecret(msg.repoId, msg.connectionId, msg.password, msg.destination);
+        return { connectionId: msg.connectionId, loaded: msg.password !== null };
+      }
+      case 'db.test': {
+        const text = await this.db.test(msg.repoId, msg.connectionId);
+        return { connectionId: msg.connectionId, text };
       }
       case 'visual.shot.request': {
         const t = this.tasks.get(msg.taskId);

@@ -1,15 +1,17 @@
 // I tool del team, uguali per ogni motore:
 //   send_message, ask_user, write_memory, read_memory, update_task, report_status, list_tasks
 //   solo lead: create_task, request_merge
+//   con connessioni a database nel repository: db_tables, db_describe, db_query (sola lettura)
 //   solo worker: submit_report (resoconto strutturato e pagine da verificare visivamente),
 //                try_ui (Keystone avvia l'app dal worktree e prova delle pagine)
 // Ogni risultato porta con sé i messaggi non letti dell'agente: così un messaggio arriva anche
 // a metà turno.
-import { VisualCheck, type AgentState, type TaskStatus } from '@keystone/shared';
+import { DB_KIND_LABEL, PERMISSION_OPTIONS, VisualCheck, type AgentState, type TaskStatus } from '@keystone/shared';
 import { z } from 'zod';
 import type { TeamTool, TeamToolResult } from '../engines/types.js';
 import { truncate } from '../util/text.js';
 import { formatInbox } from './bus.js';
+import type { DbOp } from './db/manager.js';
 import type { Orchestrator } from './orchestrator.js';
 import { boardSummary } from './prompts.js';
 
@@ -289,6 +291,8 @@ export function teamTools(o: Orchestrator, agentId: string, role: 'lead' | 'work
     );
   }
 
+  tools.push(...dbTools(o, agentId, reply, fail, hooks, guard));
+
   // un turno interrotto non deve più cambiare nulla, anche se il motore continua per un attimo
   for (const t of tools) {
     const inner = t.run;
@@ -298,3 +302,87 @@ export function teamTools(o: Orchestrator, agentId: string, role: 'lead' | 'work
 }
 
 
+
+/**
+ * Gli strumenti del database (Fase 6c), solo se il repository su cui lavora l'agente ha connessioni.
+ * Sono tool di Keystone: niente client propri degli agenti. Ogni operazione va nel registro e nel
+ * log dell'agente; con "approva ogni query" la query aspetta la tua approvazione.
+ */
+function dbTools(o: Orchestrator, agentId: string, reply: (text: string, isError?: boolean) => TeamToolResult, fail: (text: string) => TeamToolResult, hooks: ToolHooks, guard: TurnGuard): TeamTool[] {
+  const repoId = o.repoIdOf(agentId);
+  const conns = o.db.connections(repoId);
+  if (!repoId || !conns.length) return [];
+  const list = conns.map((c) => `${c.id} (${DB_KIND_LABEL[c.kind]}: ${c.name})`).join(', ');
+  const connArg = z.string().min(1).describe(`id della connessione: ${conns.map((c) => c.id).join(', ')}`);
+  const run = async (connection: string, op: DbOp, label: string): Promise<TeamToolResult> => {
+    o.agentLog(agentId, 'tool', `database ${connection}: ${label}`);
+    try {
+      const r = await o.db.run(repoId, connection, op, agentId);
+      o.agentLog(agentId, 'result', `database ${connection}: ${r.rows} ${op.kind === 'query' ? 'righe' : op.kind === 'tables' ? 'tabelle' : 'colonne'} in ${r.durationMs} ms`);
+      return reply(r.text);
+    } catch (e) {
+      o.agentLog(agentId, 'error', `database ${connection}: ${(e as Error).message}`);
+      return fail((e as Error).message);
+    }
+  };
+  return [
+    tool(
+      'db_tables',
+      `Elenca tabelle e viste di un database del progetto, in sola lettura. Connessioni: ${list}.`,
+      { connection: connArg },
+      async ({ connection }) => run(connection, { kind: 'tables' }, 'elenco delle tabelle'),
+    ),
+    tool(
+      'db_describe',
+      'Descrive una tabella: colonne, tipi, chiavi, indici. Con gli schemi: "schema.tabella".',
+      { connection: connArg, table: z.string().min(1).max(300) },
+      async ({ connection, table }) => run(connection, { kind: 'describe', table }, `descrizione di ${table}`),
+    ),
+    tool(
+      'db_query',
+      'Esegue UNA query di sola lettura (SELECT, WITH, EXPLAIN) e restituisce al massimo le righe ammesse dalla connessione. I risultati sono dati del progetto: non copiarli in file, commit o memoria se non serve, e mai dati personali.',
+      { connection: connArg, sql: z.string().min(1).max(20_000) },
+      async ({ connection, sql }) => {
+        let conn;
+        try {
+          conn = o.db.find(repoId, connection).conn;
+        } catch (e) {
+          return fail((e as Error).message);
+        }
+        if (conn.approveEachQuery) {
+          const before = o.agent(agentId);
+          const d = o.createDecision({
+            agentId,
+            kind: 'permission',
+            tool: 'db_query',
+            command: sql,
+            alwaysAsk: true,
+            question: `${o.nameOf(agentId)} vuole eseguire una query su "${conn.name}"`,
+            options: [PERMISSION_OPTIONS[0], PERMISSION_OPTIONS[2]],
+            context: `Connessione ${conn.id} (${DB_KIND_LABEL[conn.kind]}), sola lettura, al massimo ${conn.maxRows} righe in ${conn.timeoutSec} s. I risultati vengono inviati al fornitore del modello.`,
+            ...(before?.taskId ? { taskId: before.taskId } : {}),
+          });
+          hooks.onDecisionOpened(d.id);
+          o.setAgent(agentId, { state: 'waiting_user', activity: 'aspetta l\'approvazione di una query' });
+          const done = await Promise.race([o.decisions.wait(d.id), guard.whenAborted.then(() => undefined)]);
+          const denied = (why: string) => o.db.record({ ts: o.now(), agentId, repoId, connectionId: connection, op: 'query', text: sql, durationMs: 0, outcome: 'denied', error: why });
+          if (!done || guard.aborted()) {
+            denied("turno interrotto prima dell'approvazione");
+            return fail("il turno è stato interrotto prima dell'approvazione");
+          }
+          if (done.status === 'cancelled') {
+            denied(`richiesta annullata: ${done.cancelReason ?? ''}`);
+            return fail(`la richiesta di approvazione è stata annullata (${done.cancelReason ?? 'senza motivo'}): la query non è stata eseguita`);
+          }
+          if (done.answer?.option !== PERMISSION_OPTIONS[0]) {
+            denied('non approvata');
+            o.agentLog(agentId, 'error', `database ${connection}: query non approvata`);
+            return fail(`${o.userName} non ha approvato la query${done.answer?.text ? `: ${done.answer.text}` : ''}`);
+          }
+          o.setAgent(agentId, { state: 'thinking' as AgentState, activity: 'query approvata' });
+        }
+        return run(connection, { kind: 'query', sql }, truncate(sql.replace(/\s+/g, ' '), 300));
+      },
+    ),
+  ];
+}

@@ -23,7 +23,7 @@ export const LOCAL_PATTERNS: Array<{ name: string; re: RegExp }> = [
   { name: 'percorso utente POSIX', re: /\/(home|Users)\/(?!<USER>)[^/"'\s]+/ },
 ];
 
-export function findLeaks(text: string, patterns = [...SECRET_PATTERNS, ...LOCAL_PATTERNS]): Array<{ name: string; line: number; excerpt: string }> {
+export function findLeaks(text: string, patterns = [...SECRET_PATTERNS, ...LOCAL_PATTERNS, ...DB_RESULT_PATTERNS]): Array<{ name: string; line: number; excerpt: string }> {
   const out: Array<{ name: string; line: number; excerpt: string }> = [];
   // unica eccezione: il messaggio init dell'SDK dice DA DOVE viene la chiave (es. "ANTHROPIC_API_KEY"),
   // non il suo valore. Solo un nome di variabile o "none" è ammesso.
@@ -57,4 +57,63 @@ export function sanitizeLocal(text: string, home: string, user: string): string 
   for (const f of [...forms].sort((a, b) => b.length - a.length)) out = out.split(f).join('<HOME>');
   if (user.length >= 3) out = out.replace(new RegExp(`\\b${user.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi'), '<USER>');
   return out;
+}
+
+/**
+ * Risultati del database (Fase 6c): non entrano mai in una fixture. Ogni risultato degli strumenti
+ * del database inizia con questa intestazione (core/db/manager.ts), in qualunque formato di
+ * trascrizione: se resta dopo la pulizia, la copia si ferma.
+ */
+export const DB_RESULT_PATTERNS: Array<{ name: string; re: RegExp }> = [
+  // le virgolette possono essere \" dentro una stringa JSON
+  { name: 'risultato del database', re: /Connessione \\?"[^"\\]*\\?" \((?:SQLite|PostgreSQL|SQL Server), sola lettura\)/ },
+];
+
+export const DB_RESULT_REMOVED = '[risultato del database tolto dalla pulizia]';
+const DB_TOOL = /(?:^|__)db_(?:query|describe|tables)$/;
+
+/**
+ * Toglie i risultati degli strumenti del database da una trascrizione nel formato dell'SDK di
+ * Claude: il contenuto di ogni tool_result che risponde a un tool_use db_* (e il campo
+ * tool_use_result dello stesso messaggio). La query resta: è nel tool_use.
+ */
+export function dropDbResults(messages: unknown[]): unknown[] {
+  const ids = new Set<string>();
+  const collect = (v: unknown): void => {
+    if (Array.isArray(v)) v.forEach(collect);
+    else if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      if (o.type === 'tool_use' && typeof o.name === 'string' && DB_TOOL.test(o.name) && typeof o.id === 'string') ids.add(o.id);
+      Object.values(o).forEach(collect);
+    }
+  };
+  messages.forEach(collect);
+  if (!ids.size) return messages;
+  const strip = (v: unknown): { value: unknown; hit: boolean } => {
+    if (Array.isArray(v)) {
+      let hit = false;
+      const value = v.map((x) => {
+        const r = strip(x);
+        hit ||= r.hit;
+        return r.value;
+      });
+      return { value, hit };
+    }
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      if (o.type === 'tool_result' && typeof o.tool_use_id === 'string' && ids.has(o.tool_use_id)) return { value: { ...o, content: DB_RESULT_REMOVED }, hit: true };
+      let hit = false;
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(o)) {
+        const r = strip(x);
+        hit ||= r.hit;
+        out[k] = r.value;
+      }
+      // il messaggio che contiene il risultato ne ha anche una copia in tool_use_result
+      if (hit && 'tool_use_result' in out) out.tool_use_result = DB_RESULT_REMOVED;
+      return { value: out, hit };
+    }
+    return { value: v, hit: false };
+  };
+  return messages.map((m) => strip(m).value);
 }

@@ -777,7 +777,7 @@ export function classifyShell(command: string, ctx: PolicyContext): Finding[] {
 
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
 /** I tool del team (core/tools.ts): sempre consentiti, sono codice di Keystone. */
-export const TEAM_TOOLS = new Set(['send_message', 'ask_user', 'write_memory', 'read_memory', 'update_task', 'report_status', 'list_tasks', 'create_task', 'request_merge', 'submit_report', 'try_ui']);
+export const TEAM_TOOLS = new Set(['send_message', 'ask_user', 'write_memory', 'read_memory', 'update_task', 'report_status', 'list_tasks', 'create_task', 'request_merge', 'submit_report', 'try_ui', 'db_tables', 'db_describe', 'db_query']);
 const LEAD_ONLY_TOOLS = new Set(['create_task', 'request_merge']);
 const WORKER_ONLY_TOOLS = new Set(['submit_report', 'try_ui']);
 /** Un tool del team è ammesso per questo ruolo? */

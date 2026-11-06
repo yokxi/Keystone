@@ -25,8 +25,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Decision, DiffFile, Repo, VisualConfig, Worktree } from '@keystone/shared';
-import { MERGE_OPTIONS } from '@keystone/shared';
+import type { DbConnection, Decision, DiffFile, Repo, VisualConfig, Worktree } from '@keystone/shared';
+import { DB_LIMITS, MERGE_OPTIONS } from '@keystone/shared';
 import { ensureDir, samePath } from '../util/fsx.js';
 import { git, gitOut, identityEnv } from '../util/git.js';
 import { deleteKeystoneBranch, listKeystoneBranches, type KeystoneBranch } from './branches.js';
@@ -34,6 +34,7 @@ import { runShell } from '../util/proc.js';
 import { lastLines, slugify } from '../util/text.js';
 import type { Ctx } from './context.js';
 import { parseUnifiedDiff } from './diff.js';
+import { validateConnection } from './db/manager.js';
 import { validateVisualConfig } from './visual.js';
 import { guardActive, guardInstalled, installGuard, previewGuard, writeGuardFile, WORKTREE_PREFIX, type GuardPreview } from './gitsafety.js';
 
@@ -654,6 +655,27 @@ export class RepoManager {
       if (bad) throw new RepoError(bad, 'refused');
       r.visual = clean;
     }
+    this.changed(r);
+    return r;
+  }
+
+  /** Crea o sostituisce (stesso id) una connessione a database del repository (senza password). */
+  setDbConnection(repoId: string, conn: DbConnection): Repo {
+    const r = this.require(repoId);
+    const list = r.db ?? [];
+    const clean = validateConnection(conn, list, DB_LIMITS.perRepo);
+    const i = list.findIndex((c) => c.id === clean.id);
+    r.db = i < 0 ? [...list, clean] : list.map((c, k) => (k === i ? clean : c));
+    this.changed(r);
+    return r;
+  }
+
+  /** Toglie una connessione a database. */
+  deleteDbConnection(repoId: string, connectionId: string): Repo {
+    const r = this.require(repoId);
+    if (!r.db?.some((c) => c.id === connectionId)) throw new RepoError(`nessuna connessione ${connectionId} in ${r.name}`, 'refused');
+    r.db = r.db.filter((c) => c.id !== connectionId);
+    if (!r.db.length) delete r.db;
     this.changed(r);
     return r;
   }

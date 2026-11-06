@@ -2,15 +2,16 @@
 //
 //   npx tsx orchestrator/scripts/sanitize-transcripts.ts <cartella-registrazioni> [--write]
 //
-// Sostituisce percorsi della home e nome utente con <HOME> e <USER>. Se dopo la pulizia resta
-// qualcosa che sembra un segreto (chiavi, token, intestazioni, variabili di credenziali, dump
-// dell'ambiente) NON copia nulla ed elenca file e righe, senza mostrare il valore.
+// Toglie i risultati degli strumenti del database (le query restano). Sostituisce percorsi della
+// home e nome utente con <HOME> e <USER>. Se dopo la pulizia resta qualcosa che sembra un segreto
+// (chiavi, token, intestazioni, variabili di credenziali, dump dell'ambiente) o un risultato del
+// database, NON copia nulla ed elenca file e righe, senza mostrare il valore.
 // Senza --write mostra solo cosa farebbe.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findLeaks, sanitizeLocal } from '../test/transcript-secrets.js';
+import { dropDbResults, findLeaks, sanitizeLocal } from '../test/transcript-secrets.js';
 
 const [src, ...flags] = process.argv.slice(2);
 if (!src) {
@@ -39,7 +40,9 @@ for (const f of files) {
     .readFileSync(path.join(src, f), 'utf8')
     .split('\n')
     .filter((l) => l.trim());
-  const text = `${lines.map((l) => JSON.stringify(clean(JSON.parse(l)))).join('\n')}\n`;
+  // i risultati degli strumenti del database non entrano mai nelle fixture (restano le query)
+  const messages = dropDbResults(lines.map((l) => JSON.parse(l) as unknown));
+  const text = `${messages.map((m) => JSON.stringify(clean(m))).join('\n')}\n`;
   const leaks = findLeaks(text);
   if (leaks.length) {
     problems += leaks.length;

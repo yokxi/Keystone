@@ -266,6 +266,17 @@ comando, chiede.
   del 20 ottobre. Si usa quindi la 44.10.1, l'ultima della serie. Quando la 44.10.1 avrà più di
   due settimane la regola sarà di nuovo rispettata, senza bisogno di cambiare versione.
 
+- **Driver di database (Fase 6c)**: `pg` 8.23.1 e `pg-cursor` 2.22.1 (PostgreSQL), `tedious`
+  20.3.8 (SQL Server), tutti pubblicati da più di due settimane. `tedious` dipende dalle librerie di
+  autenticazione di Azure: `@azure/identity` 4.14.0 portava `@azure/msal-node` 6.0.1, colpito
+  dall'avviso [GHSA-xcx6-jx8p-x3h5](https://github.com/advisories/GHSA-xcx6-jx8p-x3h5) (gravità
+  alta: nel flusso di autorizzazione via browser i parametri possono finire a un indirizzo scelto
+  da un attaccante; Keystone non usa quel flusso). **Eccezione per correzione di sicurezza** (6
+  novembre 2026): `@azure/identity` 4.14.1 (29 ottobre), `@azure/msal-node` 7.1.2 (27 ottobre) e
+  `@azure/msal-common` 16.15.0 (27 ottobre), meno di due settimane; nessun'altra versione cambiata.
+  Torneranno nella regola il 12 novembre 2026. Un override di `@azure/msal-node` alla sola 7.1.0
+  (del 13 ottobre) non è stato applicato da npm sul lockfile esistente.
+
 - **playwright-core 1.64.1** (pubblicata il 14 ottobre 2026), per la verifica visuale. È solo la
   libreria, senza browser: i browser di Playwright vengono scaricati soltanto dopo il tuo permesso
   (vedi `docs/verifica-visuale.md`).
@@ -344,6 +355,41 @@ Dettagli in `docs/pacchetto.md`:
 - l'app impacchettata avvia solo il bundle dell'orchestratore, mai sorgenti accanto;
 - limiti: niente firma del codice, niente asar né controllo d'integrità della cartella dell'app,
   niente installatore (rinviato per una dipendenza con un avviso di sicurezza, vedi `docs/piano.md`).
+
+## 6sexies. Database in sola lettura
+
+Dettagli in `docs/database.md`. In sintesi:
+
+- **La garanzia vera è l'utente del database con soli permessi di lettura.** Per PostgreSQL e SQL
+  Server la configurazione non si salva senza la tua conferma esplicita (non è una casella già
+  spuntata). In più, dove il database lo permette: PostgreSQL lavora in una transazione `READ ONLY`
+  con `default_transaction_read_only`; SQLite apre il file in sola lettura con un authorizer che
+  ammette solo letture (blocca anche `VACUUM INTO`, `ATTACH`, i `PRAGMA` che cambiano impostazioni e
+  le estensioni, che altrimenti funzionerebbero su un file aperto in sola lettura). SQL Server non ha
+  transazioni in sola lettura: lì conta solo l'utente.
+- Il controllo del testo della query ("solo SELECT") è **solo un aiuto**: ferma gli errori evidenti,
+  non è una garanzia.
+- Gli agenti accedono solo con gli strumenti di Keystone (`db_tables`, `db_describe`, `db_query`),
+  mai con un client proprio, e non hanno le credenziali.
+- **Password**: cifrate dall'app con `safeStorage`, passate all'orchestratore solo in memoria. Mai
+  nello stato, nei log, nel registro delle query, nei prompt, nelle trascrizioni o nell'ambiente
+  degli agenti; vengono tolte dai messaggi d'errore dei driver. Un test lo verifica cercando la
+  password in tutti i file del profilo.
+- Limiti di righe e di tempo per connessione. SQLite gira in un processo a parte (ambiente vuoto,
+  limite di memoria, terminato allo scadere del tempo): una query che costruisce valori enormi fa
+  crollare solo quel processo, non l'orchestratore.
+- La password vale per la destinazione per cui l'hai scritta (server, porta, database, utente,
+  cifratura, certificato): se un client locale cambia l'indirizzo di una connessione, la password
+  non viene più usata né rimandata dall'app. Limite noto: il WebSocket locale dell'orchestratore non
+  ha un token, quindi un programma che gira sul tuo PC con il tuo utente può comandarlo (vale per
+  tutto Keystone, non solo per i database).
+- **Registro**: ogni operazione (testo, agente, connessione, durata, righe, esito) va in
+  `~/.keystone/<profilo>/db-queries.jsonl`, senza i risultati. Le operazioni si vedono anche nel log
+  dell'agente. Con "approva ogni query" ogni query aspetta la tua approvazione.
+- **Trascrizioni**: lo script di pulizia toglie i risultati degli strumenti del database, e una
+  fixture che contiene ancora un risultato viene rifiutata.
+- **Avviso**: i risultati delle query vengono inviati al fornitore del modello. Usa solo database di
+  sviluppo o con dati anonimizzati, mai di produzione.
 
 ## 7. Motore Claude
 
