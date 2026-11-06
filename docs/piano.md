@@ -4,7 +4,7 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
 
 ## Ordine delle fasi
 
-1. Fase Skill (regole per gli agenti e review sul riassunto)
+1. Fase Skill (regole per gli agenti e review sul riassunto) — fatta
 2. Fase 7 — File di configurazione
 3. Fase 8 — Pacchetto dell'app
 4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
@@ -17,7 +17,14 @@ repository. Quello che si condivide (codice, skill del repository in `.keystone/
 git, con i normali push e pull fatti dalle persone. Nella prima versione non c'è un server
 condiviso: niente stato, chiavi o code di lavoro comuni tra PC diversi.
 
-## Fase Skill — Regole per gli agenti
+## Fase Skill — Regole per gli agenti (fatta)
+
+Fatta: formato, lettura dal branch di destinazione, percorsi protetti, consegna uguale a Claude e
+Codex, pagina Skill, "salva come skill" dalla review, skill ricevute nel pannello dell'agente e
+review sul riassunto. Dettagli e limiti in `docs/skill.md`; resoconto in
+`docs/resoconti/skill.md`. Limite noto: con `file:` al primo turno di un task conta solo il testo
+del task (il worktree è ancora vuoto).
+
 
 **Cosa sono.** Una skill è un file markdown di regole per gli agenti. Due posti:
 
