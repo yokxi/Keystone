@@ -248,7 +248,8 @@ export class ClaudeEngine implements EngineAdapter {
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       DISABLE_AUTOUPDATER: '1',
     };
-    const effort = role === 'lead' ? (this.cfg.leadEffort ?? this.cfg.effort) : this.cfg.effort;
+    // l'effort del singolo agente (config.json) vale prima di quello del ruolo
+    const effort = (spec.effort as Options['effort']) ?? (role === 'lead' ? (this.cfg.leadEffort ?? this.cfg.effort) : this.cfg.effort);
     const model = spec.model || this.defaultModel(role);
     const options: Options = {
       cwd: spec.cwd,

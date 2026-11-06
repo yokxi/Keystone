@@ -236,6 +236,17 @@ describe('motore Codex: un turno (app-server finto)', () => {
   });
 });
 
+describe('motore Codex: effort', () => {
+  it("l'effort del singolo agente vale prima di quello del ruolo (max diventa xhigh)", async () => {
+    const a = fake({ account: { type: 'apiKey' }, steps: [] });
+    await drain(a.engine.startSession(spec(tmpDir(), { effort: 'max' })));
+    expect(a.entries().find((e) => e.msg?.method === 'turn/start')!.msg.params.effort).toBe('xhigh');
+    const b = fake({ account: { type: 'apiKey' }, steps: [] });
+    await drain(b.engine.startSession(spec(tmpDir(), { effort: 'low' })));
+    expect(b.entries().find((e) => e.msg?.method === 'turn/start')!.msg.params.effort).toBe('low');
+  });
+});
+
 describe('motore Codex nel team (app-server finto)', () => {
   it('lead e worker Codex: i tool del team passano dalla policy e girano sull\'orchestratore; un worker non può creare task', async () => {
     const dir = tmpDir('keystone-codex-team-');

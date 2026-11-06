@@ -503,7 +503,8 @@ export class CodexEngine implements EngineAdapter {
           throw new Error(`Codex non ha attivato la sandbox con scrittura (${JSON.stringify(started.sandbox)}): turno non avviato`);
         }
         if (aborted) throw new Error('interrotto');
-        const effort = codexEffort(spec.role === 'lead' ? (this.cfg.leadEffort ?? this.cfg.effort) : this.cfg.effort);
+        // l'effort del singolo agente (config.json) vale prima di quello del ruolo
+        const effort = codexEffort(spec.effort ?? (spec.role === 'lead' ? (this.cfg.leadEffort ?? this.cfg.effort) : this.cfg.effort));
         const t = await rpc.request<{ turn: { id: string } }>('turn/start', { threadId, input: turnInput(spec), ...(effort ? { effort } : {}) });
         turnId = t.turn.id;
         const res = await done;
