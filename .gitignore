@@ -12,3 +12,4 @@ coverage/
 
 # stato locale di sviluppo
 .keystone-home/
+app/release/

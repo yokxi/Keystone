@@ -359,7 +359,7 @@ textarea.input:focus, input.input:focus { border-color: var(--accent); }
 .dialog-list li { margin: 4px 0; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 .toast-area { position: fixed; right: 16px; bottom: 96px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
-.toast { padding: 10px 14px; max-width: 420px; font-size: 13px; border-left: 4px solid var(--accent); }
+.toast { padding: 10px 14px; max-width: 420px; font-size: 13px; border-left: 4px solid var(--accent); white-space: pre-line; overflow-wrap: anywhere; }
 .toast.warn { border-left-color: var(--warn); }
 .toast.need_user { border-left-color: var(--danger); }
 .banner { margin: 12px 22px 0; padding: 10px 14px; border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); display: flex; gap: 12px; align-items: center; }

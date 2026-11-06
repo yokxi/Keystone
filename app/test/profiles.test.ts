@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isValidProfileName, listProfiles, orchestratorArgs, resolveStartProfile } from '../src/main/profiles.js';
+import { orchestratorArgs } from '../src/main/orchestrator-launch.js';
+import { isValidProfileName, listProfiles, resolveStartProfile } from '../src/main/profiles.js';
 import { testOrchestrator, tmpDir } from '../../orchestrator/test/helpers.js';
 
 function home(): string {
@@ -43,7 +44,7 @@ describe('profili dell\'app', () => {
   });
 
   it('l\'orchestratore avviato dall\'app riceve porta e profilo scelti', () => {
-    expect(orchestratorArgs('main.ts', 7931, 'demo')).toEqual(['--import', 'tsx', 'main.ts', '--port', '7931', '--profile', 'demo']);
+    expect(orchestratorArgs({ main: 'main.ts', bundled: false }, 7931, 'demo')).toEqual(['--import', 'tsx', 'main.ts', '--port', '7931', '--profile', 'demo']);
   });
 
   it('l\'orchestratore dichiara il suo profilo, così l\'app può accorgersi di un profilo diverso', () => {

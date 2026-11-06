@@ -22,6 +22,8 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "start": "electron .",
-    "dev": "node scripts/build.mjs && electron ."
+    "dev": "node scripts/build.mjs && electron .",
+    "build:orchestrator": "node scripts/build-orchestrator.mjs",
+    "package": "node scripts/package.mjs"
   }
 }

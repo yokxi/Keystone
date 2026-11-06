@@ -333,6 +333,18 @@ Le skill sono regole in markdown che Keystone aggiunge alle istruzioni degli age
   controllo (file normale) e la lettura non c'è atomicità: il rischio è basso perché il file è
   protetto per gli agenti.
 
+## 6quinquies. App impacchettata
+
+Dettagli in `docs/pacchetto.md`:
+
+- fuse di Electron: `NODE_OPTIONS` e `--inspect` spenti (verificato: un `NODE_OPTIONS --require`
+  che inietta codice funziona con Electron normale e non con `Keystone.exe`), cookie cifrati;
+  RunAsNode resta acceso perché l'orchestratore gira con il Node di Electron;
+- `ELECTRON_RUN_AS_NODE` non arriva ai comandi degli agenti;
+- l'app impacchettata avvia solo il bundle dell'orchestratore, mai sorgenti accanto;
+- limiti: niente firma del codice, niente asar né controllo d'integrità della cartella dell'app,
+  niente installatore (rinviato per una dipendenza con un avviso di sicurezza, vedi `docs/piano.md`).
+
 ## 7. Motore Claude
 
 Dettagli in `docs/motore-claude.md`. In sintesi:

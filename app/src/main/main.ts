@@ -12,7 +12,8 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, session, shell, type
 import type { DiffFile, ServerMessage, ViewState } from '@keystone/shared';
 import { CHANNELS, type Ack, type ConnectionInfo, type UiEvent } from './api.js';
 import { isTrustedSender, validateCommand } from './ipc-validate.js';
-import { listProfiles, orchestratorArgs, resolveStartProfile } from './profiles.js';
+import { earlyExit, findOrchestrator, openStartLog, orchestratorArgs, startLogFile, tailLines } from './orchestrator-launch.js';
+import { listProfiles, resolveStartProfile } from './profiles.js';
 import { OrchestratorClient } from './orchestrator-client.js';
 
 const home = process.env.KEYSTONE_HOME?.trim() || path.join(os.homedir(), '.keystone');
@@ -137,7 +138,7 @@ function registerIpc(): void {
     guard(e);
     return { url, canStart: !!orchestratorEntry(), profile, profiles: listProfiles(home) };
   });
-  ipcMain.handle(CHANNELS.start, (e, requested: unknown): Ack => {
+  ipcMain.handle(CHANNELS.start, async (e, requested: unknown): Promise<Ack> => {
     guard(e);
     const r = resolveStartProfile(profile, requested, home);
     if (!r.ok) return { ok: false, error: r.error };
@@ -145,26 +146,44 @@ function registerIpc(): void {
   });
 }
 
-/** In sviluppo l'app può avviare l'orchestratore dai sorgenti (il packaging arriva in Fase 8). */
-function orchestratorEntry(): { root: string; main: string } | undefined {
-  const root = path.resolve(__dirname, '..', '..', '..');
-  const main = path.join(root, 'orchestrator', 'src', 'main.ts');
-  return fs.existsSync(main) && fs.existsSync(path.join(root, 'node_modules', 'tsx')) ? { root, main } : undefined;
+/** L'orchestratore: il bundle nell'app impacchettata, i sorgenti in sviluppo (orchestrator-launch.ts). */
+function orchestratorEntry() {
+  return findOrchestrator({ packaged: app.isPackaged, resourcesPath: process.resourcesPath, appDistDir: __dirname });
 }
 
-function startOrchestrator(startProfile: string): Ack {
+async function startOrchestrator(startProfile: string): Promise<Ack> {
   const entry = orchestratorEntry();
   if (!entry) return { ok: false, error: 'orchestratore non trovato: avvialo con "npm run orchestrator"' };
-  // l'eseguibile di Electron funziona anche come Node con ELECTRON_RUN_AS_NODE; la porta è quella
-  // a cui l'app è collegata, il profilo quello dell'app o quello scelto esplicitamente
-  const child = spawn(process.execPath, orchestratorArgs(entry.main, port, startProfile), {
-    cwd: entry.root,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', KEYSTONE_HOME: home },
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
+  // l'uscita dell'orchestratore va in ~/.keystone/<profilo>/orchestrator-avvio.log: serve a spiegare
+  // un avvio fallito (per esempio un config.json non valido)
+  const log = startLogFile(home, startProfile);
+  let child: ReturnType<typeof spawn>;
+  let fd: number | undefined;
+  try {
+    fd = openStartLog(log, new Date());
+    // l'eseguibile di Electron funziona anche come Node con ELECTRON_RUN_AS_NODE; la porta è quella
+    // a cui l'app è collegata, il profilo quello dell'app o quello scelto esplicitamente
+    child = spawn(process.execPath, orchestratorArgs(entry, port, startProfile), {
+      cwd: entry.cwd,
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', KEYSTONE_HOME: home },
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      windowsHide: true,
+    });
+  } catch (e) {
+    return { ok: false, error: `orchestratore non avviato: ${(e as Error).message}` };
+  } finally {
+    // il figlio ha il suo handle del file: il padre chiude il proprio in ogni caso
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  const early = await earlyExit(child, 2500);
   child.unref();
+  if (early) {
+    const why = early.error ?? tailLines(log).replace(/^Keystone:\s*/m, '');
+    const head = early.error ? "l'orchestratore non è partito" : `l'orchestratore si è fermato all'avvio (codice ${early.code})`;
+    const lines = [`${head}${why ? ':' : ''}`, ...(why ? [why] : []), `Dettagli in ${log}`];
+    return { ok: false, error: lines.join('\n') };
+  }
   return { ok: true, result: { profile: startProfile } };
 }
 

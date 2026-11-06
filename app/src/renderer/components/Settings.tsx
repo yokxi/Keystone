@@ -38,7 +38,7 @@ export function Settings({ state, send }: Props) {
             void send({ type: 'settings.set', userName: name.trim() || null });
           }}
         >
-          <input className="input" style={{ maxWidth: 320 }} data-testid="user-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} placeholder="es. Aurora" />
+          <input className="input" style={{ maxWidth: 320 }} data-testid="user-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} placeholder="es. Maria" />
           <button className="btn primary" type="submit" disabled={!name.trim() || name.trim() === current}>
             Salva
           </button>

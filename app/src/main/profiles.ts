@@ -34,8 +34,3 @@ export function resolveStartProfile(appProfile: string, requested: unknown, home
   if (requested !== appProfile && !listProfiles(home).includes(requested)) return { ok: false, error: `il profilo "${requested}" non esiste` };
   return { ok: true, profile: requested };
 }
-
-/** Argomenti per avviare l'orchestratore dai sorgenti con il profilo indicato. */
-export function orchestratorArgs(main: string, port: number, profile: string): string[] {
-  return ['--import', 'tsx', main, '--port', String(port), '--profile', profile];
-}
