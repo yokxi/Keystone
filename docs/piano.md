@@ -5,7 +5,7 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
 ## Ordine delle fasi
 
 1. Fase Skill (regole per gli agenti e review sul riassunto) — fatta
-2. Fase 7 — File di configurazione
+2. Fase 7 — File di configurazione — fatta
 3. Fase 8 — Pacchetto dell'app
 4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
 5. Fase 6c — Accesso al database in sola lettura: spostata dopo la pubblicazione
@@ -56,10 +56,17 @@ memoria, i `CLAUDE.md` / `AGENTS.md` o i server MCP nativi dei motori: l'isolame
 file toccati, esito dei test, schermate prima/dopo, rischi. Il diff sta in una scheda separata.
 (Non era stato fatto nella 6b parte 2, quindi entra in questa fase.)
 
-## Fase 7 — File di configurazione
+## Fase 7 — File di configurazione (fatta)
 
 `~/.keystone/config.json`: motore e modello per agente, effort, numero di worker e le altre
 impostazioni oggi passate da riga di comando.
+
+Fatta: schema rigido, precedenza file < ambiente < riga di comando, motore/modello/effort per
+singolo agente, `--config`, `--no-config`, `--show-config`; il file è un percorso protetto per gli
+agenti. `--codex-path`, `--ci` e `--record` restano solo da riga di comando. Dettagli in
+`docs/configurazione.md`; resoconto in `docs/resoconti/fase-7.md`. Per la Fase 8: l'app deve
+mostrare l'errore se `config.json` non è valido (oggi l'orchestratore si ferma e lo scrive nel
+suo log).
 
 ## Fase 8 — Pacchetto dell'app
 
