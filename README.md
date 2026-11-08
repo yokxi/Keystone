@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="app/assets/icon.svg" width="96" height="96" alt="">
-</p>
-
-<h1 align="center">Keystone</h1>
+<h1 align="center"><img src="app/assets/icon.svg" height="40" alt="K">eystone</h1>
 
 <p align="center"><b>Un team di agenti AI che lavora sul tuo repository git, sotto il tuo controllo.</b></p>
 
