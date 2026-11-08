@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- La stessa icona di icon.svg, ridisegnata sulla griglia di 16 pixel (misure 16 e 20 di icon.ico):
+       a quella scala le forme del disegno grande cadono a metà dei pixel e diventano sfocate. -->
+  <title>Keystone</title>
+  <rect x="2" y="2" width="3" height="12" fill="#646c7e"/>
+  <path d="M9 5.5 L12 2 L15 2 L10.5 7.5 Z" fill="#969cac"/>
+  <path d="M9 10.5 L12 14 L15 14 L10.5 8.5 Z" fill="#969cac"/>
+  <path d="M5 6.5 L10 5 L10 11 L5 9.5 Z" fill="#3159d6"/>
+</svg>

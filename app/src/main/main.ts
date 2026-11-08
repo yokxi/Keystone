@@ -286,6 +286,8 @@ function createWindow(): void {
     minWidth: 980,
     minHeight: 640,
     title: 'Keystone',
+    // app/assets/icon.ico in sviluppo, resources/app/assets/icon.ico nell'app impacchettata
+    icon: path.join(__dirname, '..', '..', 'assets', 'icon.ico'),
     backgroundColor: '#14161a',
     show: !smokeDir,
     webPreferences: {

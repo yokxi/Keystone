@@ -3,6 +3,7 @@
 ;   SRC      la cartella dell'app portabile (app/release/Keystone-win32-x64)
 ;   OUTFILE  l'installatore da scrivere
 ;   UNLIST   l'elenco generato dei file e delle cartelle da togliere alla disinstallazione
+;   ICON     l'icona (app/assets/icon.ico)
 ;
 ; Regole (docs/pacchetto.md, "Installatore"):
 ; - installazione per il solo utente, senza permessi di amministratore;
@@ -16,8 +17,8 @@ Unicode true
 ManifestDPIAware true
 SetCompressor /SOLID lzma
 
-!ifndef VERSION | SRC | OUTFILE | UNLIST
-  !error "servono VERSION, SRC, OUTFILE e UNLIST (usa app/scripts/installer.mjs)"
+!ifndef VERSION | SRC | OUTFILE | UNLIST | ICON
+  !error "servono VERSION, SRC, OUTFILE, UNLIST e ICON (usa app/scripts/installer.mjs)"
 !endif
 
 !define APP "Keystone"
@@ -46,6 +47,8 @@ VIAddVersionKey /LANG=0 "FileDescription" "Installatore di ${APP}"
 VIAddVersionKey /LANG=0 "LegalCopyright" "Licenza MIT"
 
 !define MUI_ABORTWARNING
+!define MUI_ICON "${ICON}"
+!define MUI_UNICON "${ICON}"
 !define MUI_WELCOMEPAGE_TEXT "Keystone orchestra un team di agenti AI sui tuoi repository git.$\r$\n$\r$\nL'app si installa solo per il tuo utente, senza permessi di amministratore. I tuoi dati (stato, impostazioni, skill personali) restano in %USERPROFILE%\.keystone e non vengono toccati.$\r$\n$\r$\nSe Keystone è aperto, chiudilo e ferma l'orchestratore (Impostazioni → Ferma orchestratore) prima di continuare."
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirLeave

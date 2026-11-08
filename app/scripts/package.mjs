@@ -23,6 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EXTERNAL } from './externals.mjs';
 import { flipFuses, readFuses } from './fuses.mjs';
+import { rcedit } from 'rcedit';
 
 const appDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const root = path.resolve(appDir, '..');
@@ -52,13 +53,25 @@ fs.renameSync(path.join(outDir, path.basename(electronExe)), path.join(outDir, e
 const resApp = path.join(outDir, 'resources', 'app');
 for (const d of ['main', 'preload', 'renderer']) fs.cpSync(path.join(appDir, 'dist', d), path.join(resApp, 'dist', d), { recursive: true, filter: (f) => !f.endsWith('.map') });
 const appPkg = JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8'));
+// l'icona (finestra dell'app; app/assets/icon.ico, generata da make-icon.mjs)
+fs.mkdirSync(path.join(resApp, 'assets'), { recursive: true });
+fs.copyFileSync(path.join(appDir, 'assets', 'icon.ico'), path.join(resApp, 'assets', 'icon.ico'));
 fs.writeFileSync(path.join(resApp, 'package.json'), JSON.stringify({ name: 'keystone', productName: 'Keystone', version, description: appPkg.description, main: appPkg.main, private: true }, null, 2) + '\n');
 
 // 4. l'orchestratore
 fs.renameSync(staging, path.join(outDir, 'resources', 'orchestrator'));
 
-// 5. fuse, rilette dall'eseguibile scritto
+// 5. icona e dati di versione dell'eseguibile (Esplora file, Gestione attività), poi le fuse,
+//    rilette dall'eseguibile scritto: le fuse si scrivono per ultime, così rcedit non le tocca
 const exe = path.join(outDir, exeName);
+if (process.platform === 'win32') {
+  await rcedit(exe, {
+    icon: path.join(appDir, 'assets', 'icon.ico'),
+    'file-version': version,
+    'product-version': version,
+    'version-string': { ProductName: 'Keystone', FileDescription: 'Keystone', CompanyName: 'Keystone', OriginalFilename: exeName, InternalFilename: 'Keystone', LegalCopyright: 'Licenza MIT' },
+  });
+}
 flipFuses(exe);
 const fuses = readFuses(exe);
 if (!fuses.startsWith('11000001')) throw new Error(`fuse di Electron non scritte come previsto: ${fuses}`);

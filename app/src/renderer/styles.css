@@ -121,7 +121,8 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 .app { display: grid; grid-template-rows: 44px 1fr auto; grid-template-columns: 208px 1fr; height: 100%; }
 .statusbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 0 14px; background: var(--bg-elev); border-bottom: 1px solid var(--border); min-width: 0; }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: 0.2px; }
-.brand-mark { width: 20px; height: 20px; border-radius: 5px; background: linear-gradient(135deg, var(--accent), var(--info)); display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; }
+/* l'icona dell'app (app/assets/icon.svg) */
+.brand-mark { width: 20px; height: 20px; flex: none; }
 .status-items { display: flex; align-items: center; gap: 14px; margin-left: auto; color: var(--text-muted); font-size: 13px; white-space: nowrap; }
 .status-items .sep { width: 1px; height: 18px; background: var(--border); }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: 1px; }

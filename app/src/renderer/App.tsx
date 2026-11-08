@@ -291,7 +291,13 @@ function StatusBar({ state, theme, setTheme, decisions }: { state: ViewState; th
   return (
     <header className="statusbar">
       <div className="brand">
-        <span className="brand-mark">K</span>Keystone
+        <svg className="brand-mark" viewBox="0 0 128 128" aria-hidden="true">
+          <rect x="18" y="14" width="24" height="100" rx="3" fill="#646c7e" />
+          <path d="M66 42 L92 14 L118 14 L76 62 Z" fill="#969cac" />
+          <path d="M66 86 L92 114 L118 114 L76 66 Z" fill="#969cac" />
+          <path d="M46 52 L78 38 L78 90 L46 76 Z" fill="#3159d6" />
+        </svg>
+        Keystone
       </div>
       <span className="status-msg ellipsis">
         <span className={`dot ${dot}`} />

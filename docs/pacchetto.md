@@ -19,7 +19,7 @@ ufficiali, come al primo `npm run app`. Si impacchetta per la piattaforma su cui
 | Percorso | Contenuto |
 |---|---|
 | `Keystone.exe` e i file accanto | la distribuzione di Electron, con l'eseguibile rinominato |
-| `resources/app/` | main, preload e renderer compilati (tutto in bundle, niente `node_modules`) |
+| `resources/app/` | main, preload e renderer compilati (tutto in bundle, niente `node_modules`) e l'icona (`assets/icon.ico`) |
 | `resources/orchestrator/main.mjs` | l'orchestratore in un solo file (`app/scripts/build-orchestrator.mjs`) |
 | `resources/orchestrator/node_modules/` | solo i pacchetti con binari nativi o che li cercano accanto a sé: SDK di Claude (con la CLI per piattaforma), Codex (binario nativo), playwright-core, zod (condiviso con l'SDK) e le loro dipendenze |
 
@@ -64,6 +64,15 @@ rilegge dall'eseguibile.
 si carica e si risolve dentro `resources/orchestrator` (il pacchetto sta nel repository, e senza
 questo controllo un pacchetto mancante verrebbe preso in silenzio dal `node_modules` del
 repository); i binari di Codex e di Claude Code ci sono.
+
+## Icona
+
+Il disegno sta in `app/assets/icon.svg` (la K con la chiave di volta) e, ridisegnato sulla griglia
+di 16 pixel, in `app/assets/icon-16.svg`. `npm run icon -w app` ne ricava `app/assets/icon.ico`
+(16-256 pixel) con l'Electron già installato; il file `.ico` si committa. Il pacchetto lo scrive
+dentro `Keystone.exe` con `rcedit` (con nome, descrizione e versione del file), prima delle fuse, e
+lo copia in `resources/app/assets/` per la finestra. L'installatore lo usa per sé e per il
+disinstallatore.
 
 ## Installatore
 

@@ -91,7 +91,7 @@ function main() {
   const out = path.join(appDir, 'release', `Keystone-Setup-${version}.exe`);
   fs.rmSync(out, { force: true });
   console.log(`installatore: ${makensis}`);
-  execFileSync(makensis, ['/V2', '/INPUTCHARSET', 'UTF8', `/DVERSION=${version}`, `/DSRC=${src}`, `/DOUTFILE=${out}`, `/DUNLIST=${unlist}`, path.join(appDir, 'installer', 'keystone.nsi')], { stdio: 'inherit' });
+  execFileSync(makensis, ['/V2', '/INPUTCHARSET', 'UTF8', `/DVERSION=${version}`, `/DSRC=${src}`, `/DOUTFILE=${out}`, `/DUNLIST=${unlist}`, `/DICON=${path.join(appDir, 'assets', 'icon.ico')}`, path.join(appDir, 'installer', 'keystone.nsi')], { stdio: 'inherit' });
   if (!fs.existsSync(out)) throw new Error('makensis non ha scritto l\'installatore');
 
   const hash = createHash('sha256').update(fs.readFileSync(out)).digest('hex');
