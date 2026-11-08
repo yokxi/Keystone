@@ -1,11 +1,13 @@
 # Pacchetto dell'app
 
-Keystone si distribuisce come **app portabile**: una cartella con `Keystone.exe` che avvia da sola
+Keystone si distribuisce con un **installatore per Windows** (`Keystone-Setup-<versione>.exe`) e,
+in alternativa, come **app portabile**: una cartella con `Keystone.exe` che avvia da sola
 l'orchestratore, senza i sorgenti, senza Node installato e senza `tsx`.
 
 ```powershell
 npm run package -w app            # app/release/Keystone-win32-x64/
 npm run package -w app -- --zip   # anche app/release/Keystone-<versione>-win32-x64.zip
+npm run installer -w app          # pacchetto, poi app/release/Keystone-Setup-<versione>.exe (+ .sha256)
 ```
 
 Lo script usa la distribuzione di Electron e i pacchetti già installati dal lockfile; se il
@@ -63,14 +65,53 @@ si carica e si risolve dentro `resources/orchestrator` (il pacchetto sta nel rep
 questo controllo un pacchetto mancante verrebbe preso in silenzio dal `node_modules` del
 repository); i binari di Codex e di Claude Code ci sono.
 
+## Installatore
+
+`app/scripts/installer.mjs` compila `app/installer/keystone.nsi` con **NSIS 3** (`makensis`) sulla
+cartella portabile. Niente electron-builder: portava `minimatch` con l'avviso GHSA-g3hv-75wg-m249,
+e la versione corretta trascinava un pacchetto nuovissimo (vedi `docs/sicurezza.md`). NSIS è un
+programma a parte, non una dipendenza npm, e non entra nell'app.
+
+**NSIS sul PC di chi crea l'installatore.** Lo script cerca `makensis.exe` in quest'ordine:
+`MAKENSIS=<percorso>`, il `PATH`, `%USERPROFILE%\strumenti\nsis-<versione>\` (la più recente), le
+cartelle standard di Program Files. Basta lo zip ufficiale estratto (nessuna installazione):
+
+```powershell
+# NSIS 3.13 (27 settembre 2026), da https://nsis.sourceforge.io/Download
+# MD5 dello zip: 530e3623c077cba879ed2ae6e13be362 (quello pubblicato da SourceForge)
+Expand-Archive nsis-3.13.zip "$env:USERPROFILE\strumenti"
+```
+
+**Cosa fa l'installatore.**
+
+| | |
+|---|---|
+| Dove | `%LOCALAPPDATA%\Programs\Keystone`, per il solo utente, senza permessi di amministratore. Si può scegliere un'altra cartella: l'app va sempre in una sottocartella `Keystone`, che deve essere vuota o contenere un'installazione precedente |
+| Collegamenti | menu Start; desktop facoltativo (casella nell'ultima pagina) |
+| App installate | voce in Impostazioni → App → App installate, con versione e disinstallazione |
+| Aggiornamento | se trova un'installazione precedente, ne avvia il disinstallatore (che toglie i suoi file), poi copia i nuovi: non restano file vecchi |
+| In esecuzione | se `Keystone.exe` è in uso (finestra o orchestratore) chiede di chiuderlo e di fermare l'orchestratore, con Riprova / Annulla |
+| Disinstallazione | toglie solo i file e le cartelle dell'elenco generato al momento del pacchetto (`release/.installer/uninstall-list.nsh`), mai cancellazioni ricorsive; una cartella con file tuoi resta. Non tocca `~/.keystone` |
+| Silenziosa | `Keystone-Setup-<versione>.exe /S` installa senza finestre (stessi controlli; con Keystone in esecuzione esce con codice 2) |
+
+Accanto all'installatore lo script scrive `Keystone-Setup-<versione>.exe.sha256`, da pubblicare
+nella release.
+
+## Aggiornamenti
+
+L'app controlla su GitHub se c'è una release più recente e lo dice in un banner e in Impostazioni →
+Aggiornamenti; non scarica e non installa nulla da sola. Regole e limiti in `docs/sicurezza.md`
+("Aggiornamenti"). Per pubblicare una versione:
+
+1. alza `version` in `package.json` (e `app/package.json`), committa;
+2. `npm run installer -w app -- --zip`: installatore, impronta e zip portabile in `app/release/`;
+3. crea su GitHub una release con il tag `v<versione>` (non una bozza né una pre-release), con le
+   novità nel testo, e allega `Keystone-Setup-<versione>.exe`, il suo `.sha256` e lo zip portabile.
+
+Le app già installate la vedono al prossimo avvio (o entro un giorno, se restano aperte).
+
 ## Limiti
 
-- **Niente installatore per ora.** `electron-builder` (installatore NSIS) porta con sé `minimatch`
-  in versioni con un avviso di sicurezza moderato (GHSA-g3hv-75wg-m249); la versione corretta
-  (11.0.1) è uscita il 27 ottobre 2026, meno di 14 giorni fa, e trascina una dipendenza nuova.
-  Invece di aggiungere eccezioni alla regola delle versioni si distribuisce l'app portabile;
-  l'installatore si aggiunge quando le versioni corrette avranno almeno 14 giorni (vedi
-  `docs/piano.md`).
 - **Niente firma del codice.** Windows SmartScreen avvisa al primo avvio di `Keystone.exe`.
 - **RunAsNode acceso.** Chi può eseguire `Keystone.exe` può usarlo come Node. Non dà più permessi
   di quelli che ha già l'utente (che può eseguire qualunque programma), ma è annotato.
