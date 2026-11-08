@@ -74,6 +74,34 @@ describe('server WebSocket', () => {
     await c.next((m) => m.type === 'snapshot', 'snapshot dopo i reset');
   });
 
+  it("orchestrator.shutdown: ack e poi arresto; senza gestore viene rifiutato; mai prima di hello", async () => {
+    const { o } = testOrchestrator({ workers: 1 });
+    await o.start();
+    let stops = 0;
+    const server = new OrchestratorServer(o, { port: 0, log: silentLogger, validateOutbound: true, onShutdown: () => stops++ });
+    const port = await server.listen();
+    onCleanup(() => server.close());
+    const c = await connect(port);
+    c.send({ type: 'orchestrator.shutdown', id: 'early' });
+    await c.next((m) => m.type === 'error' && m.re === 'early', 'rifiuto prima di hello');
+    expect(stops).toBe(0);
+    c.send({ type: 'hello', client: 'test', protocol: 1 });
+    await c.next((m) => m.type === 'snapshot', 'snapshot');
+    c.send({ type: 'orchestrator.shutdown', id: 's1' });
+    const ack = await c.next((m) => m.type === 'ack' && m.re === 's1', 'ack di arresto');
+    expect(ack).toMatchObject({ ok: true, result: { stopping: true } });
+    await waitFor(() => (stops === 1 ? true : undefined), 'arresto chiamato');
+
+    // senza gestore (uso come libreria): rifiutato, e il nucleo da solo non esce mai
+    const { port: p2, o: o2 } = await setup();
+    const c2 = await connect(p2);
+    c2.send({ type: 'hello', client: 'test', protocol: 1 });
+    await c2.next((m) => m.type === 'snapshot', 'snapshot');
+    c2.send({ type: 'orchestrator.shutdown', id: 's2' });
+    expect(await c2.next((m) => m.type === 'ack' && m.re === 's2', 'ack')).toMatchObject({ ok: false, error: 'arresto non disponibile' });
+    await expect(o2.handle({ v: 1, type: 'orchestrator.shutdown' }, () => undefined)).rejects.toThrow(/arresto non disponibile/);
+  });
+
   it('ascolta solo su 127.0.0.1', async () => {
     const { port } = await setup();
     // un client che si presenta come localhost viene accettato

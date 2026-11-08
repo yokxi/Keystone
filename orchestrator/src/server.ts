@@ -35,6 +35,11 @@ export interface ServerOptions {
   log: Logger;
   /** valida anche i messaggi in uscita (test/sviluppo) */
   validateOutbound?: boolean;
+  /**
+   * Arresto ordinato chiesto da un client (orchestrator.shutdown): si chiama dopo l'ack, così
+   * l'app sa che la richiesta è arrivata. Assente = il messaggio viene rifiutato.
+   */
+  onShutdown?: () => void;
 }
 
 interface Client {
@@ -135,6 +140,17 @@ export class OrchestratorServer {
     const msg = parsed.msg;
     if (msg.type !== 'hello' && !client.ready) {
       this.send(client, { type: 'error', message: 'manda prima "hello"', ...(msg.id ? { re: msg.id } : {}) });
+      return;
+    }
+    if (msg.type === 'orchestrator.shutdown') {
+      const stop = this.opts.onShutdown;
+      if (!stop) {
+        if (msg.id) this.send(client, { type: 'ack', re: msg.id, ok: false, error: 'arresto non disponibile' });
+        return;
+      }
+      this.opts.log.info(`arresto chiesto dal client ${client.id}`);
+      if (msg.id) this.send(client, { type: 'ack', re: msg.id, ok: true, result: { stopping: true } });
+      setImmediate(stop);
       return;
     }
     try {

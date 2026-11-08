@@ -538,6 +538,13 @@ export const DbSecretMsg = z.object({ ...envelope('db.secret'), repoId: Id, conn
 /** Prova la connessione: apre, elenca le tabelle, chiude. */
 export const DbTestMsg = z.object({ ...envelope('db.test'), repoId: Id, connectionId: z.string().regex(DB_CONNECTION_ID_RE) });
 
+/**
+ * Ferma l'orchestratore in modo ordinato: salva lo stato, chiude le connessioni ed esce. Serve
+ * all'app prima di un aggiornamento (l'installatore non sostituisce file in uso). Lo gestisce il
+ * server, non il nucleo; senza un gestore di arresto (test, uso come libreria) l'ack è un errore.
+ */
+export const OrchestratorShutdownMsg = z.object({ ...envelope('orchestrator.shutdown') });
+
 /** Rilegge le skill (dopo un commit o una modifica fatta fuori da Keystone). */
 export const SkillsRefreshMsg = z.object({ ...envelope('skills.refresh') });
 
@@ -565,6 +572,7 @@ export const ClientMessage = z.discriminatedUnion('type', [
   DbDeleteMsg,
   DbSecretMsg,
   DbTestMsg,
+  OrchestratorShutdownMsg,
 ]);
 export type ClientMessage = z.infer<typeof ClientMessage>;
 

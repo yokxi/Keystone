@@ -348,3 +348,11 @@ smette di avviare turni finché non viene riavviato.
 ### `turn_end`
 `{ status: success|error|aborted|max_turns, resultText? }`: fine del turno, sempre l'ultimo
 evento.
+
+### `orchestrator.shutdown`
+`{}`: ferma l'orchestratore in modo ordinato, come Ctrl+C: salva lo stato, chiude le connessioni ed
+esce. Lo manda il processo main dell'app (pulsante "Ferma orchestratore" in Impostazioni), per
+esempio prima di un aggiornamento: l'installatore non sostituisce file in uso. Lo gestisce il server
+(`OrchestratorServer`, opzione `onShutdown`), non il nucleo. L'ack (`{ stopping: true }`) arriva
+prima dell'arresto. Senza gestore (orchestratore usato come libreria, test) l'ack è un errore,
+"arresto non disponibile". Come ogni messaggio, solo dopo `hello` e solo da un client locale.

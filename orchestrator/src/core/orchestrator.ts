@@ -780,6 +780,9 @@ export class Orchestrator {
         this.db.setSecret(msg.repoId, msg.connectionId, msg.password, msg.destination);
         return { connectionId: msg.connectionId, loaded: msg.password !== null };
       }
+      case 'orchestrator.shutdown':
+        // lo gestisce il server (OrchestratorServer, opzione onShutdown): il nucleo non esce mai da solo
+        throw new ClientError('arresto non disponibile');
       case 'db.test': {
         const text = await this.db.test(msg.repoId, msg.connectionId);
         return { connectionId: msg.connectionId, text };

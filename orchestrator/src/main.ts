@@ -201,7 +201,8 @@ async function main(): Promise<void> {
   }
 
   const o = buildOrchestrator(cfg, { logger: log });
-  const server = new OrchestratorServer(o, { port: cfg.port, log });
+  // l'arresto chiesto dall'app (prima di un aggiornamento) usa lo stesso percorso di Ctrl+C
+  const server = new OrchestratorServer(o, { port: cfg.port, log, onShutdown: () => void shutdown() });
   const port = await server.listen();
   claimProfile(dir, { pid: process.pid, port, host: cfg.host, profile: cfg.profile, version: VERSION, startedAt: Date.now() });
 
