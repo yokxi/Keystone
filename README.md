@@ -1,11 +1,17 @@
-# Keystone
+<p align="center">
+  <img src="app/assets/icon.svg" width="96" height="96" alt="">
+</p>
 
-**Un team di agenti AI che lavora sul tuo repository git, sotto il tuo controllo.**
+<h1 align="center">Keystone</h1>
+
+<p align="center"><b>Un team di agenti AI che lavora sul tuo repository git, sotto il tuo controllo.</b></p>
 
 Keystone è un'app desktop per Windows. Gli dai un obiettivo ("aggiungi l'esportazione in CSV",
 "correggi i test che falliscono") e un team di agenti, un **lead** e da uno a cinque **worker**, lo
 divide in task, li esegue in parallelo e te li porta in review. Ogni agente lavora in una copia
 separata del repository. Il tuo checkout cambia solo quando premi **Merge**.
+
+![Il tabellone di Keystone: l'obiettivo con l'avanzamento e i task divisi tra da fare, in corso, in review, bloccati e completati](docs/immagini/tabellone.png)
 
 ---
 
@@ -37,6 +43,46 @@ flowchart LR
 5. **La review si apre sul riassunto**: cosa è stato chiesto, cosa è stato fatto e perché, i file
    toccati, l'esito dei test, le schermate prima/dopo e i rischi. Il diff sta in una scheda a parte.
 6. **Decidi tu**: `Merge`, `Richiedi modifiche` oppure `Rifiuta`.
+
+### Alla fine: il resoconto, con le schermate
+
+Quando un worker finisce un task non ti arriva un diff da decifrare, ma un **resoconto**:
+
+- **la richiesta**: cosa gli era stato chiesto;
+- **cosa ha fatto e perché**, scritto dal worker;
+- **i file toccati**, con un clic per vederli nel diff;
+- **i test**, eseguiti da Keystone nel worktree dell'agente (non riportati dall'agente), con l'esito
+  e le ultime righe dell'output;
+- **le schermate prima e dopo** delle pagine cambiate, se il repository è un'app web e hai attivato
+  la verifica visuale. Keystone avvia l'app due volte, dal branch di partenza e da quello
+  dell'agente, esegue i passaggi che il worker ha indicato e mette le schermate una accanto
+  all'altra. Accanto ci sono anche gli errori della console e le richieste fallite, con in evidenza
+  quelli che compaiono solo dopo la modifica;
+- **i rischi**: test falliti o mancanti, dipendenze cambiate, file cancellati, skill modificate, e i
+  problemi aperti dichiarati dal worker.
+
+![La review di un task: a sinistra Merge, Rifiuta e Richiedi modifiche; a destra il resoconto con la richiesta, cosa è stato fatto, i file toccati e i test eseguiti da Keystone](docs/immagini/review.png)
+
+Le schermate le cattura Keystone, non l'agente: sono una prova indipendente di cosa è cambiato.
+Restano in `%USERPROFILE%\.keystone`, mai nel repository. Come configurarla:
+[`docs/verifica-visuale.md`](docs/verifica-visuale.md).
+
+### Gli agenti al lavoro
+
+Per ogni agente vedi motore, modello, costo e token, le skill che ha ricevuto e il registro dal vivo:
+comandi, file modificati, test, permessi chiesti. Puoi scrivergli, metterlo in pausa o fermarlo.
+
+![La pagina Agenti: l'elenco del team a sinistra e, a destra, il registro dal vivo del worker selezionato](docs/immagini/agenti.png)
+
+<details>
+<summary>Anche in tema chiaro</summary>
+
+![Il tabellone in tema chiaro](docs/immagini/tabellone-chiaro.png)
+
+</details>
+
+<sub>Le schermate sono fatte con il motore simulato (nessuna API), su un repository di prova: per
+questo i task sono semplici e i test non hanno casi.</sub>
 
 ### Le parti dell'app
 
