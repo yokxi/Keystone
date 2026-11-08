@@ -43,7 +43,17 @@ run(process.execPath, [path.join(appDir, 'scripts', 'build-orchestrator.mjs'), '
 // 2. la distribuzione di Electron
 const electronExe = require('electron'); // percorso dell'eseguibile
 const electronDist = path.dirname(electronExe);
-fs.rmSync(outDir, { recursive: true, force: true });
+try {
+  fs.rmSync(outDir, { recursive: true, force: true });
+} catch (e) {
+  // il caso tipico: l'app portabile di una prova precedente è ancora aperta, o il suo orchestratore
+  // (che resta attivo anche a finestra chiusa)
+  if (['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(e.code)) {
+    console.error(`\nNon riesco a sostituire ${outDir}: un programma la sta usando.\nDi solito è Keystone avviato da quella cartella, o il suo orchestratore: aprilo e premi\nImpostazioni → Ferma orchestratore, poi chiudi la finestra e rilancia.\n`);
+    process.exit(1);
+  }
+  throw e;
+}
 fs.cpSync(electronDist, outDir, { recursive: true });
 // l'app di esempio di Electron non serve (e non deve poter partire al posto di Keystone)
 fs.rmSync(path.join(outDir, 'resources', 'default_app.asar'), { force: true });
