@@ -1,6 +1,6 @@
 import { emptyViewState, ENGINE_EXPERIMENTAL, ENGINE_LABELS, type Decision, type Task, type ViewState } from '@keystone/shared';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ConnectionInfo, UiEvent } from '../main/api.js';
+import type { ConnectionInfo, UiEvent, UpdateStatus } from '../main/api.js';
 import type { ValidatedCommand } from '../main/ipc-validate.js';
 import { Agents } from './components/Agents.js';
 import { Board } from './components/Board.js';
@@ -47,6 +47,7 @@ export function App() {
   const [feed, setFeed] = useState<FeedLine[]>([]);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [conn, setConn] = useState<ConnectionInfo>();
+  const [update, setUpdate] = useState<UpdateStatus>();
   /** profilo scelto per il pulsante "Avvia orchestratore" (vuoto: quello dell'app) */
   const [startProfile, setStartProfile] = useState('');
   const toastSeq = useRef(0);
@@ -72,6 +73,8 @@ export function App() {
   useEffect(() => {
     void window.keystone.getState().then(setState);
     void window.keystone.connection().then(setConn);
+    void window.keystone.updateStatus().then(setUpdate);
+    const offUpdate = window.keystone.onUpdate(setUpdate);
     const offState = window.keystone.onState(setState);
     const offEvent = window.keystone.onEvent((e: UiEvent) => {
       if (e.type === 'notify') {
@@ -82,6 +85,7 @@ export function App() {
     return () => {
       offState();
       offEvent();
+      offUpdate();
     };
   }, [addFeed, toast]);
 
@@ -180,7 +184,7 @@ export function App() {
       <main className="main">
         {!state.connected && (
           <div className={`banner ${conn ? '' : 'bad'}`}>
-            <span className="grow">Orchestratore non raggiungibile su {conn?.url ?? '…'}: riprovo da solo. Puoi avviarlo con "npm run orchestrator".</span>
+            <span className="grow">Orchestratore non raggiungibile su {conn?.url ?? '…'}: riprovo da solo.{conn && !conn.packaged ? ' Puoi avviarlo con "npm run orchestrator".' : ''}</span>
             {conn?.canStart && (
               <>
                 {conn.profiles.some((p) => p !== conn.profile) && (
@@ -195,7 +199,7 @@ export function App() {
                 <button
                   className="btn small"
                   data-testid="start-orchestrator"
-                  title="Avvia l'orchestratore con il motore sim su questa porta. Per il motore Claude usa npm run orchestrator -- --engine claude."
+                  title="Avvia l'orchestratore su questa porta con le impostazioni di ~/.keystone/config.json (senza file: motore sim)."
                   onClick={() => void window.keystone.startOrchestrator(startProfile || conn.profile).then((a) => !a.ok && toast('warn', a.error ?? 'avvio non riuscito'))}
                 >
                   Avvia orchestratore · profilo {startProfile || conn.profile}
@@ -209,6 +213,14 @@ export function App() {
             L'app usa il profilo "{conn.profile}" ma l'orchestratore collegato su {conn.url} usa "{state.status.profile}". Riavvia l'app con KEYSTONE_PROFILE={state.status.profile} oppure avvia l'orchestratore del profilo "{conn.profile}".
           </div>
         )}
+        {update?.result?.status === 'available' && view !== 'settings' && (
+          <div className="banner" data-testid="update-banner">
+            <span className="grow">È disponibile Keystone {update.result.info.version} (hai la {update.current}).</span>
+            <button className="btn small" onClick={() => setView('settings')}>
+              Dettagli
+            </button>
+          </div>
+        )}
         {state.status?.auth === 'failed' && <div className="banner bad">Autenticazione dei motori non riuscita: {state.status.message}</div>}
         {view === 'board' && <Board state={state} send={sendVoid} openReview={openReviewTask} />}
         {view === 'agents' && <Agents state={state} selected={agentId} select={setAgentId} send={sendVoid} />}
@@ -217,7 +229,7 @@ export function App() {
         {view === 'memory' && <Memory state={state} />}
         {view === 'skills' && <Skills state={state} send={send} />}
         {view === 'repos' && <Repos state={state} send={send} openRegister={(p) => setRegister({ ...(p ? { path: p } : {}) })} />}
-        {view === 'settings' && <Settings state={state} send={sendVoid} />}
+        {view === 'settings' && <Settings state={state} send={sendVoid} update={update} toast={toast} />}
       </main>
       <ConsoleBar
         agents={agentsRef}

@@ -9,7 +9,9 @@
 //     salvare la correzione come skill, che poi l'agente riceve;
 //  5. database: il server non si salva senza la conferma di sola lettura; la password scritta
 //     nell'interfaccia arriva all'orchestratore solo in memoria e su disco solo cifrata, e viene
-//     rimandata a ogni collegamento.
+//     rimandata a ogni collegamento;
+//  6. aggiornamenti spenti da ambiente: nessun controllo possibile; "Ferma orchestratore" chiede
+//     conferma e solo dopo manda l'arresto.
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -24,19 +26,19 @@ import { demoRepo, noReply, onCleanup, testOrchestrator, tmpDir, waitFor } from 
 const APP_DIR = path.resolve(import.meta.dirname, '..');
 const electronPath = createRequire(import.meta.url)('electron') as unknown as string;
 
-async function setup(opts: { workers?: number; goal?: string } = {}) {
+async function setup(opts: { workers?: number; goal?: string; onShutdown?: () => void } = {}) {
   const { o, cfg } = testOrchestrator({ workers: opts.workers ?? 1 });
   const repo = await demoRepo(cfg.home);
   await o.repos.add(repo, { confirmGuard: true });
   await o.start();
-  const server = new OrchestratorServer(o, { port: 0, log: silentLogger });
+  const server = new OrchestratorServer(o, { port: 0, log: silentLogger, ...(opts.onShutdown ? { onShutdown: opts.onShutdown } : {}) });
   const port = await server.listen();
   openServers.push({ port, server });
   onCleanup(() => server.close());
   const app: ElectronApplication = await electron.launch({
     executablePath: electronPath,
     args: [APP_DIR],
-    env: { ...process.env, KEYSTONE_HOME: cfg.home, KEYSTONE_PROFILE: cfg.profile, KEYSTONE_PORT: String(port) },
+    env: { ...process.env, KEYSTONE_HOME: cfg.home, KEYSTONE_PROFILE: cfg.profile, KEYSTONE_PORT: String(port), KEYSTONE_NO_UPDATE_CHECK: '1' },
   });
   onCleanup(() => app.close());
   const page = await app.firstWindow();
@@ -229,6 +231,27 @@ describe('interfaccia: comportamenti di sicurezza', () => {
     await waitFor(() => !o.repos.get(repo.id)?.db, 'connessione tolta');
     await waitFor(() => !fs.readFileSync(secretsFile, 'utf8').includes('sviluppo'), 'password salvata tolta');
     expect(o.db.hasSecret(repo.id, 'sviluppo')).toBe(false);
+  });
+
+  it('aggiornamenti spenti da ambiente; "Ferma orchestratore" chiede conferma e solo dopo ferma', async () => {
+    let stops = 0;
+    const { page } = await setup({ onShutdown: () => stops++ });
+    await nav(page, 'Impostazioni');
+    const card = page.getByTestId('updates');
+    await expect.poll(() => card.getByTestId('update-line').textContent()).toContain('KEYSTONE_NO_UPDATE_CHECK');
+    expect(await card.getByTestId('update-now').isDisabled()).toBe(true);
+    expect(await card.getByTestId('update-check').isDisabled()).toBe(true);
+    expect(await page.getByTestId('update-banner').count()).toBe(0);
+
+    // prima: annullato, niente arresto
+    page.once('dialog', (d) => void d.dismiss());
+    await page.getByTestId('stop-orchestrator').click();
+    await new Promise((r) => setTimeout(r, 500));
+    expect(stops).toBe(0);
+    // poi: confermato
+    page.once('dialog', (d) => void d.accept());
+    await page.getByTestId('stop-orchestrator').click();
+    await waitFor(() => (stops === 1 ? true : undefined), 'arresto chiesto');
   });
 });
 

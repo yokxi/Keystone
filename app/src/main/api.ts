@@ -2,6 +2,9 @@
 // Electron arriva al renderer, che vede soltanto queste funzioni.
 import type { DiffFile, NotifyLevel, RepoPreview, ViewState } from '@keystone/shared';
 import type { ValidatedCommand } from './ipc-validate.js';
+import type { UpdateStatus } from './updates.js';
+
+export type { UpdateStatus } from './updates.js';
 
 export interface Ack {
   ok: boolean;
@@ -19,6 +22,8 @@ export interface ConnectionInfo {
   profile: string;
   /** i profili esistenti, tra cui scegliere all'avvio */
   profiles: string[];
+  /** app impacchettata (non avviata dai sorgenti) */
+  packaged: boolean;
 }
 
 export interface KeystoneApi {
@@ -41,6 +46,16 @@ export interface KeystoneApi {
   setDbPassword(repoId: string, connectionId: string, password: string | null, destination?: string): Promise<Ack>;
   /** Le connessioni che hanno una password ("repoId/connectionId"), mai le password. */
   dbPasswordKeys(): Promise<string[]>;
+  /** Ferma l'orchestratore collegato in modo ordinato (salva lo stato ed esce). */
+  stopOrchestrator(): Promise<Ack>;
+  /** Stato del controllo degli aggiornamenti. */
+  updateStatus(): Promise<UpdateStatus>;
+  onUpdate(cb: (s: UpdateStatus) => void): () => void;
+  /** Controlla adesso (anche con il controllo automatico spento). */
+  checkUpdates(): Promise<UpdateStatus>;
+  setUpdateCheck(on: boolean): Promise<UpdateStatus>;
+  /** Apre nel browser la pagina della release disponibile (il link lo sceglie il main, non il renderer). */
+  openRelease(): Promise<boolean>;
 }
 
 export const CHANNELS = {
@@ -56,4 +71,10 @@ export const CHANNELS = {
   start: 'ks:start-orchestrator',
   dbPassword: 'ks:db-password',
   dbPasswordKeys: 'ks:db-password-keys',
+  stop: 'ks:stop-orchestrator',
+  updateStatus: 'ks:update-status',
+  update: 'ks:update',
+  updateCheck: 'ks:update-check',
+  updateSet: 'ks:update-set',
+  openRelease: 'ks:open-release',
 } as const;

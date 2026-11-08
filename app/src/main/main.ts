@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, session, shell, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, Notification, safeStorage, session, shell, type IpcMainInvokeEvent } from 'electron';
 import { dbDestination, type DiffFile, type ServerMessage, type ViewState } from '@keystone/shared';
 import { CHANNELS, type Ack, type ConnectionInfo, type UiEvent } from './api.js';
 import { DbSecrets } from './db-secrets.js';
@@ -16,6 +16,7 @@ import { isTrustedSender, validateCommand } from './ipc-validate.js';
 import { earlyExit, findOrchestrator, openStartLog, orchestratorArgs, startLogFile, tailLines } from './orchestrator-launch.js';
 import { listProfiles, resolveStartProfile } from './profiles.js';
 import { OrchestratorClient } from './orchestrator-client.js';
+import { AppSettings, UpdateChecker, updateCheckForcedOff, type FetchLike } from './updates.js';
 
 const home = process.env.KEYSTONE_HOME?.trim() || path.join(os.homedir(), '.keystone');
 /** il profilo dell'app: quello che il pulsante "Avvia orchestratore" usa se non se ne sceglie un altro */
@@ -45,6 +46,17 @@ const dbSecrets = new DbSecrets(path.join(home, profile, 'db-secrets.json'), {
 });
 let win: BrowserWindow | undefined;
 let appUrl = '';
+
+// aggiornamenti: solo un controllo su GitHub, mai uno scaricamento (updates.ts). Spento anche con
+// KEYSTONE_NO_UPDATE_CHECK e nella modalità di verifica delle schermate
+const updates = new UpdateChecker({
+  current: app.getVersion(),
+  settings: new AppSettings(path.join(home, 'app-settings.json')),
+  // net.fetch di Electron usa il proxy di sistema; niente cookie o credenziali
+  fetchFn: ((u, init) => net.fetch(u, { ...init, credentials: 'omit' })) as FetchLike,
+  forcedOff: updateCheckForcedOff(process.env) || !!smokeDir,
+});
+updates.onChange((s) => win?.webContents.send(CHANNELS.update, s));
 
 // ---- stato verso il renderer (al massimo ~20 aggiornamenti al secondo) -----------------------
 
@@ -188,7 +200,33 @@ function registerIpc(): void {
   });
   ipcMain.handle(CHANNELS.connection, (e): ConnectionInfo => {
     guard(e);
-    return { url, canStart: !!orchestratorEntry(), profile, profiles: listProfiles(home) };
+    return { url, canStart: !!orchestratorEntry(), profile, profiles: listProfiles(home), packaged: app.isPackaged };
+  });
+  ipcMain.handle(CHANNELS.stop, async (e): Promise<Ack> => {
+    guard(e);
+    if (!client.state.connected) return { ok: false, error: 'orchestratore non collegato' };
+    return client.request({ type: 'orchestrator.shutdown' });
+  });
+  ipcMain.handle(CHANNELS.updateStatus, (e) => {
+    guard(e);
+    return updates.state;
+  });
+  ipcMain.handle(CHANNELS.updateCheck, async (e) => {
+    guard(e);
+    return updates.check();
+  });
+  ipcMain.handle(CHANNELS.updateSet, (e, on: unknown) => {
+    guard(e);
+    if (typeof on !== 'boolean') throw new Error('valore non valido');
+    updates.setEnabled(on);
+    return updates.state;
+  });
+  ipcMain.handle(CHANNELS.openRelease, async (e) => {
+    guard(e);
+    const target = updates.releaseUrl();
+    if (!target) return false;
+    await shell.openExternal(target);
+    return true;
   });
   ipcMain.handle(CHANNELS.start, async (e, requested: unknown): Promise<Ack> => {
     guard(e);
@@ -302,9 +340,12 @@ app.whenReady().then(() => {
   registerIpc();
   client.connect();
   createWindow();
+  // controllo automatico solo nell'app impacchettata (in sviluppo la versione non è quella pubblicata)
+  if (app.isPackaged) updates.schedule();
 });
 
 app.on('window-all-closed', () => {
+  updates.stop();
   client.close();
   app.quit();
 });
