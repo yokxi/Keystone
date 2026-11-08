@@ -114,7 +114,9 @@ if (process.argv.includes('--zip')) {
   const zip = path.join(appDir, 'release', `Keystone-${version}-${platform}.zip`);
   fs.rmSync(zip, { force: true });
   // tar di Windows (bsdtar) crea zip con -a; altrove si usa zip
-  if (process.platform === 'win32') run('tar.exe', ['-a', '-c', '-f', zip, '-C', path.dirname(outDir), path.basename(outDir)]);
+  // il tar di Windows con il percorso completo: un tar GNU nel PATH (Git Bash) leggerebbe "C:" come
+  // un computer remoto
+  if (process.platform === 'win32') run(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'), ['-a', '-c', '-f', zip, '-C', path.dirname(outDir), path.basename(outDir)]);
   else run('zip', ['-r', '-q', zip, path.basename(outDir)]);
   console.log(`archivio: ${zip}`);
 }
