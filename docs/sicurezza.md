@@ -277,6 +277,11 @@ comando, chiede.
   Torneranno nella regola il 12 novembre 2026. Un override di `@azure/msal-node` alla sola 7.1.0
   (del 13 ottobre) non è stato applicato da npm sul lockfile esistente.
 
+- **rcedit 5.0.2** (24 novembre 2025, del progetto Electron), solo per lo sviluppo: scrive icona e
+  dati di versione dentro `Keystone.exe` quando si crea il pacchetto. Porta `cross-spawn-windows-exe`
+  1.2.0, `@malept/cross-spawn-promise` 1.1.1, `is-wsl` 2.2.0 e `is-docker` 2.2.1, tutti del 2020-2021.
+  Non entra nell'app. Le fuse si scrivono dopo rcedit e vengono rilette.
+
 - **playwright-core 1.64.1** (pubblicata il 14 ottobre 2026), per la verifica visuale. È solo la
   libreria, senza browser: i browser di Playwright vengono scaricati soltanto dopo il tuo permesso
   (vedi `docs/verifica-visuale.md`).

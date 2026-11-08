@@ -16,6 +16,7 @@
     "@vitejs/plugin-react": "6.1.2",
     "electron": "44.10.1",
     "playwright-core": "1.64.1",
+    "rcedit": "5.0.2",
     "vite": "8.3.4"
   },
   "main": "dist/main/main.cjs",
@@ -25,6 +26,7 @@
     "dev": "node scripts/build.mjs && electron .",
     "build:orchestrator": "node scripts/build-orchestrator.mjs",
     "package": "node scripts/package.mjs",
-    "installer": "node scripts/installer.mjs"
+    "installer": "node scripts/installer.mjs",
+    "icon": "node scripts/make-icon.mjs"
   }
 }
