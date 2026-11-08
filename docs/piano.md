@@ -7,6 +7,9 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
 1. Fase Skill (regole per gli agenti e review sul riassunto) — fatta
 2. Fase 7 — File di configurazione — fatta
 3. Fase 8 — Pacchetto dell'app — fatta (app portabile; l'installatore è tra le cose da fare)
+   Decisione dell'8 novembre 2026: la prima versione si pubblica come app portabile (zip), senza
+   installatore e con aggiornamenti manuali (spiegati nel README). Installatore e aggiornamento
+   automatico arrivano in una versione successiva.
 4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
 5. Fase 6c — Accesso al database in sola lettura: spostata dopo la pubblicazione
 
