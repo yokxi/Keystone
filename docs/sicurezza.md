@@ -353,8 +353,44 @@ Dettagli in `docs/pacchetto.md`:
   RunAsNode resta acceso perché l'orchestratore gira con il Node di Electron;
 - `ELECTRON_RUN_AS_NODE` non arriva ai comandi degli agenti;
 - l'app impacchettata avvia solo il bundle dell'orchestratore, mai sorgenti accanto;
-- limiti: niente firma del codice, niente asar né controllo d'integrità della cartella dell'app,
-  niente installatore (rinviato per una dipendenza con un avviso di sicurezza, vedi `docs/piano.md`).
+- limiti: niente firma del codice, niente asar né controllo d'integrità della cartella dell'app.
+
+**Installatore** (NSIS, vedi `docs/pacchetto.md`):
+
+- installa solo per l'utente, senza permessi di amministratore, sempre in una cartella `Keystone`
+  vuota o con un'installazione precedente: non scrive mai in una cartella con altri file;
+- la disinstallazione toglie solo i file dell'elenco generato al momento del pacchetto (nessuna
+  cancellazione ricorsiva) e non tocca `~/.keystone`;
+- con Keystone in esecuzione (finestra o orchestratore) non installa e non disinstalla;
+- niente electron-builder: NSIS 3.13 è un programma a parte, scaricato da nsis.sourceforge.io e
+  controllato con l'MD5 pubblicato (non è firmato, come le sue versioni ufficiali). Non entra
+  nell'app: serve solo a costruire l'installatore. Così nessuna dipendenza npm nuova.
+
+**Aggiornamenti** (`app/src/main/updates.ts`):
+
+- l'app **non scarica e non installa nulla**: controlla l'ultima release su GitHub e, se è più
+  recente, lo dice; il pulsante apre la pagina della release nel browser e l'installatore lo avvii
+  tu;
+- una sola destinazione, fissa: `https://api.github.com/repos/yokxi/Keystone/releases/latest`, con
+  una GET anonima (User-Agent `Keystone-app`, niente cookie né credenziali, niente redirect). È
+  l'unica richiesta di rete che l'app fa da sola;
+- si spegne in Impostazioni (la scelta sta in `~/.keystone/app-settings.json`). Con
+  `KEYSTONE_NO_UPDATE_CHECK=1` è spento del tutto, anche il pulsante "Controlla ora". In sviluppo
+  (app non impacchettata) non parte da solo;
+- la risposta è un dato non attendibile: si accettano solo una versione `x.y.z` (niente bozze né
+  pre-release), un link `https://github.com/yokxi/Keystone/releases/…` e un testo ripulito dai
+  caratteri di controllo e troncato, mostrato come testo semplice. Il link da aprire lo sceglie il
+  processo main, mai il renderer;
+- **limite: il canale non è firmato.** Chi controlla l'account GitHub `yokxi` può pubblicare una
+  release con un installatore qualunque, e l'impronta SHA-256 accanto all'installatore arriva dallo
+  stesso posto: prova che il file non si è rovinato, non chi l'ha pubblicato. Per questo l'account
+  va protetto con l'autenticazione a due fattori. La firma del codice chiuderebbe il punto (vedi
+  `docs/piano.md`).
+
+**Arresto dell'orchestratore**: il messaggio `orchestrator.shutdown` (vedi `docs/protocol.md`) lo
+può mandare qualunque client locale già collegato, come gli altri comandi; non dà poteri nuovi
+(chi è collegato può già fermare obiettivi e agenti) e la connessione resta solo da localhost,
+senza `Origin` di browser.
 
 ## 6sexies. Database in sola lettura
 

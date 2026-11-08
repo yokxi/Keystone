@@ -6,10 +6,8 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
 
 1. Fase Skill (regole per gli agenti e review sul riassunto) — fatta
 2. Fase 7 — File di configurazione — fatta
-3. Fase 8 — Pacchetto dell'app — fatta (app portabile; l'installatore è tra le cose da fare)
-   Decisione dell'8 novembre 2026: la prima versione si pubblica come app portabile (zip), senza
-   installatore e con aggiornamenti manuali (spiegati nel README). Installatore e aggiornamento
-   automatico arrivano in una versione successiva.
+3. Fase 8 — Pacchetto dell'app — fatta, con installatore e controllo degli aggiornamenti (8
+   novembre 2026: NSIS usato direttamente, senza electron-builder)
 4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
 5. Fase 6c — Accesso al database in sola lettura: spostata dopo la pubblicazione
 
@@ -71,7 +69,7 @@ agenti. `--codex-path`, `--ci` e `--record` restano solo da riga di comando. Det
 mostrare l'errore se `config.json` non è valido (oggi l'orchestratore si ferma e lo scrive nel
 suo log).
 
-## Fase 8 — Pacchetto dell'app (fatta, senza installatore)
+## Fase 8 — Pacchetto dell'app (fatta)
 
 L'app installabile, che avvia da sola l'orchestratore senza i sorgenti.
 
@@ -79,10 +77,17 @@ Fatta: `npm run package -w app` crea l'app portabile (cartella con `Keystone.exe
 `--zip`) con l'orchestratore in bundle, le fuse di Electron irrigidite e l'errore d'avvio mostrato
 nell'app. Dettagli in `docs/pacchetto.md`; resoconto in `docs/resoconti/fase-8.md`.
 
-- [ ] **Installatore (NSIS con electron-builder).** Rinviato: electron-builder 26.18 porta
-  `minimatch` con l'avviso GHSA-g3hv-75wg-m249; la versione corretta (11.0.1, del 27 ottobre 2026)
-  avrà 14 giorni dal 10 novembre 2026, insieme alla sua nuova dipendenza. Allora: override di
-  `minimatch` (con il lockfile rigenerato solo per quel ramo), `npm audit` pulito, installatore.
+- [x] **Installatore** (8 novembre 2026). NSIS 3.13 usato direttamente (`npm run installer -w
+  app`), senza electron-builder: evita `minimatch` con l'avviso GHSA-g3hv-75wg-m249 e il pacchetto
+  nuovissimo che la sua correzione trascinava. Nessuna dipendenza npm nuova. Dettagli in
+  `docs/pacchetto.md`; resoconto in `docs/resoconti/installatore.md`.
+- [x] **Controllo degli aggiornamenti**: l'app avvisa di una release nuova su GitHub e apre la
+  pagina; non scarica né installa da sola. Si spegne in Impostazioni. Pulsante "Ferma
+  orchestratore" per aggiornare senza file in uso.
+- [ ] **Firma del codice** (certificato o Azure Trusted Signing): toglierebbe l'avviso di
+  SmartScreen e renderebbe verificabile chi ha pubblicato l'installatore. Da decidere (costa).
+- [ ] **Scaricamento dentro l'app** (facoltativo): scaricare l'installatore e verificarne
+  l'impronta senza passare dal browser. Ha senso solo con la firma del codice.
 
 ## Pubblicazione — da fare prima
 
