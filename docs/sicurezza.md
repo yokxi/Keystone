@@ -98,6 +98,26 @@ Arriva una sola decisione di merge per obiettivo, invece di una per task.
     dell'obiettivo e di risolvere; poi arriva una nuova decisione.
 - **Merge per task.** Si ripristina con `"mergePerTask": true` in `config.json`.
 
+Protezioni aggiunte con la revisione:
+
+- **Il branch dell'obiettivo nasce con l'obiettivo.** Se il tuo checkout è su un branch di
+  Keystone, l'obiettivo non parte. Un branch `Keystone/goal/<id>` già esistente (per esempio
+  lasciato da un "Rifiuta") non viene mai riusato: si crea `<id>-2`. Gli obiettivi nati prima della
+  Fase 11, senza branch, restano sul flusso per task.
+- **Il merge automatico va solo verso il branch di quell'obiettivo**, non verso un qualunque
+  `Keystone/goal/*`. Viene rifiutato anche se quel branch è aperto in un tuo checkout: lì il lavoro
+  arriva solo con un merge che approvi tu.
+- **Si unisce esattamente il lavoro che hai rivisto.** La decisione registra il commit del branch
+  dell'obiettivo (`reviewedSha`). Se il branch cambia prima del tuo click, il merge non parte e
+  arriva una nuova decisione. Il branch può cambiare per un task nuovo, che annulla subito la
+  decisione aperta, o per un commit fatto dai test finali. I test finali eseguono codice scritto
+  dagli agenti: se cambiano il branch, la decisione non viene creata e ricevi un avviso.
+- **La pulizia dopo i test lavora sui percorsi reali.** Tolta solo un file, o un link come link,
+  la cui cartella, risolti link e junction, è dentro il worktree. Non tocca mai `.git`; le cartelle
+  restano, eventualmente vuote.
+- **Le risposte alla decisione finale.** In pausa per il tetto di spesa la decisione finale non
+  arriva. "Richiedi modifiche" senza testo riapre la decisione chiedendo cosa cambiare.
+
 ## 3. Conflitti
 
 Se al momento del merge la base è cambiata e c'è un conflitto, il merge non viene fatto, la

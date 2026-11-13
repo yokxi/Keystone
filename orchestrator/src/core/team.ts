@@ -346,12 +346,8 @@ export class Team {
       continuesFrom = prev.agentId;
     }
     // merge per obiettivo (default): il worktree parte dal branch dell'obiettivo e lì verrà unito
-    let goalBranch: string | undefined;
-    if (!this.o.mergePerTask && repoId === goal.repoId) {
-      const gb = await this.o.repos.ensureGoalBranch(repoId, goal.id, goal.base);
-      if (goal.branch !== gb.branch || goal.base !== gb.base) this.o.setGoal(goal.id, { branch: gb.branch, base: gb.base });
-      goalBranch = gb.branch;
-    }
+    // (solo per gli obiettivi nati con il proprio branch: quelli precedenti restano per task)
+    const goalBranch = !this.o.mergePerTask && goal.branch && repoId === goal.repoId ? goal.branch : undefined;
     const wt = await this.o.repos.createWorktree(repoId, agentId, t, startPoint, goalBranch);
     this.o.tasks.update(t.id, { branch: wt.branch, worktree: wt.id });
     this.o.tasks.setStatus(t.id, 'doing');

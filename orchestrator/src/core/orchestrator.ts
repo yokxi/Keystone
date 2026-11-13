@@ -547,14 +547,15 @@ export class Orchestrator {
   async submitForMerge(t: Task, summary: string): Promise<string> {
     const goal = t.goalId ? this.goal(t.goalId) : undefined;
     const wt = t.repoId && t.worktree ? this.repos.findWorktree(t.repoId, t.worktree) : undefined;
-    if (this.mergePerTask || !goal || !wt || !isGoalBranch(wt.base)) {
+    // solo verso il branch di questo obiettivo; ogni altro caso è una decisione dell'utente per il task
+    if (this.mergePerTask || !goal?.branch || !wt || wt.base !== goal.branch || !isGoalBranch(goal.branch)) {
       const d = await this.openMergeDecision(t, summary);
       return d ? `Decisione di merge ${d.id} inviata a ${this.userName}.` : `${t.id} non ha modificato nessun file: chiuso come completato, niente da unire.`;
     }
-    return this.mergeTaskIntoGoal(t, wt, goal, summary);
+    return this.mergeTaskIntoGoal(t, wt, goal as Goal & { branch: string }, summary);
   }
 
-  private async mergeTaskIntoGoal(t: Task, wt: Worktree, goal: Goal, summary: string): Promise<string> {
+  private async mergeTaskIntoGoal(t: Task, wt: Worktree, goal: Goal & { branch: string }, summary: string): Promise<string> {
     const agentId = wt.agentId;
     const identity = { name: `Keystone ${this.nameOf(agentId)}`, email: `${agentId}@keystone.local` };
     const finish = (text: string) => {
@@ -563,13 +564,15 @@ export class Orchestrator {
     };
     await this.repos.refresh(wt.repoId);
     try {
-      const res = await this.repos.mergeIntoGoal(wt.repoId, wt.id, {
+      const res = await this.repos.mergeIntoGoal(wt.repoId, wt.id, goal.branch, {
         commitMessage: `${t.id}: ${t.title}\n\n${summary}`,
         agentIdentity: identity,
         keystoneIdentity: { name: 'Keystone', email: 'keystone@keystone.local' },
       });
       this.tasks.update(t.id, { summary });
       this.tasks.setStatus(t.id, 'done', { merged: true });
+      // una decisione finale ancora aperta non vale più: il lavoro dell'obiettivo è cambiato
+      for (const d of this.decisions.open().filter((x) => x.kind === 'merge' && x.goalId === goal.id)) this.decisions.cancel(d.id, `nel frattempo ${t.id} è entrato nel lavoro dell'obiettivo: arriverà una nuova decisione`);
       this.bus.feed('merge', `${t.id} unito nel branch dell'obiettivo ${goal.id} (${res.sha}, ${res.files} file): il merge nel tuo branch lo approvi alla fine dell'obiettivo`);
       finish(`${t.id} unito nell'obiettivo`);
       void this.checkGoalReady(goal.id);
@@ -604,7 +607,7 @@ export class Orchestrator {
   async checkGoalReady(goalId: string): Promise<Decision | undefined> {
     const g = this.goal(goalId);
     if (this.mergePerTask || !g?.branch || !g.base || !g.repoId) return undefined;
-    if (g.status === 'done' || g.status === 'cancelled' || !this.tasks.goalComplete(goalId)) return undefined;
+    if (g.status === 'done' || g.status === 'cancelled' || g.status === 'paused' || !this.tasks.goalComplete(goalId)) return undefined;
     if (this.decisions.open().some((d) => d.kind === 'merge' && d.goalId === goalId)) return undefined;
     if (this.goalChecks.has(goalId)) return undefined;
     // il lead sta pianificando (modifiche chieste o conflitto): la decisione arriva dopo i suoi task
@@ -616,6 +619,8 @@ export class Orchestrator {
         this.bus.feed('goal', `Obiettivo completato senza modifiche da unire: ${truncate(g.text, 100)}`);
         return undefined;
       }
+      const reviewedSha = await this.repos.branchSha(g.repoId, g.branch);
+      if (!reviewedSha) throw new RepoError(`il branch ${g.branch} non esiste più`, 'refused');
       const wt = await this.repos.createGoalWorktree(g.repoId, goalId, this.leadId, g.base);
       await this.repos.refresh(g.repoId);
       this.setAgent(this.leadId, { state: 'testing', activity: `test finali di ${goalId}` });
@@ -626,6 +631,9 @@ export class Orchestrator {
         // i file lasciati dai test non devono finire nella diff né nel merge
         await this.repos.cleanGoalWorktree(g.repoId, wt.id);
       }
+      // i test (codice degli agenti) non devono aver cambiato il branch: si unisce solo quello rivisto
+      const after = await this.repos.branchSha(g.repoId, g.branch);
+      if (after !== reviewedSha) throw new RepoError(`durante i test finali il branch ${g.branch} è cambiato (${reviewedSha.slice(0, 7)} → ${after?.slice(0, 7) ?? 'nessuno'}): controlla il lavoro prima di unirlo`, 'unsafe');
       const tasks = this.tasks.ofGoal(goalId).filter((t) => t.status === 'done');
       const fresh = this.repos.findWorktree(g.repoId, wt.id) ?? wt;
       const d = this.createDecision({
@@ -642,6 +650,7 @@ export class Orchestrator {
           ...tasks.filter((t) => t.visual).map((t) => `${t.id}: ${visualSummary(t.visual!)}`),
         ].join('\n'),
         goalId,
+        reviewedSha,
         repoId: g.repoId,
         worktree: wt.id,
       });
@@ -693,6 +702,16 @@ export class Orchestrator {
           this.bus.feed('merge', `Obiettivo ${g.id}: niente da unire, completato`);
           return;
         }
+        // il lavoro è cambiato dopo la review, o il worktree dell'obiettivo non c'è più: la decisione
+        // non vale più, se ne prepara una nuova con lo stato attuale
+        const wtNow = d.repoId && d.worktree ? this.repos.findWorktree(d.repoId, d.worktree) : undefined;
+        if ((e instanceof RepoError && e.code === 'stale') || !wtNow || wtNow.status !== 'active') {
+          this.decisions.reopen(d.id);
+          this.decisions.cancel(d.id, e instanceof RepoError ? e.message : "worktree dell'obiettivo non disponibile");
+          this.bus.feed('merge', `Obiettivo ${g.id}: ${e instanceof RepoError ? e.message : 'la decisione non vale più'}`);
+          void this.checkGoalReady(g.id);
+          return;
+        }
         if (e instanceof RepoError && e.code === 'conflict') {
           // il branch dell'utente è cambiato: un worker unisce e risolve, poi arriva una nuova decisione
           this.decisions.reopen(d.id);
@@ -707,7 +726,14 @@ export class Orchestrator {
         this.bus.feed('merge', `Merge dell'obiettivo ${g.id} non eseguito: ${reason}`);
       }
     } else if (opt === MERGE_OPTIONS[1]) {
-      this.team.requestGoalChanges(g, d.answer?.text ?? '');
+      // senza dettagli il lead non saprebbe cosa cambiare e la decisione tornerebbe identica
+      if (!d.answer?.text?.trim()) {
+        this.decisions.reopen(d.id, `${d.context ?? ''}
+
+Scrivi cosa cambiare in "Richiedi modifiche".`.trim());
+        return;
+      }
+      this.team.requestGoalChanges(g, d.answer.text);
     } else if (opt === MERGE_OPTIONS[2]) {
       const wt = d.repoId && d.worktree ? this.repos.findWorktree(d.repoId, d.worktree) : undefined;
       if (wt?.status === 'active') await this.repos.abandon(wt.repoId, wt.id, `obiettivo ${g.id}: rifiutato`, lead);
@@ -820,8 +846,12 @@ export class Orchestrator {
         if (!repo) throw new ClientError(msg.repoId ? `nessun repository ${msg.repoId}` : 'nessun repository registrato: aggiungine uno');
         const budgetUsd = msg.budgetUsd ?? this.defaultBudgetUsd;
         const limits = this.defaultGoalLimits;
+        const id = this.store.nextId('g');
+        // merge per obiettivo: il branch dell'obiettivo nasce con l'obiettivo, dal branch dell'utente
+        const gb = this.mergePerTask ? undefined : await this.repos.createGoalBranch(repo.id, id);
         const goal: Goal = {
-          id: this.store.nextId('g'),
+          id,
+          ...(gb ? { branch: gb.branch, base: gb.base } : {}),
           text: msg.text.trim(),
           status: 'planning',
           progress: 0,

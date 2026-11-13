@@ -246,6 +246,8 @@ export const Decision = z.object({
   taskId: Id.optional(),
   /** merge dell'intero obiettivo (Fase 11): niente taskId, il worktree è quello dell'obiettivo */
   goalId: Id.optional(),
+  /** merge dell'obiettivo: il commit rivisto (se il branch cambia, la decisione non vale più) */
+  reviewedSha: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
   repoId: Id.optional(),
   worktree: Id.optional(),
   /** permesso: il tool richiesto (Bash, Edit, ...) */

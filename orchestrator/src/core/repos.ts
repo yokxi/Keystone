@@ -53,7 +53,7 @@ export function isGoalBranch(branch: string): boolean {
   return branch.startsWith(GOAL_BRANCH_PREFIX) && /^[a-z0-9-]{1,40}$/i.test(branch.slice(GOAL_BRANCH_PREFIX.length));
 }
 
-export type RepoErrorCode = 'not_found' | 'not_git' | 'not_root' | 'no_commits' | 'needs_confirmation' | 'refused' | 'conflict' | 'dirty' | 'empty' | 'unsafe' | 'failed';
+export type RepoErrorCode = 'not_found' | 'not_git' | 'not_root' | 'no_commits' | 'needs_confirmation' | 'refused' | 'conflict' | 'dirty' | 'empty' | 'unsafe' | 'failed' | 'stale';
 
 export class RepoError extends Error {
   constructor(
@@ -364,17 +364,28 @@ export class RepoManager {
   }
 
   /**
-   * Il branch dell'obiettivo (Keystone/goal/<id>), creato dal branch dell'utente se non c'è ancora.
-   * Non è mai il branch dell'utente: lì il lavoro arriva solo dal merge approvato.
+   * Crea il branch di un obiettivo nuovo (Keystone/goal/<id>) dal branch dell'utente. Non riusa mai
+   * un branch che esiste già (per esempio lasciato da un obiettivo rifiutato con lo stesso id dopo
+   * un reset): in quel caso usa <id>-2, <id>-3, … Non è mai il branch dell'utente: lì il lavoro
+   * arriva solo dal merge approvato.
    */
-  ensureGoalBranch(repoId: string, goalId: string, knownBase?: string): Promise<{ branch: string; base: string }> {
+  createGoalBranch(repoId: string, goalId: string): Promise<{ branch: string; base: string }> {
     return this.serial(repoId, async () => {
       const r = this.require(repoId);
-      const branch = goalBranchName(goalId);
-      const base = knownBase ?? (await this.userBase(r));
-      if (!(await this.branchExists(r.path, branch))) await git(r.path, ['branch', '--no-track', branch, `refs/heads/${base}`]);
+      const base = await this.userBase(r);
+      if (isGoalBranch(base) || base.startsWith(`${BRANCH_PREFIX}/`)) throw new RepoError(`il checkout di ${r.name} è su ${base}, un branch di Keystone: apri il tuo branch prima di dare un obiettivo`, 'refused');
+      let branch = goalBranchName(goalId);
+      for (let n = 2; await this.branchExists(r.path, branch); n++) branch = goalBranchName(`${goalId}-${n}`);
+      await git(r.path, ['branch', '--no-track', branch, `refs/heads/${base}`]);
       return { branch, base };
     });
+  }
+
+  /** Lo sha a cui punta un branch (undefined se non esiste). */
+  async branchSha(repoId: string, branch: string): Promise<string | undefined> {
+    const r = this.require(repoId);
+    const res = await git(r.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFail: true });
+    return res.code === 0 ? res.stdout.trim() : undefined;
   }
 
   /**
@@ -524,6 +535,11 @@ export class RepoManager {
     const w = this.requireWorktree(r.id, d.worktree);
     if (w.status !== 'active') throw new RepoError(`il worktree ${w.id} è ${w.status}`, 'refused');
     const what = w.taskId ? `, task ${w.taskId}` : w.goalId ? `, obiettivo ${w.goalId}` : '';
+    // merge dell'obiettivo: si unisce esattamente il lavoro che l'utente ha rivisto
+    if (w.goalId && d.reviewedSha) {
+      const now = await this.branchSha(r.id, w.branch);
+      if (now !== d.reviewedSha) throw new RepoError(`il lavoro dell'obiettivo è cambiato dopo la review (${d.reviewedSha.slice(0, 7)} → ${now?.slice(0, 7) ?? 'nessuno'}): arriverà una nuova decisione`, 'stale');
+    }
     return this.mergeCore(r, w, { ...opts, approval: `Approvato in Keystone (decisione ${d.id}${what}).`, userMerge: true });
   }
 
@@ -533,12 +549,22 @@ export class RepoManager {
    * branch dell'utente si raggiunge solo con il merge approvato (merge). Il commit di merge è di
    * Keystone, senza firma: non usa la tua identità né le tue chiavi.
    */
-  mergeIntoGoal(repoId: string, worktreeId: string, opts: { commitMessage: string; agentIdentity: { name: string; email: string }; keystoneIdentity: { name: string; email: string } }): Promise<MergeResult> {
+  mergeIntoGoal(repoId: string, worktreeId: string, goalBranch: string, opts: { commitMessage: string; agentIdentity: { name: string; email: string }; keystoneIdentity: { name: string; email: string } }): Promise<MergeResult> {
     return this.serial(repoId, async () => {
       const r = this.require(repoId);
       const w = this.requireWorktree(r.id, worktreeId);
       if (w.status !== 'active') throw new RepoError(`il worktree ${w.id} è ${w.status}`, 'refused');
-      if (!isGoalBranch(w.base) || w.goalId || isGoalBranch(w.branch)) throw new RepoError(`${w.id} non va unito in un branch dell'obiettivo (base ${w.base}): serve la tua approvazione`, 'refused');
+      // la base deve essere proprio il branch di QUESTO obiettivo, non un qualunque Keystone/goal/*
+      if (!isGoalBranch(goalBranch) || w.base !== goalBranch || w.goalId || isGoalBranch(w.branch)) {
+        throw new RepoError(`${w.id} non va unito nel branch dell'obiettivo ${goalBranch} (base ${w.base}): serve la tua approvazione`, 'refused');
+      }
+      // il branch dell'obiettivo non può essere estratto in un checkout dell'utente: può esserlo
+      // solo nel worktree dell'obiettivo, che è di Keystone
+      const out = await this.checkoutOf(r, goalBranch);
+      const goalWt = r.worktrees.find((x) => x.goalId && x.branch === goalBranch && x.status === 'active');
+      if (out && !(goalWt && samePath(out, goalWt.path))) {
+        throw new RepoError(`${goalBranch} è aperto in ${out}: lì il lavoro arriva solo con un merge che approvi tu`, 'refused');
+      }
       return this.mergeCore(r, w, { ...opts, approval: `Unito da Keystone nel branch dell'obiettivo dopo la review del lead${w.taskId ? ` (task ${w.taskId})` : ''}.`, userMerge: false });
     });
   }
@@ -840,6 +866,25 @@ export class RepoManager {
   }
 
   /** Esegue i test nel worktree, con l'ambiente indicato (quello sicuro degli agenti). */
+  /**
+   * Toglie un file (o un link) creato dai test, solo se si trova davvero dentro il worktree: la
+   * cartella che lo contiene, risolti link e junction, deve essere nel worktree reale. Un link si
+   * toglie come link, senza seguirlo; le cartelle non si toccano.
+   */
+  private removeInside(root: string, rel: string): void {
+    try {
+      const realRoot = fs.realpathSync(root);
+      const abs = path.resolve(root, rel);
+      const realParent = fs.realpathSync(path.dirname(abs));
+      if (!isInsideOrEqual(realRoot, realParent)) return;
+      const target = path.join(realParent, path.basename(abs));
+      const st = fs.lstatSync(target);
+      if (st.isFile() || st.isSymbolicLink()) fs.unlinkSync(target);
+    } catch {
+      /* già sparito, o non accessibile: si lascia */
+    }
+  }
+
   /** I file non tracciati e non ignorati del worktree (percorsi relativi, con "/"). */
   private async untracked(dir: string): Promise<string[]> {
     const r = await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'], { allowFail: true });
@@ -856,9 +901,8 @@ export class RepoManager {
     const before = new Set(await this.untracked(w.path));
     const res = await runShell(command, { cwd: w.path, env: opts.env, timeoutMs: opts.timeoutMs });
     for (const f of await this.untracked(w.path)) {
-      if (before.has(f)) continue;
-      const abs = path.resolve(w.path, f);
-      if (isInsideOrEqual(w.path, abs) && !samePath(w.path, abs) && !f.split('/').includes('.git')) fs.rmSync(abs, { force: true });
+      if (before.has(f) || f.split('/').includes('.git')) continue;
+      this.removeInside(w.path, f);
     }
     const output = lastLines(res.output.trim(), 40) + (res.timedOut ? `\n(tempo scaduto dopo ${Math.round(opts.timeoutMs / 1000)} s: processi terminati)` : '');
     return { command, pass: res.code === 0 && !res.timedOut, code: res.code, timedOut: res.timedOut, output, durationMs: res.durationMs };

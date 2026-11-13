@@ -24,6 +24,8 @@ export interface NewDecision {
   taskId?: string;
   /** merge dell'intero obiettivo (Fase 11) */
   goalId?: string;
+  /** merge dell'obiettivo: il commit rivisto */
+  reviewedSha?: string;
   repoId?: string;
   worktree?: string;
   tool?: string;
@@ -85,6 +87,7 @@ export class DecisionQueue {
       ...(input.context ? { context: input.context } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
       ...(input.goalId ? { goalId: input.goalId } : {}),
+      ...(input.reviewedSha ? { reviewedSha: input.reviewedSha } : {}),
       ...(input.repoId ? { repoId: input.repoId } : {}),
       ...(input.worktree ? { worktree: input.worktree } : {}),
       ...(input.tool ? { tool: input.tool } : {}),

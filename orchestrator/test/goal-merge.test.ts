@@ -126,8 +126,8 @@ describe('merge per obiettivo', () => {
     await submit(o, 'Aggiungi un saluto');
     const d = await waitFor(() => openDecision(o, (x) => x.kind === 'merge' && x.taskId === 't1'), 'decisione del task');
     // un worktree che parte dal branch dell'utente: senza decisione non si unisce
-    await expect(o.repos.mergeIntoGoal(d.repoId!, d.worktree!, { commitMessage: 'x', agentIdentity: { name: 'a', email: 'a@a' }, keystoneIdentity: { name: 'k', email: 'k@k' } })).rejects.toBeInstanceOf(RepoError);
-    await expect(o.repos.mergeIntoGoal(d.repoId!, d.worktree!, { commitMessage: 'x', agentIdentity: { name: 'a', email: 'a@a' }, keystoneIdentity: { name: 'k', email: 'k@k' } })).rejects.toThrow(/serve la tua approvazione/);
+    await expect(o.repos.mergeIntoGoal(d.repoId!, d.worktree!, 'Keystone/goal/g1', { commitMessage: 'x', agentIdentity: { name: 'a', email: 'a@a' }, keystoneIdentity: { name: 'k', email: 'k@k' } })).rejects.toBeInstanceOf(RepoError);
+    await expect(o.repos.mergeIntoGoal(d.repoId!, d.worktree!, 'Keystone/goal/g1', { commitMessage: 'x', agentIdentity: { name: 'a', email: 'a@a' }, keystoneIdentity: { name: 'k', email: 'k@k' } })).rejects.toThrow(/serve la tua approvazione/);
   });
 
   it("dopo i test si tolgono solo i file creati dai test, non il lavoro dell'agente non ancora committato", async () => {
