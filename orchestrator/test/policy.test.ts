@@ -389,8 +389,9 @@ describe('fase 10: forme comuni degli agenti consentite, senza perdere verificab
   });
 
   it('cicli e condizioni: conta il comando dentro', () => {
-    expectAction(bash('ls | while read f; do echo "$f"; done'), 'allow', 'while read');
-    expectAction(bash('ls | while read f; do echo "$f"; done', lead()), 'allow', 'while read del lead');
+    // read e for chiedono sempre (quarto giro di revisione): il valore della variabile non è verificabile
+    expectAskAlways(bash('ls | while read f; do echo "$f"; done'), 'while read');
+    expectAction(bash('while true; do ls; done'), 'allow', 'while con un comando consentito');
     expectAction(bash('if [ -f a ]; then cat a; else echo no; fi'), 'allow', 'if');
     expectAction(bash('while true; do curl http://example.com; done'), 'ask', 'rete dentro un ciclo');
     expectAction(bash('do rm -rf build'), 'ask', 'rm dopo do');
@@ -436,10 +437,10 @@ describe('fase 10: le forme raccomandate nelle istruzioni sono consentite dalla 
 });
 
 describe('fase 10, dopo la revisione: niente nuove strade per aggirare la policy', () => {
-  it('read e for non cambiano l\'ambiente: solo variabili minuscole', () => {
+  it('read e for chiedono sempre, con qualunque nome', () => {
     for (const c of ['read PATH < a', 'read -r PATH <<< .', 'while read PATH; do ls; done < a', 'read BASH_ENV < a', 'read http_proxy < a', 'for PATH in .; do ls; done', 'read $x < a'])
       expectAskAlways(bash(c), c);
-    expectAction(bash('ls | while read -r line; do echo "$line"; done'), 'allow', 'read di una variabile minuscola');
+    expectAskAlways(bash('ls | while read -r line; do echo "$line"; done'), 'read di una variabile minuscola');
   });
 
   it('sostituzione di solo testo: consentita solo come messaggio di git commit', () => {
@@ -520,5 +521,30 @@ describe('fase 10, terzo giro di revisione', () => {
 
   it('un percorso con la lettera di unità dentro un\'opzione breve si controlla', () => {
     for (const c of ['git diff -OC:/Users/x/secret', 'git grep -fC:/Windows/win.ini x', 'git log -zC:/Users/x/secret', 'grep -nC:/Windows/win.ini x']) expectAction(bash(c), 'ask', c);
+  });
+});
+
+describe('fase 10, quarto giro: il contenuto di una variabile non arriva a comandi che lo interpretano', () => {
+  it('read e for chiedono sempre: il valore poi finirebbe in sed, printf, rg, git…', () => {
+    for (const c of [
+      `for x in '1e curl a'; do sed "$x" a; done`,
+      `for x in '-v PATH'; do printf $x /x; done; ls`,
+      `for x in '--pre=./e'; do rg $x a; done`,
+      `for x in 'a -F /etc/passwd'; do git commit -m $x; done`,
+      'while read x; do grep $x a; done',
+      'echo a | while read x; do uname $x; done',
+      'for f in *.md; do echo "$f"; done',
+    ])
+      expectAskAlways(bash(c), c);
+  });
+
+  it('espansioni che valutano una variabile chiedono sempre', () => {
+    for (const c of ['echo ${x:x}', 'echo $[x]', 'echo ${!x}', 'echo ${y:-${x:x}}', 'echo ${x:0:3}']) expectAskAlways(bash(c), c);
+    for (const c of ['echo ${HOME}', 'echo ${HOME:-/tmp}']) expectAction(bash(c), 'allow', c);
+  });
+
+  it('set: solo le opzioni che fermano lo script agli errori', () => {
+    for (const c of ['set -e', 'set -o pipefail', 'set -euo pipefail']) expectAction(bash(c), 'allow', c);
+    for (const c of ['set -x', 'set +o posix', 'set -o vi']) expectAction(bash(c), 'ask', c);
   });
 });

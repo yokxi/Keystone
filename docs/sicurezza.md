@@ -216,11 +216,17 @@ comando chiedeva. Restano verificabili:
   con parole fisse. Solo come messaggio: in ogni altra posizione (`--file=$(…)`, un argomento di
   npm, …) una sostituzione chiede come prima;
 - cicli e condizioni (`while … do … done`, `if … then … fi`, `{ …; }`): conta il comando dentro,
-  classificato come gli altri. `for x in …` chiede se i valori vengono da un comando, e la
-  variabile del ciclo usata come percorso chiede;
-- `read` e `for` solo verso variabili con nome minuscolo (non `*proxy*`). Le variabili che cambiano
-  il comportamento dei programmi (`PATH`, `IFS`, `BASH_ENV`, `LD_*`, `GIT_*`) sono maiuscole:
-  `read PATH < f` o `for PATH in .` chiedono sempre, come ogni modifica dell'ambiente.
+  classificato come gli altri.
+
+**`read` e `for` chiedono sempre.** All'inizio la Fase 10 li consentiva verso variabili con nome
+minuscolo. Quattro giri di revisione hanno però mostrato che una variabile con contenuto scelto
+dall'agente finisce in comandi la cui interpretazione la policy non può verificare: `sed "$x"`
+(il comando `e` di sed esegue programmi), `printf $x` (`-v PATH`), `rg $x` (`--pre`),
+`git commit -m $x` (`-F file`), `${x:x}`, `${!x}` e `$[x]`, che eseguono i `$(…)` negli indici.
+La scelta più prudente è stata tornare indietro: assegnare una variabile da un comando è di nuovo
+una richiesta, senza "Consenti sempre". Chiedono sempre anche le espansioni che valutano una
+variabile (`${x@P}`, `${x:…}` con un numero o un'espressione, `${!x}`, `$[…]`) e `set` con opzioni
+diverse da `-e`, `-u`, `-o pipefail`.
 
 Corretti con la revisione della Fase 10:
 

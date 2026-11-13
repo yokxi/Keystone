@@ -220,16 +220,6 @@ const SYSTEM = new Set(['sudo', 'su', 'doas', 'runas', 'taskkill', 'kill', 'pkil
 const ENV_PROGRAMS = new Set(['export', 'set', 'setx', 'unset', 'setenv', 'unsetenv', 'set-item', 'si', 'set-variable', 'sv', 'remove-variable', 'declare', 'typeset', 'local', 'readonly', 'source', '.']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'cmd', 'powershell', 'pwsh']);
 const WRAPPERS = new Set(['timeout', 'nice', 'nohup', 'time', 'command', 'exec', 'builtin', 'stdbuf', 'ionice']);
-/**
- * Nomi di variabile che read/for possono assegnare: minuscoli, e non quelli che su Windows (dove
- * le variabili d'ambiente non distinguono maiuscole e minuscole) o in bash cambiano il
- * comportamento dei programmi.
- */
-const ENV_LIKE = /^(path|pathext|home|comspec|temp|tmp|tmpdir|userprofile|systemroot|windir|appdata|localappdata|programdata|psmodulepath|ifs|ps4|bash_env|env|shellopts|bashopts|cdpath|globignore|histfile|prompt_command|editor|visual|pager|shell)$|^(ld_|git_|node_|npm_|python|dyld_|ssh_|gpg)|proxy/i;
-function safeVarName(name: string): boolean {
-  return /^[a-z_][a-z0-9_]*$/.test(name) && !ENV_LIKE.test(name);
-}
-
 /** parole chiave seguite da un comando: while read l; do echo "$l"; done */
 const SHELL_KEYWORDS = new Set(['while', 'until', 'if', 'elif', 'then', 'else', 'do', '!', '{']);
 const SHELL_CLOSERS = new Set(['done', 'fi', '}']);
@@ -493,9 +483,11 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
 
   // ${VAR:=x} / ${VAR=x} assegnano una variabile dentro una parola qualsiasi
   if (cmd.words.some((w) => /\$\{[^}]*?:?=/.test(w.text))) out.push(ask(`assegna una variabile con \${VAR=…}: ${raw}`, exactKey('Bash', raw), false));
-  // ${x@P} (e le altre trasformazioni ${x@…}) espandono il contenuto della variabile come un
-  // prompt, eseguendo i $(…) che contiene: il comando dentro non è verificabile
-  if ([...cmd.words, ...cmd.redirects.map((r) => r.target).filter((t): t is Word => !!t)].some((w) => /\$\{[^}]*@[A-Za-z]/.test(w.text))) out.push(ask(`trasformazione \${VAR@…}: può eseguire comandi contenuti in una variabile: ${raw}`, exactKey('Bash', raw), false));
+  // ${x@P} (e le altre trasformazioni ${x@…}), le espansioni aritmetiche e indirette (${x:…},
+  // ${!x}, $[…], $((…)) con variabili) valutano il contenuto di una variabile, eseguendo i $(…)
+  // nei suoi indici: il comando dentro non è verificabile
+  const evaluating = (t: string) => /\$\{[^}]*@[A-Za-z]/.test(t) || /\$\{[^}]*:[^-=?+}]/.test(t) || /\$\{!/.test(t) || /\$\[/.test(t);
+  if ([...cmd.words, ...cmd.redirects.map((r) => r.target).filter((t): t is Word => !!t)].some((w) => evaluating(w.text))) out.push(ask(`espansione che valuta il contenuto di una variabile (\${x@…}, \${x:…}, \${!x}, $[…]): ${raw}`, exactKey('Bash', raw), false));
   const first = cmd.words[0]!;
   if (first.dynamic) return [...out, ask(`programma non verificabile: ${first.text}`, exactKey('Bash', raw), false)];
   if (/^\$env:/i.test(first.text) || /^\[(system\.)?environment\]::/i.test(first.text)) return [...out, ask(`modifica variabili d'ambiente: ${raw}`, exactKey('Bash', raw), false)];
@@ -520,25 +512,13 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
     return out;
   }
   if (SHELL_CLOSERS.has(first.text) && !rest.length) return out;
-  // read assegna variabili: consentito solo verso nomi minuscoli qualsiasi (le variabili d'ambiente
-  // che contano, PATH, IFS, BASH_ENV, LD_*, GIT_*, sono maiuscole) e non *_proxy. Altrimenti chiede
-  // sempre, come ogni modifica dell'ambiente: read PATH < f cambierebbe i programmi eseguiti dopo.
   // printf -v NOME assegna una variabile come read
   if (prog === 'printf' && rest.some((w) => /^-v/.test(w.text))) return [...out, ask(`printf -v imposta una variabile: ${raw}`, exactKey('Bash', raw), false)];
-  if (prog === 'read') {
-    const names = rest.filter((w) => w.text !== '-r');
-    const safe = names.every((w) => !w.dynamic && safeVarName(w.text));
-    if (!safe) out.push(ask(`read imposta variabili che possono cambiare l'ambiente: ${raw}`, exactKey('Bash', raw), false));
-    return out;
-  }
-  if (first.text === 'for' && rest.length >= 1 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(rest[0]!.text) && (rest.length === 1 || rest[1]!.text === 'in')) {
-    // "for x in a do …" senza ";" è un errore di sintassi in bash: per prudenza chiede
-    if (rest.slice(2).some((w) => ['do', 'done', 'then', 'fi'].includes(w.text))) return [...out, ask(`for: sintassi non riconosciuta: ${raw}`, exactKey('Bash', raw), false)];
-    // la variabile del ciclo è un'assegnazione: come per read, solo nomi minuscoli
-    if (!safeVarName(rest[0]!.text)) return [...out, ask(`for imposta una variabile che può cambiare l'ambiente: ${rest[0]!.text}`, exactKey('Bash', raw), false)];
-    for (const w of rest.slice(2)) if (w.dynamic) out.push(ask(`for: valori non verificabili "${w.text}"`, exactKey('Bash', raw)));
-    return out;
-  }
+  // read e for assegnano variabili con un contenuto scelto dall'agente, che poi finisce in comandi
+  // la cui interpretazione la policy non può verificare (sed "$x", printf $x, ${x:x}, $[x], …):
+  // chiedono sempre (revisione della Fase 10: consentirli apriva troppe strade)
+  if (prog === 'read') return [...out, ask(`read imposta variabili il cui valore poi non è verificabile: ${raw}`, exactKey('Bash', raw), false)];
+  if (first.text === 'for') return [...out, ask(`for imposta una variabile il cui valore poi non è verificabile: ${raw}`, exactKey('Bash', raw), false)];
 
   // il lead è in sola lettura nel checkout dell'utente: solo programmi che leggono
   if (scope.role === 'lead' && !LEAD_PROGRAMS.has(prog)) {
@@ -561,7 +541,10 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
     return out;
   }
   if (ENV_PROGRAMS.has(prog)) {
-    if (prog === 'set' && (rest.length === 0 || /^-[eux]+$|^-o$|^\+[eux]+$/.test(a[0] ?? ''))) {
+    // solo le opzioni che fanno fermare lo script agli errori; le altre (-x, +o, -o qualcosa)
+    // cambiano il comportamento della shell e chiedono come ogni modifica dell'ambiente
+    const strict = a.join(' ');
+    if (prog === 'set' && (rest.length === 0 || ['-e', '-o pipefail', '-eo pipefail', '-e -o pipefail', '-euo pipefail', '-u'].includes(strict))) {
       if (rest.length === 0) out.push(ask('set mostra le variabili (possono contenere segreti)', 'Bash:set'));
       return out; // set -e / set -o pipefail: opzioni della shell
     }

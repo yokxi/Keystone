@@ -28,8 +28,11 @@ Dopo la prima prova reale (13 novembre 2026): 9 richieste di permesso in un obie
 Scelta dell'utente: la regola "tutto ciò che non è consentito chiede" resta; si allargano i
 consentiti e si istruiscono meglio gli agenti.
 
-- Consentite le sostituzioni di solo testo (`$(cat <<'EOF' …)` per i commit), i cicli e le
-  condizioni della shell, `read`.
+- Consentiti il messaggio di commit con `$(cat <<'EOF' …)` tra virgolette, i cicli e le
+  condizioni della shell. `read` e `for` erano stati consentiti, poi ritirati dopo la revisione
+  (il contenuto della variabile non è verificabile).
+- Quattro giri di revisione: corretti here-doc, `(( ))`, opzioni con valore attaccato, `rg --pre`,
+  `printf -v`, espansioni che valutano variabili (alcuni preesistenti).
 - Istruzioni agli agenti: Edit/Write invece di script, niente `/tmp` o browser, niente task di
   sola verifica (test e schermate li fa Keystone).
 - Trovati e corretti due modi di nascondere comandi alla policy nel corpo di un here-doc.
