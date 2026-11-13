@@ -31,6 +31,7 @@ import { EventChannel, PermissionBroker } from '../channel.js';
 import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TeamToolResult, TurnSpec } from '../types.js';
 import { detectApiAuth, detectClaudeLogin, envForAuth, NO_API_AUTH_MESSAGE, NO_LOGIN_TOKEN_MESSAGE } from './auth.js';
 import { DEFAULT_LEAD_MODEL, DEFAULT_WORKER_MODEL, displayClaudeModel } from './models.js';
+import { VERSION } from '../../version.js';
 
 export const MCP_SERVER = 'keystone';
 const MCP_PREFIX = `mcp__${MCP_SERVER}__`;
@@ -241,7 +242,7 @@ export class ClaudeEngine implements EngineAdapter {
       ...spec.env,
       // le credenziali arrivano solo alla CLI (envForAuth sceglie quelle della modalità)
       ...spec.credentials,
-      CLAUDE_AGENT_SDK_CLIENT_APP: 'keystone/0.1.0',
+      CLAUDE_AGENT_SDK_CLIENT_APP: `keystone/${VERSION}`,
       // la CLI non legge ~/.claude dell'utente, in nessuna modalità
       CLAUDE_CONFIG_DIR: configDir,
       // chiave API e token di login restano alla CLI: Bash, server MCP stdio e hook non li vedono
@@ -269,7 +270,7 @@ export class ClaudeEngine implements EngineAdapter {
       mcpServers: {
         [MCP_SERVER]: createSdkMcpServer({
           name: MCP_SERVER,
-          version: '0.1.0',
+          version: VERSION,
           tools: spec.tools.map((t) =>
             sdkTool(t.name, t.description, t.schema.shape, async (args: Record<string, unknown>) => {
               const r = await t.run(args);

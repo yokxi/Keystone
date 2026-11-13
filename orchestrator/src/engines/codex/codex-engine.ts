@@ -33,6 +33,7 @@ import { EventChannel, PermissionBroker } from '../channel.js';
 import type { AuthCheck, EngineAdapter, EngineTurn, TeamTool, TeamToolResult, TurnSpec } from '../types.js';
 import { unwrapShell } from './command.js';
 import { RpcClient, type RpcMessage } from './rpc.js';
+import { VERSION } from '../../version.js';
 
 export const CODEX_VERSION = '0.163.0';
 const TEAM_PREFIX = 'mcp__keystone__';
@@ -285,7 +286,7 @@ export class CodexEngine implements EngineAdapter {
     const proc = this.spawnServer(ensureDir(this.cfg.codexHome), this.processEnv(process.env), 'ignore');
     const rpc = new RpcClient(proc.stdout!, proc.stdin!, { onNotification: () => undefined, onRequest: async () => Promise.reject(new Error('non gestito')) });
     try {
-      await rpc.request('initialize', { clientInfo: { name: 'keystone', title: 'Keystone', version: '0.1.0' }, capabilities: { experimentalApi: true, requestAttestation: false } }, 30_000);
+      await rpc.request('initialize', { clientInfo: { name: 'keystone', title: 'Keystone', version: VERSION }, capabilities: { experimentalApi: true, requestAttestation: false } }, 30_000);
       rpc.notify('initialized');
       const r = await rpc.request<{ account: Json | null }>('account/read', { refreshToken: false }, 30_000);
       return r.account;
@@ -479,7 +480,7 @@ export class CodexEngine implements EngineAdapter {
         proc.on('error', (e) => resolveDone('failed', `impossibile avviare Codex (${this.bin()}): ${e.message}`));
         rpc = new RpcClient(proc.stdout!, proc.stdin!, { onNotification, onRequest, ...(recorder ? { onMessage: (m: RpcMessage, d: 'in' | 'out') => recorder({ t: d, msg: m }) } : {}) });
 
-        await rpc.request('initialize', { clientInfo: { name: 'keystone', title: 'Keystone', version: '0.1.0' }, capabilities: { experimentalApi: true, requestAttestation: false } }, 60_000);
+        await rpc.request('initialize', { clientInfo: { name: 'keystone', title: 'Keystone', version: VERSION }, capabilities: { experimentalApi: true, requestAttestation: false } }, 60_000);
         rpc.notify('initialized');
         await this.ensureAuth(rpc);
         await this.disableSkills(rpc, spec.cwd);

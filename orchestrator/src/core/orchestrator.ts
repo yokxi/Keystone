@@ -21,7 +21,8 @@ import { visualSummary } from './prompts.js';
 import { Team, type TeamMember, type TeamOptions } from './team.js';
 import { cleanupVisualLeftovers, findBrowser, installChromium, runTry, runVisual, shotFile, type BrowserChoice, type VisualRunInput, type VisualTryInput, type VisualTryResult } from './visual.js';
 
-export const VERSION = '0.1.0';
+import { VERSION } from '../version.js';
+export { VERSION };
 
 /** Errore dovuto alla richiesta del client (mostrato all'utente). */
 export class ClientError extends Error {
