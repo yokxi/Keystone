@@ -102,10 +102,12 @@ Protezioni aggiunte con la revisione:
 
 - **Il branch dell'obiettivo nasce con l'obiettivo.** Se il tuo checkout è su un branch di
   Keystone, l'obiettivo non parte. Un branch `Keystone/goal/<id>` già esistente (per esempio
-  lasciato da un "Rifiuta") non viene mai riusato: si crea `<id>-2`. Gli obiettivi nati prima della
+  lasciato da un "Rifiuta") non viene mai riusato: si crea `<id>-2` (poi `-3`, …), e il nome vero
+  resta nell'obiettivo (`Goal.branch`). Worktree finale, test, diff e merge usano quel nome, mai uno
+  ricavato dall'id. Gli obiettivi nati prima della
   Fase 11, senza branch, restano sul flusso per task.
-- **Il merge automatico va solo verso il branch di quell'obiettivo**, non verso un qualunque
-  `Keystone/goal/*`. Viene rifiutato anche se quel branch è aperto in un tuo checkout: lì il lavoro
+- **Il merge automatico va solo verso il branch di quell'obiettivo** (la base del worktree del task
+  deve essere esattamente `Goal.branch`), non verso un qualunque `Keystone/goal/*`. Viene rifiutato anche se quel branch è aperto in un tuo checkout: lì il lavoro
   arriva solo con un merge che approvi tu.
 - **Si unisce esattamente il lavoro che hai rivisto.** La decisione registra il commit del branch
   dell'obiettivo (`reviewedSha`). Se il branch cambia prima del tuo click, il merge non parte e

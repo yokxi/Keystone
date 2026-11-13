@@ -32,6 +32,29 @@ describe('merge per obiettivo: casi limite', () => {
     await expect(submit(o, 'Aggiungi un saluto')).rejects.toThrow(/branch di Keystone/);
   });
 
+  it("un branch Keystone/goal/g1 rimasto da prima non viene riusato: test, diff e merge usano quello nuovo", async () => {
+    const { o, repo } = await setup({}, async (r) => {
+      // un lavoro rifiutato rimasto nel repository, con lo stesso id (per esempio dopo un reset)
+      await git(r, ['checkout', '-q', '-b', 'Keystone/goal/g1']);
+      fs.writeFileSync(path.join(r, 'lavoro-rifiutato.txt'), 'x');
+      await git(r, ['add', '-A']);
+      await git(r, ['-c', 'user.name=U', '-c', 'user.email=u@u', 'commit', '-q', '-m', 'rifiutato']);
+      await git(r, ['checkout', '-q', 'main']);
+    });
+    await submit(o, 'Aggiungi un saluto');
+    expect(o.goal('g1')?.branch).toBe('Keystone/goal/g1-2');
+    const d = await goalDecision(o);
+    expect(o.repos.findWorktree(d.repoId!, d.worktree!)?.branch).toBe('Keystone/goal/g1-2');
+    const files = (await o.repos.diff(d.repoId!, d.worktree!)).map((f) => f.path);
+    expect(files).not.toContain('lavoro-rifiutato.txt');
+    await answer(o, d.id, 'Merge');
+    expect(o.goal('g1')?.status).toBe('done');
+    expect(fs.existsSync(path.join(repo, 'keystone-sim', 't1.md'))).toBe(true);
+    expect(fs.existsSync(path.join(repo, 'lavoro-rifiutato.txt'))).toBe(false);
+    // il branch vecchio resta com'era
+    expect(await gitOut(repo, ['log', '-1', '--format=%s', 'Keystone/goal/g1'])).toBe('rifiutato');
+  }, 150_000);
+
   it("mergeIntoGoal: solo verso il branch di quell'obiettivo, mai se è aperto nel tuo checkout", async () => {
     const { o, repo } = await setup({ mergePerGoal: false });
     const repoId = o.repos.list()[0]!.id;

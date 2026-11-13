@@ -392,13 +392,14 @@ export class RepoManager {
    * Il worktree dell'obiettivo: il suo branch estratto in una cartella di Keystone, per i test
    * finali, la diff completa e il merge nel branch dell'utente. Lo usa solo Keystone, mai un agente.
    */
-  createGoalWorktree(repoId: string, goalId: string, agentId: string, base: string): Promise<Worktree> {
+  createGoalWorktree(repoId: string, goalId: string, branch: string, agentId: string, base: string): Promise<Worktree> {
     return this.serial(repoId, async () => {
       const r = this.require(repoId);
       const id = `goal-${goalId}`;
       const existing = r.worktrees.find((w) => w.id === id && w.status === 'active');
-      if (existing && fs.existsSync(existing.path)) return existing;
-      const branch = goalBranchName(goalId);
+      if (existing && fs.existsSync(existing.path) && existing.branch === branch) return existing;
+      // il branch vero dell'obiettivo (può avere un suffisso: g1-2), mai uno ricavato dall'id
+      if (!isGoalBranch(branch)) throw new RepoError(`${branch} non è un branch di un obiettivo`, 'refused');
       if (!(await this.branchExists(r.path, branch))) throw new RepoError(`il branch dell'obiettivo ${branch} non esiste`, 'refused');
       const dir = await this.addWorktreeDir(r, id, branch, branch);
       const w: Worktree = { id, repoId: r.id, agentId, goalId, branch, base, path: dir, status: 'active', files: 0, additions: 0, deletions: 0 };

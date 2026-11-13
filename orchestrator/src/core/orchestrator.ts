@@ -621,7 +621,7 @@ export class Orchestrator {
       }
       const reviewedSha = await this.repos.branchSha(g.repoId, g.branch);
       if (!reviewedSha) throw new RepoError(`il branch ${g.branch} non esiste più`, 'refused');
-      const wt = await this.repos.createGoalWorktree(g.repoId, goalId, this.leadId, g.base);
+      const wt = await this.repos.createGoalWorktree(g.repoId, goalId, g.branch, this.leadId, g.base);
       await this.repos.refresh(g.repoId);
       this.setAgent(this.leadId, { state: 'testing', activity: `test finali di ${goalId}` });
       let ciNote: string;
