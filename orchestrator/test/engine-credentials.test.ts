@@ -11,7 +11,7 @@ import type { EngineAdapter, TurnSpec } from '../src/engines/types.js';
 import { git } from '../src/util/git.js';
 import { demoRepo, noReply, testOrchestrator, tmpDir, waitFor } from './helpers.js';
 
-const FAKE = { ANTHROPIC_API_KEY: 'sk-ant-finta-credenziali', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-finto', OPENAI_API_KEY: 'sk-finta' };
+const FAKE = { ANTHROPIC_API_KEY: 'sk-ant-finta-credenziali', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-finto', OPENAI_API_KEY: 'sk-finta', GITHUB_TOKEN: 'ghp_finto' };
 
 class RecordingSim extends SimEngine {
   specs: TurnSpec[] = [];
@@ -58,10 +58,13 @@ describe('credenziali dei motori', () => {
 
     const seen = JSON.parse(fs.readFileSync(out, 'utf8')) as Record<string, boolean>;
     expect(seen.PATH, 'controprova: le variabili normali arrivano').toBe(true);
-    expect(seen).toMatchObject({ ANTHROPIC_API_KEY: false, CLAUDE_CODE_OAUTH_TOKEN: false, OPENAI_API_KEY: false });
+    expect(seen).toMatchObject({ ANTHROPIC_API_KEY: false, CLAUDE_CODE_OAUTH_TOKEN: false, OPENAI_API_KEY: false, GITHUB_TOKEN: false });
     const spec = sim.specs[0]!;
     for (const k of Object.keys(FAKE)) expect(spec.env[k], k).toBeUndefined();
-    expect(spec.credentials).toMatchObject(FAKE);
+    // al motore solo le credenziali dei motori: GITHUB_TOKEN (e OPENAI_API_KEY, che Codex legge da sé) no
+    expect(spec.credentials).toMatchObject({ ANTHROPIC_API_KEY: FAKE.ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN: FAKE.CLAUDE_CODE_OAUTH_TOKEN });
+    expect(spec.credentials?.GITHUB_TOKEN).toBeUndefined();
+    expect(spec.credentials?.OPENAI_API_KEY).toBeUndefined();
     await o.stop();
   }, 120_000);
 

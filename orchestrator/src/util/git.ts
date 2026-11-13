@@ -3,6 +3,7 @@
 // Fase 3 il blocco del push), costruito in core/agent-env.ts.
 import { execFile, execFileSync } from 'node:child_process';
 import { capitalize } from './text.js';
+import { withoutSecrets } from './secrets.js';
 
 export interface GitResult {
   code: number;
@@ -48,7 +49,8 @@ export function git(cwd: string, args: string[], opts: GitOptions = {}): Promise
       args,
       {
         cwd,
-        env: opts.env ?? process.env,
+        // senza segreti: git può eseguire hook e filtri del repository
+        env: opts.env ?? withoutSecrets(process.env),
         timeout: opts.timeoutMs ?? 120_000,
         maxBuffer: 64 * 1024 * 1024,
         windowsHide: true,

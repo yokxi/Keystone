@@ -37,6 +37,7 @@ import { parseUnifiedDiff } from './diff.js';
 import { validateConnection } from './db/manager.js';
 import { validateVisualConfig } from './visual.js';
 import { guardActive, guardInstalled, installGuard, previewGuard, writeGuardFile, WORKTREE_PREFIX, type GuardPreview } from './gitsafety.js';
+import { withoutSecrets } from '../util/secrets.js';
 
 export const BRANCH_PREFIX = 'Keystone';
 
@@ -315,7 +316,7 @@ export class RepoManager {
   private async diffWorktree(w: Worktree): Promise<DiffFile[]> {
     const fork = (await git(w.path, ['merge-base', w.base, 'HEAD'], { allowFail: true })).stdout.trim() || 'HEAD';
     const tmpIndex = path.join(os.tmpdir(), `keystone-index-${crypto.randomBytes(6).toString('hex')}`);
-    const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+    const env = { ...withoutSecrets(process.env), GIT_INDEX_FILE: tmpIndex };
     try {
       await git(w.path, ['read-tree', 'HEAD'], { env });
       await git(w.path, ['add', '-A'], { env });
@@ -364,7 +365,7 @@ export class RepoManager {
     if (branch !== w.branch) throw new RepoError(`${w.id} è su ${branch}, non sul branch dell'agente ${w.branch}`, 'unsafe');
     const status = await gitOut(w.path, ['status', '--porcelain']);
     if (!status) return false;
-    const env = { ...process.env, ...identityEnv(identity.name, identity.email) };
+    const env = { ...withoutSecrets(process.env), ...identityEnv(identity.name, identity.email) };
     await git(w.path, ['add', '-A'], { env });
     await git(w.path, ['-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', message], { env });
     return true;

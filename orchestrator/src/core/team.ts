@@ -18,7 +18,7 @@ import type { EngineAdapter, EngineTurn, TeamToolResult, TurnSpec } from '../eng
 import { git } from '../util/git.js';
 import { lastLines, truncate } from '../util/text.js';
 import path from 'node:path';
-import { agentEnv, secretVars } from './agent-env.js';
+import { agentEnv, engineCredentials } from './agent-env.js';
 import { guardActive } from './gitsafety.js';
 import type { Orchestrator } from './orchestrator.js';
 import { classify, describeCall, describeRuleKey } from './policy.js';
@@ -633,7 +633,7 @@ export class Team {
         model,
         ...(m.effort ? { effort: m.effort } : {}),
         env: agentEnv(process.env, { agentId, name: m.name, cwd }),
-        credentials: secretVars(process.env),
+        credentials: engineCredentials(process.env),
         writableRoots: [],
         tools: teamTools(this.o, agentId, m.role, hooks, guard),
         ...(entry.reservedUsd !== undefined ? { budgetUsd: entry.reservedUsd } : {}),

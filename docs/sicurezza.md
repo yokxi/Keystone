@@ -411,6 +411,11 @@ Codice: `app/src/main/engine-auth.ts`, test `app/test/engine-auth.test.ts`.
   (`--engine claude`, `--use-claude-login`) non contengono segreti.
 - Dall'orchestratore la credenziale va solo alla CLI di Claude (`TurnSpec.credentials`, §7).
 - Dall'app non parte il motore sim: senza una scelta l'orchestratore non si avvia.
+- La richiesta del renderer è validata (`parseEngineSet`): motori e credenziali solo da elenco, un
+  valore mancante non cancella nulla, una credenziale rifiutata non cambia il motore.
+- "Riavvia orchestratore" controlla prima che il motore scelto possa partire, poi ferma
+  l'orchestratore collegato (anche se avviato dal terminale, dopo una conferma) e lo riavvia; due
+  riavvii insieme non sono possibili.
 - **Limite**, lo stesso delle password dei database: DPAPI protegge dagli altri utenti e dagli
   altri PC, non dai processi dello stesso utente. Un comando che decifra il file passa dalla
   policy, quindi chiede la tua approvazione, ma Keystone non è una sandbox (§4bis).
@@ -465,9 +470,16 @@ Dettagli in `docs/motore-claude.md`. In sintesi:
 - chiave API e token restano alla CLI: i comandi degli agenti, i server MCP stdio e gli hook non li
   vedono (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, verificato sulla CLI vera);
 - le credenziali non sono nemmeno nell'ambiente che Keystone prepara per l'agente: `agentEnv` toglie
-  ogni variabile con segreti (`*API_KEY`, `*_TOKEN`, `*SECRET`, `*SECRET_ACCESS_KEY`, `*PASSWORD`),
-  e il motore le riceve a parte (`TurnSpec.credentials`). Così non arrivano ai test del repository
-  che Keystone esegue nel worktree (codice scritto dall'agente) né all'app della verifica visuale.
+  ogni variabile con segreti (`orchestrator/src/util/secrets.ts`): nomi con un pezzo `KEY`,
+  `APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`, `PASSPHRASE`, `CREDENTIAL(S)`,
+  `BEARER`, `PAT`, `COOKIE` (es. `AWS_BEARER_TOKEN_BEDROCK`, `GOOGLE_APPLICATION_CREDENTIALS`), e
+  gli URL con password (`DATABASE_URL=postgres://u:pw@…`). Così non arrivano ai test del repository
+  che Keystone esegue nel worktree (codice scritto dall'agente), all'app della verifica visuale né
+  ai comandi git di Keystone (hook e filtri del repository);
+- il motore riceve a parte (`TurnSpec.credentials`) **solo** le credenziali dei motori: `ANTHROPIC_*`,
+  `CLAUDE_CODE_*`, `AWS_*`, `AZURE_*`, `GOOGLE_APPLICATION_CREDENTIALS`. Gli altri segreti
+  dell'utente (`GITHUB_TOKEN`, `NPM_TOKEN`, …) non arrivano nemmeno alla CLI, perché lo scrub dei
+  sottoprocessi della CLI è garantito solo per le credenziali Anthropic e dei provider cloud.
   Corretto il 13 novembre 2026: prima i test del repository ricevevano `ANTHROPIC_API_KEY`,
   `CLAUDE_CODE_OAUTH_TOKEN` e `OPENAI_API_KEY` dall'ambiente dell'orchestratore. Test:
   `engine-credentials.test.ts` (un test "sonda" del repository, con controprova togliendo il
