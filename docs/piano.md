@@ -22,7 +22,7 @@ repository. Quello che si condivide (codice, skill del repository in `.keystone/
 git, con i normali push e pull fatti dalle persone. Nella prima versione non c'è un server
 condiviso: niente stato, chiavi o code di lavoro comuni tra PC diversi.
 
-## Fase 10 — Meno richieste di permesso (fatta)
+## Fase 10 — Meno richieste di permesso (fatta, 13 novembre 2026)
 
 Dopo la prima prova reale (13 novembre 2026): 9 richieste di permesso in un obiettivo piccolo.
 Scelta dell'utente: la regola "tutto ciò che non è consentito chiede" resta; si allargano i
