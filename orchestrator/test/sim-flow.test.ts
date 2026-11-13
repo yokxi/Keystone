@@ -73,7 +73,9 @@ describe('flusso con il motore sim', () => {
     // il merge approvato è dell'utente: la sua identità git, non quella di un agente
     const userName = await gitOut(repo, ['config', 'user.name']);
     expect(merges.every((l) => l.startsWith(`${userName}|Merge Keystone/`))).toBe(true);
-  });
+    // due cicli completi con i test del repository e due merge: ~14 s da solo, ma con la suite in
+    // parallelo può superare i 60 s predefiniti (fallito una volta così il 13 novembre 2026)
+  }, 120_000);
 
   it('merge rifiutato perché il checkout ha modifiche: la decisione si riapre con il motivo', async () => {
     const { o, repo } = await setup();
