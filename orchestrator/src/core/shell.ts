@@ -16,6 +16,8 @@ export interface Word {
   glob: boolean;
   /** il testo delle sostituzioni $(…) / `…` contenute nella parola (sono anche in Parsed.substitutions) */
   subs?: string[];
+  /** quelle tra virgolette doppie: bash non ne divide l'output in più parole */
+  quotedSubs?: string[];
 }
 
 export interface Redirect {
@@ -235,7 +237,8 @@ export function parseShell(input: string): Parsed {
     }
     // (( … )) all'inizio di un comando: espressione aritmetica, dove "<<" è uno shift e non un
     // here-doc. Non la si analizza: chiede, e i comandi che seguono si classificano normalmente
-    if (s[i] === '(' && s[i + 1] === '(' && !cur.words.length && !cur.assignments.length && !pendingRedirect) {
+    // (anche dopo una parola chiave: do ((…)), then ((…)), { ((…)), ! ((…)))
+    if (s[i] === '(' && s[i + 1] === '(' && !pendingRedirect) {
       const inner = readBalanced(s, i + 1, '(', ')', true);
       if (!inner) return { commands, substitutions, error: 'espressione (( )) non chiusa' };
       error ??= 'espressione aritmetica (( )) non verificabile';
@@ -254,6 +257,7 @@ export function parseShell(input: string): Parsed {
     let glob = false;
     const startWord = i;
     const subStart = substitutions.length;
+    const quotedSubs: string[] = [];
     while (i < s.length) {
       const ch = s[i]!;
       if (ch === ' ' || ch === '\t' || ch === '\n') break;
@@ -297,6 +301,7 @@ export function parseShell(input: string): Parsed {
             const inner = readBalanced(s, i + 2, '(', ')');
             if (!inner) return { commands, substitutions, error: 'sostituzione $( ) non chiusa' };
             substitutions.push(inner[0]);
+            quotedSubs.push(inner[0]);
             dynamic = true;
             text += '$(…)';
             i = inner[1];
@@ -355,7 +360,7 @@ export function parseShell(input: string): Parsed {
       continue;
     }
     const subs = substitutions.slice(subStart);
-    pushWord({ text, dynamic, glob, ...(subs.length ? { subs } : {}) });
+    pushWord({ text, dynamic, glob, ...(subs.length ? { subs } : {}), ...(quotedSubs.length ? { quotedSubs } : {}) });
   }
   flush();
   if (heredocs.length) error ??= 'here-doc senza corpo';

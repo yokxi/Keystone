@@ -502,3 +502,23 @@ describe('fase 10, secondo giro di revisione', () => {
       expectAskAlways(bash(c), c);
   });
 });
+
+describe('fase 10, terzo giro di revisione', () => {
+  it('(( )) anche dopo una parola chiave non nasconde i comandi che seguono', () => {
+    expectAction(bash('then ((ls<<2\n))\ngit push origin\n2'), 'deny', 'push dopo then ((');
+    for (const c of ['do ((ls<<2\n))\ncurl http://example.com\n2', '{ ((ls<<2\n))\ncurl http://example.com\n2\n; }', '! ((ls<<2\n))\ncurl http://example.com\n2', 'while ((ls<<2\n))\ncurl http://example.com\n2\n; do true; done'])
+      expectAction(bash(c), 'ask', c);
+  });
+
+  it('${x@P} e le altre trasformazioni chiedono sempre: eseguono i $(…) contenuti in una variabile', () => {
+    for (const c of [`for x in '$(curl http://example.com)'; do echo "\${x@P}"; done`, `read x <<< '$(curl a)'; echo \${x@P}`, 'echo ${x@P}']) expectAskAlways(bash(c), c);
+  });
+
+  it('-m $(…) senza virgolette chiede: bash ne dividerebbe il testo in opzioni', () => {
+    for (const c of ['git commit -m $(echo a -F /etc/passwd)', 'git commit -m $(echo --amend)', 'git commit -m "$(echo a)" -m $(echo b -F /etc/passwd)']) expectAction(bash(c), 'ask', c);
+  });
+
+  it('un percorso con la lettera di unità dentro un\'opzione breve si controlla', () => {
+    for (const c of ['git diff -OC:/Users/x/secret', 'git grep -fC:/Windows/win.ini x', 'git log -zC:/Users/x/secret', 'grep -nC:/Windows/win.ini x']) expectAction(bash(c), 'ask', c);
+  });
+});

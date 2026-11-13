@@ -193,6 +193,12 @@ function attachedValue(w: Word, valueLetters: string, stopLetters = ''): Word | 
       }
     }
   }
+  // un percorso con la lettera di unità (C:/…, C:\…) dentro un'opzione breve si controlla sempre:
+  // altrimenti "-OC:/x" si leggerebbe come -O -C e il valore ":/x"
+  if (/^-[^-]/.test(w.text)) {
+    const drive = /[A-Za-z]:[\\/]/.exec(w.text.slice(1));
+    if (drive) value = w.text.slice(1 + drive.index);
+  }
   if (!value) return undefined;
   const dynamic = w.dynamic && value.includes('$');
   if (!dynamic && !looksLikePath(value)) return undefined;
@@ -387,7 +393,7 @@ function classifyGit(scope: Scope, words: Word[], raw: string): Finding[] {
         // valore attaccato (--file=x, -Fx, --pathspec-from-file=x, --template=x): è un percorso da
         // controllare; il messaggio (-m…, --message=…) no
         if (/^(-m|--message=)/.test(w.text)) continue;
-        const v = attachedValue(w, 'FtCc');
+        const v = attachedValue(w, 'FtCcOf');
         if (v) {
           const f = checkPath(scope, v, /^--(output|file|git-dir|work-tree)/.test(w.text) ? 'w' : 'r', `git ${sub}`);
           if (f) out.push(f);
@@ -487,6 +493,9 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
 
   // ${VAR:=x} / ${VAR=x} assegnano una variabile dentro una parola qualsiasi
   if (cmd.words.some((w) => /\$\{[^}]*?:?=/.test(w.text))) out.push(ask(`assegna una variabile con \${VAR=…}: ${raw}`, exactKey('Bash', raw), false));
+  // ${x@P} (e le altre trasformazioni ${x@…}) espandono il contenuto della variabile come un
+  // prompt, eseguendo i $(…) che contiene: il comando dentro non è verificabile
+  if ([...cmd.words, ...cmd.redirects.map((r) => r.target).filter((t): t is Word => !!t)].some((w) => /\$\{[^}]*@[A-Za-z]/.test(w.text))) out.push(ask(`trasformazione \${VAR@…}: può eseguire comandi contenuti in una variabile: ${raw}`, exactKey('Bash', raw), false));
   const first = cmd.words[0]!;
   if (first.dynamic) return [...out, ask(`programma non verificabile: ${first.text}`, exactKey('Bash', raw), false)];
   if (/^\$env:/i.test(first.text) || /^\[(system\.)?environment\]::/i.test(first.text)) return [...out, ask(`modifica variabili d'ambiente: ${raw}`, exactKey('Bash', raw), false)];
@@ -875,7 +884,8 @@ function classifyText(scope: Scope, text: string, depth: number): Finding[] {
     if (!w[0] || programName(w[0].text) !== 'git' || w[1]?.text !== 'commit') continue;
     for (let k = 2; k < w.length; k++) {
       const sub = w[k]!.subs?.length === 1 ? w[k]!.subs![0]! : undefined;
-      if (sub !== undefined && w[k]!.text === '$(…)' && (w[k - 1]!.text === '-m' || w[k - 1]!.text === '--message') && literalSubstitution(sub)) exempt.set(sub, (exempt.get(sub) ?? 0) + 1);
+      // solo tra virgolette ("$(…)"): senza, bash dividerebbe il testo in più parole/opzioni
+      if (sub !== undefined && w[k]!.text === '$(…)' && w[k]!.quotedSubs?.length === 1 && w[k]!.quotedSubs?.[0] === sub && (w[k - 1]!.text === '-m' || w[k - 1]!.text === '--message') && literalSubstitution(sub)) exempt.set(sub, (exempt.get(sub) ?? 0) + 1);
     }
   }
   for (const sub of parsed.substitutions) {

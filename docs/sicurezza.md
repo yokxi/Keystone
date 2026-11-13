@@ -235,7 +235,12 @@ Corretti con la revisione della Fase 10:
   `-m` di `git commit`), non cercando nel testo; `printf -v` e `${VAR:=…}` chiedono sempre; `read`
   e `for` non possono assegnare nomi che su Windows (dove le variabili non distinguono maiuscole e
   minuscole) o in bash cambiano il comportamento dei programmi (`path`, `home`, `comspec`,
-  `git_*`, `node_*`, …).
+  `git_*`, `node_*`, …);
+- terzo giro: `(( … ))` chiede in qualunque posizione (anche dopo `do`, `then`, `{`, `!`); le
+  trasformazioni `${x@P}` e simili chiedono sempre (eseguono i `$(…)` contenuti in una variabile,
+  che `read` o `for` potrebbero averci messo); il messaggio di commit con `$(…)` è esente solo
+  tra virgolette doppie (senza, bash divide il testo in più opzioni); un percorso con la lettera di
+  unità dentro un'opzione breve (`-OC:/…`) si controlla sempre.
 
 Ogni punto ha un test in `policy.test.ts` che fallisce togliendo la protezione.
 
