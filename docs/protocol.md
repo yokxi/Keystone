@@ -150,8 +150,9 @@ aspetta l'utente.
 `{ client, protocol: 1 }`: apre la sessione; la risposta è uno `snapshot`.
 
 ### `goal.submit`
-`{ text, repoId?, budgetUsd? }`: nuovo obiettivo (senza `repoId` si usa il primo repository
-registrato). `budgetUsd` è il tetto di spesa in dollari; se manca vale quello della configurazione
+`{ text, repoId?, budgetUsd? }`: nuovo obiettivo nel repository `repoId`. Senza `repoId` vale
+l'unico repository registrato; se ce n'è più di uno l'obiettivo è rifiutato con l'elenco dei
+repository (prima finiva in silenzio nel primo registrato). `budgetUsd` è il tetto di spesa in dollari; se manca vale quello della configurazione
 (default 5, `--budget` o `KEYSTONE_BUDGET_USD`; 0 = nessun tetto). Quando la spesa lo raggiunge,
 l'obiettivo passa in `paused`: i turni dei suoi agenti vengono fermati e salvati, i lavori in coda
 aspettano, e arriva una decisione `budget`. Il motore Claude riceve anche la spesa residua come

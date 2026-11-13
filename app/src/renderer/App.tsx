@@ -11,7 +11,7 @@ import { RegisterRepoDialog, Repos } from './components/Repos.js';
 import { Review, type ReviewTarget } from './components/Review.js';
 import { Settings } from './components/Settings.js';
 import { Skills } from './components/Skills.js';
-import { completeAgent, HELP, parseConsole } from './lib/console.js';
+import { completeAgent, completeRepo, HELP, parseConsole, type RepoRef } from './lib/console.js';
 import { goalLimitsText, money, spendLabel, time, tokens } from './lib/format.js';
 
 type View = 'board' | 'agents' | 'decisions' | 'review' | 'memory' | 'skills' | 'repos' | 'settings';
@@ -151,6 +151,7 @@ export function App() {
 
   const openDecisions = state.decisions.filter((d) => d.status === 'open').length;
   const agentsRef = useMemo(() => state.agents.map((a) => ({ id: a.id, name: a.name })), [state.agents]);
+  const reposRef = useMemo(() => state.repos.map((r) => ({ id: r.id, name: r.name })), [state.repos]);
 
   return (
     <div className="app">
@@ -233,9 +234,10 @@ export function App() {
       </main>
       <ConsoleBar
         agents={agentsRef}
+        repos={reposRef}
         feed={feed}
         onSubmit={async (text) => {
-          const r = parseConsole(text, agentsRef);
+          const r = parseConsole(text, agentsRef, reposRef);
           if (r.kind === 'none') return true;
           if (r.kind === 'error') {
             addFeed(r.message, 'f-err');
@@ -355,7 +357,7 @@ function GoalSpend({ state }: { state: ViewState }) {
   );
 }
 
-function ConsoleBar({ agents, feed, onSubmit }: { agents: Array<{ id: string; name: string }>; feed: FeedLine[]; onSubmit: (text: string) => Promise<boolean> }) {
+function ConsoleBar({ agents, repos, feed, onSubmit }: { agents: Array<{ id: string; name: string }>; repos: RepoRef[]; feed: FeedLine[]; onSubmit: (text: string) => Promise<boolean> }) {
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [hIdx, setHIdx] = useState(-1);
@@ -365,7 +367,9 @@ function ConsoleBar({ agents, feed, onSubmit }: { agents: Array<{ id: string; na
     if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
   }, [feed]);
   const caret = input.current?.selectionStart ?? value.length;
-  const suggestion = completeAgent(value, caret, agents);
+  const repoSuggestion = completeRepo(value, caret, repos);
+  const suggestion = repoSuggestion ?? completeAgent(value, caret, agents);
+  const sigil = repoSuggestion ? '#' : '@';
   return (
     <div className="console">
       {feed.length > 0 && (
@@ -382,7 +386,10 @@ function ConsoleBar({ agents, feed, onSubmit }: { agents: Array<{ id: string; na
         {suggestion && suggestion.options.length > 0 && (
           <div className="suggest">
             {suggestion.options.slice(0, 6).map((o) => (
-              <span key={o}>@{o}</span>
+              <span key={o}>
+                {sigil}
+                {o}
+              </span>
             ))}
           </div>
         )}
@@ -390,7 +397,7 @@ function ConsoleBar({ agents, feed, onSubmit }: { agents: Array<{ id: string; na
         <input
           ref={input}
           className="console-input"
-          placeholder="Scrivi un obiettivo, @agente messaggio, oppure /aiuto"
+          placeholder={repos.length > 1 ? 'Obiettivo con #repository (es. #' + repos[0]!.id + ' aggiungi…), @agente messaggio, oppure /aiuto' : 'Scrivi un obiettivo, @agente messaggio, oppure /aiuto'}
           value={value}
           spellCheck={false}
           onChange={(e) => {
@@ -425,7 +432,7 @@ function ConsoleBar({ agents, feed, onSubmit }: { agents: Array<{ id: string; na
             }
           }}
         />
-        <span className="console-hint">Tab completa @agente · ↑ cronologia</span>
+        <span className="console-hint">Tab completa #repository e @agente · ↑ cronologia</span>
       </div>
     </div>
   );

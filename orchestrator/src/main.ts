@@ -236,6 +236,7 @@ async function main(): Promise<void> {
     // conferma automatica solo per il repository di prova creato da Keystone (marcatore + percorso)
     repos.unshift({ path: created, demo: isKeystoneDemo(created, demoDir) });
   }
+  let goalRepoId: string | undefined;
   for (const r of repos) {
     // la modifica al .git/config si mostra sempre e si applica solo con conferma
     const pv = await o.repos.preview(r.path);
@@ -261,11 +262,12 @@ async function main(): Promise<void> {
     }
     if (!confirmed) throw new Error(`registrazione di ${pv.root} annullata: il .git/config non è stato modificato`);
     const repo = await o.repos.add(r.path, { confirmGuard: true });
+    goalRepoId ??= repo.id;
     log.info(`repository: ${repo.name} (${repo.path}, branch ${repo.branch})`);
   }
   await o.start();
   log.info(`Keystone in ascolto su ws://127.0.0.1:${port} · profilo ${cfg.profile} · stato in ${dir}`);
-  if (values.goal) await o.handle({ v: 1, type: 'goal.submit', text: values.goal }, () => undefined);
+  if (values.goal) await o.handle({ v: 1, type: 'goal.submit', text: values.goal, ...(goalRepoId ? { repoId: goalRepoId } : {}) }, () => undefined);
 }
 
 /** Le opzioni da riga di comando come impostazioni, controllate con lo stesso schema del file. */

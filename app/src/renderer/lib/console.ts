@@ -1,8 +1,13 @@
-// Interprete della console: il testo libero è un obiettivo, "@agente messaggio" parla a un agente,
-// i comandi con "/" fanno il resto. Funzione pura (testata in app/test/console.test.ts).
+// Interprete della console: il testo libero è un obiettivo (con "#repository" dice dove lavorare),
+// "@agente messaggio" parla a un agente, i comandi con "/" fanno il resto. Funzione pura (testata in app/test/console.test.ts).
 import type { ValidatedCommand } from '../../main/ipc-validate.js';
 
 export interface AgentRef {
+  id: string;
+  name: string;
+}
+
+export interface RepoRef {
   id: string;
   name: string;
 }
@@ -14,7 +19,7 @@ export type ConsoleResult =
   | { kind: 'none' };
 
 export const HELP: Array<[string, string]> = [
-  ['testo libero', 'nuovo obiettivo per il lead'],
+  ['testo libero #repository', 'nuovo obiettivo per il lead, nel repository indicato (Tab completa #)'],
   ['@agente messaggio', 'messaggio a un agente (@all per tutti)'],
   ['/pausa @agente', 'mette in pausa (il task resta suo)'],
   ['/riprendi @agente', 'riprende un agente in pausa o fuori turno'],
@@ -57,7 +62,36 @@ function resolveAgent(token: string | undefined, agents: AgentRef[]): AgentRef |
   return agents.find((a) => a.id.toLowerCase() === q || a.name.toLowerCase() === q);
 }
 
-export function parseConsole(input: string, agents: AgentRef[]): ConsoleResult {
+function resolveRepo(token: string, repos: RepoRef[]): RepoRef | undefined {
+  const q = token.toLowerCase();
+  return repos.find((r) => r.id.toLowerCase() === q) ?? repos.find((r) => r.name.toLowerCase() === q);
+}
+
+/** "#repo" valido nel testo: dopo un inizio riga o uno spazio, fino a spazio o punteggiatura finale. */
+const REPO_TAG = /(^|\s)#([A-Za-z0-9][\w.-]*?)(?=[\s,;:!?)]|\.(?:\s|$)|$)/g;
+
+/**
+ * L'obiettivo e il suo repository. Un "#nome" che non è un repository resta testo (es. "#12").
+ * Con più repository registrati il tag è obbligatorio; con uno solo si usa quello.
+ */
+export function parseGoal(text: string, repos: RepoRef[]): ConsoleResult {
+  const found = new Map<string, RepoRef>();
+  const clean = text.replace(REPO_TAG, (all, pre: string, name: string) => {
+    const r = resolveRepo(name, repos);
+    if (!r) return all;
+    found.set(r.id, r);
+    return `${pre}${r.name}`;
+  });
+  if (found.size > 1) return { kind: 'error', message: `un obiettivo lavora su un solo repository: hai indicato ${[...found.values()].map((r) => `#${r.id}`).join(' e ')}. Scrivi un obiettivo per ciascuno.` };
+  const repo = [...found.values()][0] ?? (repos.length === 1 ? repos[0] : undefined);
+  if (!repo && repos.length > 1) return { kind: 'error', message: `indica il repository con #nome: ${repos.map((r) => `#${r.id}`).join(', ')}` };
+  const goal = clean.replace(/\s+/g, ' ').trim();
+  const withoutTags = text.replace(REPO_TAG, (all, pre: string, name: string) => (resolveRepo(name, repos) ? pre : all)).trim();
+  if (!withoutTags) return { kind: 'error', message: "scrivi l'obiettivo oltre al repository" };
+  return { kind: 'send', cmd: { type: 'goal.submit', text: goal, ...(repo ? { repoId: repo.id } : {}) }, echo: `Obiettivo${repo ? ` · ${repo.name}` : ''}: ${goal}` };
+}
+
+export function parseConsole(input: string, agents: AgentRef[], repos: RepoRef[] = []): ConsoleResult {
   const text = input.trim();
   if (!text) return { kind: 'none' };
 
@@ -109,7 +143,21 @@ export function parseConsole(input: string, agents: AgentRef[]): ConsoleResult {
     return { kind: 'error', message: `comando sconosciuto: /${cmd} (scrivi /aiuto)` };
   }
 
-  return { kind: 'send', cmd: { type: 'goal.submit', text }, echo: `Obiettivo: ${text}` };
+  return parseGoal(text, repos);
+}
+
+/** Completamento dei repository dopo "#" (Tab). */
+export function completeRepo(input: string, caret: number, repos: RepoRef[]): { value: string; caret: number; options: string[] } | undefined {
+  const before = input.slice(0, caret);
+  const m = /(^|\s)#([\w.-]*)$/.exec(before);
+  if (!m) return undefined;
+  const prefix = m[2]!.toLowerCase();
+  const options = repos.map((r) => r.id).filter((n) => n.toLowerCase().startsWith(prefix));
+  if (!options.length) return undefined;
+  const chosen = options[0]!;
+  const start = before.length - prefix.length;
+  const value = `${input.slice(0, start)}${chosen} ${input.slice(caret)}`;
+  return { value, caret: start + chosen.length + 1, options };
 }
 
 /** Completamento dei nomi degli agenti dopo "@" (Tab). */

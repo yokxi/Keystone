@@ -1,7 +1,7 @@
 import type { DiffHunk } from '@keystone/shared';
 import { describe, expect, it } from 'vitest';
 import { isTrustedSender, validateCommand } from '../src/main/ipc-validate.js';
-import { completeAgent, parseConsole } from '../src/renderer/lib/console.js';
+import { completeAgent, completeRepo, parseConsole } from '../src/renderer/lib/console.js';
 import { collapseContext, diffLogLines } from '../src/renderer/lib/diff-view.js';
 import { goalLimitsText, spendLabel } from '../src/renderer/lib/format.js';
 
@@ -20,6 +20,35 @@ describe('console', () => {
     expect(parseConsole('@nessuno ciao', agents)).toMatchObject({ kind: 'error' });
     expect(parseConsole('@bruno', agents)).toMatchObject({ kind: 'error' });
     expect(parseConsole('   ', agents)).toEqual({ kind: 'none' });
+  });
+
+  it("#repository: dice dove lavora l'obiettivo, obbligatorio con più repository", () => {
+    const repos = [
+      { id: 'multiplayer-card-game', name: 'multiplayer-card-game' },
+      { id: 'grandmas-cookbook', name: 'grandmas-cookbook' },
+    ];
+    expect(parseConsole('in #grandmas-cookbook adatta il layout al cellulare', agents, repos)).toMatchObject({
+      kind: 'send',
+      cmd: { type: 'goal.submit', repoId: 'grandmas-cookbook', text: 'in grandmas-cookbook adatta il layout al cellulare' },
+    });
+    // in fondo, con la punteggiatura, in maiuscolo
+    expect(parseConsole('Sistema il menu su #Grandmas-Cookbook.', agents, repos)).toMatchObject({ cmd: { repoId: 'grandmas-cookbook', text: 'Sistema il menu su grandmas-cookbook.' } });
+    // senza tag, con più repository: errore che elenca i nomi (prima finiva nel primo in silenzio)
+    const none = parseConsole('in grandmas-cookbook adatta il layout', agents, repos);
+    expect(none).toMatchObject({ kind: 'error' });
+    expect((none as { message: string }).message).toContain('#grandmas-cookbook');
+    // due repository nello stesso obiettivo: errore
+    expect(parseConsole('#grandmas-cookbook e #multiplayer-card-game', agents, repos)).toMatchObject({ kind: 'error' });
+    // un # che non è un repository resta testo, ma il repository serve comunque
+    expect(parseConsole('chiudi la #12 in #multiplayer-card-game', agents, repos)).toMatchObject({ cmd: { repoId: 'multiplayer-card-game', text: 'chiudi la #12 in multiplayer-card-game' } });
+    // solo il tag: manca l'obiettivo
+    expect(parseConsole('#grandmas-cookbook', agents, repos)).toMatchObject({ kind: 'error' });
+    // un solo repository: si usa quello, anche senza tag
+    expect(parseConsole('Aggiungi i test', agents, [repos[0]!])).toMatchObject({ cmd: { type: 'goal.submit', repoId: 'multiplayer-card-game' } });
+    // completamento con Tab
+    expect(completeRepo('lavora su #gra', 14, repos)).toMatchObject({ value: 'lavora su #grandmas-cookbook ', options: ['grandmas-cookbook'] });
+    expect(completeRepo('#', 1, repos)?.options).toEqual(['multiplayer-card-game', 'grandmas-cookbook']);
+    expect(completeRepo('niente tag', 10, repos)).toBeUndefined();
   });
 
   it('comandi per agenti, task e decisioni', () => {

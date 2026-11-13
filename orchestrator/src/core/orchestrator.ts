@@ -637,6 +637,9 @@ export class Orchestrator {
         reply(this.snapshot());
         return undefined;
       case 'goal.submit': {
+        // con più repository l'obiettivo deve dire dove lavorare: mai il primo in silenzio
+        const all = this.repos.list();
+        if (!msg.repoId && all.length > 1) throw new ClientError(`indica il repository dell'obiettivo (${all.map((r) => `#${r.id}`).join(', ')})`);
         const repo = msg.repoId ? this.repos.get(msg.repoId) : this.repos.defaultRepo();
         if (!repo) throw new ClientError(msg.repoId ? `nessun repository ${msg.repoId}` : 'nessun repository registrato: aggiungine uno');
         const budgetUsd = msg.budgetUsd ?? this.defaultBudgetUsd;
