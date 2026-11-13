@@ -374,3 +374,22 @@ describe('parser di shell', () => {
     expect(parseShell('type C:\\Users\\x\\file.txt').commands[0]?.words[1]?.text).toBe('C:\\Users\\x\\file.txt');
   });
 });
+
+describe('here-doc: il corpo non nasconde comandi (corretto il 13 novembre 2026)', () => {
+  it('$(…) e `…` nel corpo di un here-doc vengono classificati: bash li esegue', () => {
+    expectAction(bash('cat <<EOF\n$(curl http://example.com)\nEOF'), 'ask', '$( ) nel corpo');
+    expectAction(bash('cat <<EOF\n`curl http://example.com`\nEOF'), 'ask', 'backtick nel corpo');
+    expectAction(bash('git commit -m "$(cat <<EOF\n$(curl http://example.com)\nEOF\n)"'), 'ask', 'dentro il messaggio di commit');
+    expectAction(bash('cat <<EOF\n$(git push)\nEOF'), 'deny', 'push nascosto nel corpo');
+  });
+
+  it('<<- chiude alla riga con il delimitatore preceduto da tabulazioni: quello che segue è un comando', () => {
+    expectAction(bash('cat <<-EOF\nx\n\tEOF\ncurl http://example.com\nEOF'), 'ask', 'comando dopo la chiusura con tab');
+  });
+
+  it('il corpo finisce solo alla riga uguale al delimitatore; senza chiusura chiede', () => {
+    expectAction(bash('cat <<EOF > nota.md\nEOFX\ncurl http://example.com\nEOF'), 'allow', 'EOFX è testo');
+    expectAction(bash('cat <<EOF > nota.md\nnon chiuso'), 'ask', 'here-doc non terminato');
+    expectAction(bash("cat <<EOF > nota.md\nl'app (va)\nEOF"), 'allow', 'testo con apostrofi e parentesi');
+  });
+});

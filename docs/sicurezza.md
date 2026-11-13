@@ -253,6 +253,21 @@ Il classificatore usa un piccolo parser di shell (virgolette, operatori, redirez
 sostituzioni, variabili) e analizza anche i comandi annidati. Quando non riesce a capire un
 comando, chiede.
 
+**Here-doc (corretto il 13 novembre 2026).** Il parser saltava il corpo di un here-doc senza
+guardarlo, e lo chiudeva alla prima riga che *iniziava* con il delimitatore. Così si poteva
+nascondere un comando alla policy in due modi:
+
+- `cat <<EOF` con `$(curl …)` nel corpo: bash esegue `$(…)` e `` `…` `` se il delimitatore non è
+  tra virgolette;
+- `cat <<-EOF` chiuso da una riga `\tEOF`, seguita da un comando e da un'altra riga `EOF`: per
+  bash il comando è fuori dal corpo e viene eseguito.
+
+Ora il corpo finisce alla riga uguale al delimitatore (senza le tabulazioni iniziali con `<<-`),
+come in bash. Ogni `$(…)` o `` `…` `` nel corpo diventa un comando da classificare, anche con il
+delimitatore tra virgolette, per prudenza. Lo stesso vale per un here-doc dentro una sostituzione.
+Test: `policy.test.ts`, "here-doc: il corpo non nasconde comandi", con controprova sul parser
+precedente.
+
 ## 6. Dipendenze
 
 - Tutte le dipendenze hanno versioni esatte, il lockfile è nel repository e `npm audit` deve

@@ -45,11 +45,40 @@ const OPERATORS = ['&&', '||', ';;', '|&', ';', '|', '&', '\n', '(', ')'];
 function readBalanced(s: string, i: number, open: string, close: string): [string, number] | undefined {
   let depth = 1;
   let j = i;
+  // here-doc aperti sulla riga corrente: il loro corpo (dal prossimo a capo alla riga con il solo
+  // delimitatore) è testo, apostrofi e parentesi compresi, come in bash
+  const pending: Array<{ strip: boolean; delim: string }> = [];
   while (j < s.length) {
     const c = s[j]!;
     if (c === '\\') {
       j += 2;
       continue;
+    }
+    if (c === '\n' && pending.length) {
+      let k = j + 1;
+      while (pending.length) {
+        const h = pending.shift()!;
+        for (;;) {
+          const next = s.indexOf('\n', k);
+          const line = s.slice(k, next < 0 ? s.length : next);
+          if ((h.strip ? line.replace(/^\t+/, '') : line) === h.delim) {
+            k = next < 0 ? s.length : next + 1;
+            break;
+          }
+          if (next < 0) return undefined;
+          k = next + 1;
+        }
+      }
+      j = k;
+      continue;
+    }
+    if (c === '<' && s[j + 1] === '<' && s[j + 2] !== '<') {
+      const hd = /^<<(-?)[ \t]*(['"]?)([A-Za-z0-9_.-]+)\2/.exec(s.slice(j));
+      if (hd) {
+        pending.push({ strip: hd[1] === '-', delim: hd[3]! });
+        j += hd[0].length;
+        continue;
+      }
     }
     if (c === "'") {
       const end = s.indexOf("'", j + 1);
@@ -77,7 +106,7 @@ export function parseShell(input: string): Parsed {
   let error: string | undefined;
   let cur: SimpleCommand = { assignments: [], words: [], redirects: [], stdinScript: false };
   let pendingRedirect: string | undefined;
-  const heredocs: string[] = [];
+  const heredocs: Array<{ delim: string; strip: boolean }> = [];
 
   const flush = () => {
     if (pendingRedirect) {
@@ -91,7 +120,7 @@ export function parseShell(input: string): Parsed {
   const pushWord = (w: Word) => {
     if (pendingRedirect) {
       cur.redirects.push({ op: pendingRedirect, target: w });
-      if (pendingRedirect === '<<' || pendingRedirect === '<<-') heredocs.push(w.text);
+      if (pendingRedirect === '<<' || pendingRedirect === '<<-') heredocs.push({ delim: w.text, strip: pendingRedirect === '<<-' });
       pendingRedirect = undefined;
       return;
     }
@@ -105,18 +134,55 @@ export function parseShell(input: string): Parsed {
   let i = 0;
   while (i < s.length) {
     const c = s[i]!;
-    // here-doc: dopo il fine riga si salta il corpo fino al delimitatore
+    // here-doc: dopo il fine riga il corpo arriva fino alla riga uguale al delimitatore (con <<-
+    // senza le tabulazioni iniziali), come in bash. Nel corpo bash esegue $(...) e `...` quando il
+    // delimitatore non è tra virgolette: per prudenza diventano sostituzioni da classificare sempre.
     if (c === '\n' && heredocs.length) {
       flush();
       i++;
       while (heredocs.length) {
-        const delim = heredocs.shift()!;
-        const end = s.indexOf(`\n${delim}`, i - 1);
-        const lineEnd = end < 0 ? -1 : s.indexOf('\n', end + 1);
-        if (end < 0) {
-          error ??= `here-doc "${delim}" non terminato`;
+        const h = heredocs.shift()!;
+        const body: string[] = [];
+        let closed = false;
+        while (i < s.length || !closed) {
+          const next = s.indexOf('\n', i);
+          const line = s.slice(i, next < 0 ? s.length : next);
+          i = next < 0 ? s.length : next + 1;
+          if ((h.strip ? line.replace(/^\t+/, '') : line) === h.delim) {
+            closed = true;
+            break;
+          }
+          body.push(line);
+          if (next < 0) break;
+        }
+        if (!closed) {
+          error ??= `here-doc "${h.delim}" non terminato`;
           i = s.length;
-        } else i = lineEnd < 0 ? s.length : lineEnd + 1;
+        }
+        const text = body.join('\n');
+        for (let k = 0; k < text.length; k++) {
+          if (text[k] === '\\') {
+            k++;
+            continue;
+          }
+          if (text[k] === '$' && text[k + 1] === '(') {
+            const inner = readBalanced(text, k + 2, '(', ')');
+            if (!inner) {
+              error ??= 'sostituzione $( ) non chiusa nel here-doc';
+              break;
+            }
+            substitutions.push(inner[0].replace(/^\(|\)$/g, ''));
+            k = inner[1] - 1;
+          } else if (text[k] === '`') {
+            const end = text.indexOf('`', k + 1);
+            if (end < 0) {
+              error ??= 'backtick non chiuso nel here-doc';
+              break;
+            }
+            substitutions.push(text.slice(k + 1, end));
+            k = end;
+          }
+        }
       }
       continue;
     }
