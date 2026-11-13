@@ -239,6 +239,8 @@ export class ClaudeEngine implements EngineAdapter {
     const configDir = ensureDir(path.join(this.cfg.configDir));
     const env: Record<string, string | undefined> = {
       ...spec.env,
+      // le credenziali arrivano solo alla CLI (envForAuth sceglie quelle della modalità)
+      ...spec.credentials,
       CLAUDE_AGENT_SDK_CLIENT_APP: 'keystone/0.1.0',
       // la CLI non legge ~/.claude dell'utente, in nessuna modalità
       CLAUDE_CONFIG_DIR: configDir,

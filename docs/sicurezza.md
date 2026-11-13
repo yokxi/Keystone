@@ -445,6 +445,14 @@ Dettagli in `docs/motore-claude.md`. In sintesi:
   si abilita esplicitamente e usa solo il token di `claude setup-token`, mai i file di `~/.claude`;
 - chiave API e token restano alla CLI: i comandi degli agenti, i server MCP stdio e gli hook non li
   vedono (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, verificato sulla CLI vera);
+- le credenziali non sono nemmeno nell'ambiente che Keystone prepara per l'agente: `agentEnv` toglie
+  ogni variabile con segreti (`*API_KEY`, `*_TOKEN`, `*SECRET`, `*SECRET_ACCESS_KEY`, `*PASSWORD`),
+  e il motore le riceve a parte (`TurnSpec.credentials`). Così non arrivano ai test del repository
+  che Keystone esegue nel worktree (codice scritto dall'agente) né all'app della verifica visuale.
+  Corretto il 13 novembre 2026: prima i test del repository ricevevano `ANTHROPIC_API_KEY`,
+  `CLAUDE_CODE_OAUTH_TOKEN` e `OPENAI_API_KEY` dall'ambiente dell'orchestratore. Test:
+  `engine-credentials.test.ts` (un test "sonda" del repository, con controprova togliendo il
+  filtro) e `agent-env.test.ts`;
 - ogni obiettivo ha un tetto di spesa: al raggiungimento gli agenti si fermano, il lavoro resta
   salvato e la decisione su come proseguire spetta a te.
 

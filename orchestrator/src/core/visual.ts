@@ -19,6 +19,7 @@ import { ensureDir } from '../util/fsx.js';
 import { git } from '../util/git.js';
 import { killTree } from '../util/proc.js';
 import { lastLines, truncate } from '../util/text.js';
+import { isSecretVar } from './agent-env.js';
 
 export type { VisualConfig };
 
@@ -131,7 +132,7 @@ function stopApp(p: ChildProcess): void {
 /** Ambiente dell'app: quello sicuro degli agenti, senza credenziali, con la rete esterna verso un proxy inesistente. */
 export function appEnv(base: Record<string, string | undefined>, url: string): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(base)) if (v !== undefined && !/(API_KEY|AUTH_TOKEN|OAUTH_TOKEN|SECRET|PASSWORD|_TOKEN)$/i.test(k)) out[k] = v;
+  for (const [k, v] of Object.entries(base)) if (v !== undefined && !isSecretVar(k)) out[k] = v;
   const dead = 'http://127.0.0.1:9';
   for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) out[k] = dead;
   out.NO_PROXY = out.no_proxy = 'localhost,127.0.0.1,::1';

@@ -54,6 +54,11 @@ export interface TurnSpec {
   effort?: string;
   /** ambiente del processo dell'agente e di ogni comando che lancia (identità git, sicurezza) */
   env: Record<string, string | undefined>;
+  /**
+   * credenziali del motore (chiave API, token di login, credenziali cloud), tenute fuori da `env`:
+   * solo la CLI del motore le riceve, mai i comandi dell'agente
+   */
+  credentials?: Record<string, string>;
   /** cartelle scrivibili oltre a `cwd` (es. la gitdir del worktree, per committare) */
   writableRoots: string[];
   tools: TeamTool[];
