@@ -33,6 +33,11 @@ export interface OrchestratorConfig {
   configFiles?: string[];
   /** conserva il branch dell'agente dopo un merge riuscito (default: eliminato) */
   keepMergedBranches?: boolean;
+  /**
+   * true: una decisione di merge per ogni task (come prima della Fase 11). Default: una sola per
+   * obiettivo, con i task uniti nel branch dell'obiettivo dopo la review del lead.
+   */
+  mergePerTask?: boolean;
   /** limiti per obiettivo: turni degli agenti e minuti di lavoro (senza le attese di una tua risposta) */
   goalLimits?: { turns?: number; minutes?: number };
   /** tetto di spesa predefinito per obiettivo in dollari (0 = nessun tetto) */

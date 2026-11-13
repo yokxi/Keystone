@@ -58,6 +58,7 @@ Tutte facoltative. Corrispondono alle opzioni da riga di comando indicate.
 | `port` | porta su 127.0.0.1 | `--port` |
 | `simDelayMs` | pausa tra i passi del motore sim | `--sim-delay` |
 | `keepBranches` | `true`: conserva il branch dell'agente dopo il merge | `--keep-branches` |
+| `mergePerTask` | `true`: una decisione di merge per ogni task, invece di una per obiettivo (Fase 11) | — |
 | `userName` | il tuo nome per gli agenti (una riga; la pagina Impostazioni ha la precedenza) | `--user-name` |
 | `useClaudeLogin`, `useCodexLogin` | `true`: login personale al posto della chiave API (solo uso personale) | `--use-claude-login`, `--use-codex-login` |
 | `codexPrices` | `{ "input": …, "cached": …, "output": … }` in dollari per milione di token | `--codex-prices` |

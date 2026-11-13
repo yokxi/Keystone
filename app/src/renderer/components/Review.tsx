@@ -367,6 +367,8 @@ export function Review({ state, target, answer, send, close }: Props) {
   const [busy, setBusy] = useState(false);
   const decision = target?.decisionId ? state.decisions.find((d) => d.id === target.decisionId) : state.decisions.find((d) => d.kind === 'merge' && d.status === 'open' && d.worktree === target?.worktree);
   const task = state.tasks.find((t) => t.id === (target?.taskId ?? decision?.taskId));
+  // merge dell'intero obiettivo (Fase 11): niente task, il worktree è quello dell'obiettivo
+  const goal = !task && decision?.goalId ? state.goals.find((g) => g.id === decision.goalId) : undefined;
   const repo = state.repos.find((r) => r.id === target?.repoId);
   const wt = repo?.worktrees.find((w) => w.id === target?.worktree);
 
@@ -422,7 +424,7 @@ export function Review({ state, target, answer, send, close }: Props) {
         <button className="btn small ghost" onClick={close}>
           ← Indietro
         </button>
-        <h1>Review {task ? `${task.id} · ${task.title}` : target.worktree}</h1>
+        <h1>Review {task ? `${task.id} · ${task.title}` : goal ? `obiettivo ${goal.id} · ${goal.text.length > 80 ? `${goal.text.slice(0, 80)}…` : goal.text}` : target.worktree}</h1>
         {wt && (
           <span className="sub mono">
             {wt.branch} → {wt.base}

@@ -27,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DbConnection, Decision, DiffFile, Repo, VisualConfig, Worktree } from '@keystone/shared';
 import { DB_LIMITS, MERGE_OPTIONS } from '@keystone/shared';
-import { ensureDir, samePath } from '../util/fsx.js';
+import { ensureDir, isInsideOrEqual, samePath } from '../util/fsx.js';
 import { git, gitOut, identityEnv } from '../util/git.js';
 import { deleteKeystoneBranch, listKeystoneBranches, type KeystoneBranch } from './branches.js';
 import { runShell } from '../util/proc.js';
@@ -40,6 +40,18 @@ import { guardActive, guardInstalled, installGuard, previewGuard, writeGuardFile
 import { withoutSecrets } from '../util/secrets.js';
 
 export const BRANCH_PREFIX = 'Keystone';
+
+/** Merge per obiettivo (Fase 11): il branch in cui si uniscono i task di un obiettivo. */
+export const GOAL_BRANCH_PREFIX = `${BRANCH_PREFIX}/goal/`;
+
+export function goalBranchName(goalId: string): string {
+  if (!/^[a-z0-9-]{1,40}$/i.test(goalId)) throw new RepoError(`id di obiettivo non valido: ${goalId}`, 'refused');
+  return `${GOAL_BRANCH_PREFIX}${goalId}`;
+}
+
+export function isGoalBranch(branch: string): boolean {
+  return branch.startsWith(GOAL_BRANCH_PREFIX) && /^[a-z0-9-]{1,40}$/i.test(branch.slice(GOAL_BRANCH_PREFIX.length));
+}
 
 export type RepoErrorCode = 'not_found' | 'not_git' | 'not_root' | 'no_commits' | 'needs_confirmation' | 'refused' | 'conflict' | 'dirty' | 'empty' | 'unsafe' | 'failed';
 
@@ -266,43 +278,119 @@ export class RepoManager {
   }
 
   /**
-   * Crea il worktree di un task a partire dal branch dell'utente (o da `startPoint`). Se il branch
-   * esiste già (task ripreso), il worktree lo riusa. Prima di consegnarlo verifica che il
-   * guardiano git sia attivo: altrimenti si rifiuta (meglio fermi che senza protezione).
+   * Riporta il worktree dell'obiettivo allo stato del suo branch dopo i test finali: via le modifiche
+   * e i file non tracciati (non quelli ignorati, come node_modules). Solo per i worktree degli
+   * obiettivi, dove lavora solo Keystone.
    */
-  createWorktree(repoId: string, agentId: string, task: { id: string; title: string }, startPoint?: string): Promise<Worktree> {
+  cleanGoalWorktree(repoId: string, worktreeId: string): Promise<void> {
+    return this.serial(repoId, async () => {
+      const r = this.require(repoId);
+      const w = this.requireWorktree(repoId, worktreeId);
+      if (!w.goalId || w.status !== 'active' || !fs.existsSync(w.path)) return;
+      if (!(await this.worktreeIntact(r, w))) throw new RepoError(`il collegamento .git di ${w.id} non punta più a ${r.name}`, 'unsafe');
+      await git(w.path, ['reset', '-q', '--hard', 'HEAD']);
+      await git(w.path, ['clean', '-q', '-fd']);
+    });
+  }
+
+  /** `branch` ha commit che `base` non ha? */
+  async hasChanges(repoId: string, base: string, branch: string): Promise<boolean> {
+    const r = this.require(repoId);
+    return Number(await gitOut(r.path, ['rev-list', '--count', `refs/heads/${base}..refs/heads/${branch}`])) > 0;
+  }
+
+  /** Il branch dell'utente in cui si unisce il lavoro: quello configurato o quello aperto. */
+  private async userBase(r: Repo): Promise<string> {
+    const base = r.mergeTarget ?? (await this.currentBranch(r.path));
+    if (base === 'HEAD') throw new RepoError(`il checkout di ${r.name} non è su un branch (HEAD staccato)`, 'refused');
+    if (r.mergeTarget && !(await this.branchExists(r.path, r.mergeTarget))) {
+      throw new RepoError(`il branch di destinazione ${r.mergeTarget} di ${r.name} non esiste più: sceglilo di nuovo nella pagina Repository`, 'refused');
+    }
+    return base;
+  }
+
+  /**
+   * Aggiunge la cartella di un worktree su `branch` (creato da `startPoint` se non esiste). Prima
+   * di consegnarla verifica che il guardiano git sia attivo: altrimenti si rifiuta (meglio fermi
+   * che senza protezione).
+   */
+  private async addWorktreeDir(r: Repo, id: string, branch: string, startPoint: string): Promise<string> {
+    // il guardiano si installa solo con la conferma dell'utente (add): qui si verifica soltanto
+    writeGuardFile(this.opts.guardFile);
+    if (!(await guardInstalled(r.path, this.opts.guardFile))) {
+      throw new RepoError(`il guardiano git non è installato in ${r.name}: registra di nuovo il repository e conferma la modifica al .git/config`, 'unsafe');
+    }
+    const dir = path.join(this.opts.worktreesDir, r.id, `${WORKTREE_PREFIX}${id}`);
+    if (fs.existsSync(dir)) {
+      // residuo di un tentativo precedente: va tolto prima di ricrearlo
+      await git(r.path, ['worktree', 'remove', '--force', dir], { allowFail: true });
+      await this.removeDir(dir);
+      await git(r.path, ['worktree', 'prune'], { allowFail: true });
+    }
+    ensureDir(path.dirname(dir));
+    const exists = await this.branchExists(r.path, branch);
+    await git(r.path, exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', '-b', branch, dir, startPoint]);
+    if (!(await guardActive(dir))) {
+      await git(r.path, ['worktree', 'remove', '--force', dir], { allowFail: true });
+      throw new RepoError(`il guardiano git non risulta attivo in ${dir}: worktree non consegnato all'agente`, 'unsafe');
+    }
+    return dir;
+  }
+
+  /**
+   * Crea il worktree di un task a partire dal branch dell'utente (o da `startPoint`). Se il branch
+   * esiste già (task ripreso), il worktree lo riusa. Con `goalBranch` (merge per obiettivo) il
+   * worktree parte dal branch dell'obiettivo e lì verrà unito.
+   */
+  createWorktree(repoId: string, agentId: string, task: { id: string; title: string }, startPoint?: string, goalBranch?: string): Promise<Worktree> {
     return this.serial(repoId, async () => {
       const r = this.require(repoId);
       const id = `${agentId}-${task.id}`;
       const existing = r.worktrees.find((w) => w.id === id && w.status === 'active');
       if (existing && fs.existsSync(existing.path)) return existing;
-      // il worktree parte dal branch in cui verrà unito: quello configurato o il branch aperto
-      const base = r.mergeTarget ?? (await this.currentBranch(r.path));
-      if (base === 'HEAD') throw new RepoError(`il checkout di ${r.name} non è su un branch (HEAD staccato)`, 'refused');
-      if (r.mergeTarget && !(await this.branchExists(r.path, r.mergeTarget))) {
-        throw new RepoError(`il branch di destinazione ${r.mergeTarget} di ${r.name} non esiste più: sceglilo di nuovo nella pagina Repository`, 'refused');
-      }
-      // il guardiano si installa solo con la conferma dell'utente (add): qui si verifica soltanto
-      writeGuardFile(this.opts.guardFile);
-      if (!(await guardInstalled(r.path, this.opts.guardFile))) {
-        throw new RepoError(`il guardiano git non è installato in ${r.name}: registra di nuovo il repository e conferma la modifica al .git/config`, 'unsafe');
-      }
+      // il worktree parte dal branch in cui verrà unito
+      let base: string;
+      if (goalBranch) {
+        if (!isGoalBranch(goalBranch) || !(await this.branchExists(r.path, goalBranch))) throw new RepoError(`il branch dell'obiettivo ${goalBranch} non esiste`, 'refused');
+        base = goalBranch;
+      } else base = await this.userBase(r);
       const branch = this.branchName(agentId, task.id, task.title);
-      const dir = path.join(this.opts.worktreesDir, r.id, `${WORKTREE_PREFIX}${id}`);
-      if (fs.existsSync(dir)) {
-        // residuo di un tentativo precedente: va tolto prima di ricrearlo
-        await git(r.path, ['worktree', 'remove', '--force', dir], { allowFail: true });
-        await this.removeDir(dir);
-        await git(r.path, ['worktree', 'prune'], { allowFail: true });
-      }
-      ensureDir(path.dirname(dir));
-      const exists = (await git(r.path, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFail: true })).code === 0;
-      await git(r.path, exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', '-b', branch, dir, startPoint ?? base]);
-      if (!(await guardActive(dir))) {
-        await git(r.path, ['worktree', 'remove', '--force', dir], { allowFail: true });
-        throw new RepoError(`il guardiano git non risulta attivo in ${dir}: worktree non consegnato all'agente`, 'unsafe');
-      }
+      const dir = await this.addWorktreeDir(r, id, branch, startPoint ?? base);
       const w: Worktree = { id, repoId: r.id, agentId, taskId: task.id, branch, base, path: dir, status: 'active', files: 0, additions: 0, deletions: 0 };
+      r.worktrees = [...r.worktrees.filter((x) => x.id !== id), w];
+      this.changed(r);
+      return w;
+    });
+  }
+
+  /**
+   * Il branch dell'obiettivo (Keystone/goal/<id>), creato dal branch dell'utente se non c'è ancora.
+   * Non è mai il branch dell'utente: lì il lavoro arriva solo dal merge approvato.
+   */
+  ensureGoalBranch(repoId: string, goalId: string, knownBase?: string): Promise<{ branch: string; base: string }> {
+    return this.serial(repoId, async () => {
+      const r = this.require(repoId);
+      const branch = goalBranchName(goalId);
+      const base = knownBase ?? (await this.userBase(r));
+      if (!(await this.branchExists(r.path, branch))) await git(r.path, ['branch', '--no-track', branch, `refs/heads/${base}`]);
+      return { branch, base };
+    });
+  }
+
+  /**
+   * Il worktree dell'obiettivo: il suo branch estratto in una cartella di Keystone, per i test
+   * finali, la diff completa e il merge nel branch dell'utente. Lo usa solo Keystone, mai un agente.
+   */
+  createGoalWorktree(repoId: string, goalId: string, agentId: string, base: string): Promise<Worktree> {
+    return this.serial(repoId, async () => {
+      const r = this.require(repoId);
+      const id = `goal-${goalId}`;
+      const existing = r.worktrees.find((w) => w.id === id && w.status === 'active');
+      if (existing && fs.existsSync(existing.path)) return existing;
+      const branch = goalBranchName(goalId);
+      if (!(await this.branchExists(r.path, branch))) throw new RepoError(`il branch dell'obiettivo ${branch} non esiste`, 'refused');
+      const dir = await this.addWorktreeDir(r, id, branch, branch);
+      const w: Worktree = { id, repoId: r.id, agentId, goalId, branch, base, path: dir, status: 'active', files: 0, additions: 0, deletions: 0 };
       r.worktrees = [...r.worktrees.filter((x) => x.id !== id), w];
       this.changed(r);
       return w;
@@ -378,7 +466,7 @@ export class RepoManager {
       const w = this.requireWorktree(repoId, worktreeId);
       if (w.status !== 'active') return;
       try {
-        await this.commitAll(repoId, worktreeId, message, identity);
+        if (!w.goalId) await this.commitAll(repoId, worktreeId, message, identity);
       } catch (e) {
         this.ctx.log.warn(`commit prima di abbandonare ${w.id}: ${(e as Error).message}`);
         if (e instanceof RepoError && e.code === 'unsafe') return; // lasciato com'è, da controllare a mano
@@ -435,9 +523,34 @@ export class RepoManager {
     const r = this.require(d.repoId);
     const w = this.requireWorktree(r.id, d.worktree);
     if (w.status !== 'active') throw new RepoError(`il worktree ${w.id} è ${w.status}`, 'refused');
+    const what = w.taskId ? `, task ${w.taskId}` : w.goalId ? `, obiettivo ${w.goalId}` : '';
+    return this.mergeCore(r, w, { ...opts, approval: `Approvato in Keystone (decisione ${d.id}${what}).`, userMerge: true });
+  }
 
-    // 1. il lavoro dell'agente è tutto committato sul suo branch
-    await this.commitAll(r.id, w.id, opts.commitMessage, opts.agentIdentity);
+  /**
+   * Merge per obiettivo (Fase 11): unisce il branch di un task nel branch dell'obiettivo, dopo la
+   * review del lead, senza una decisione dell'utente. Solo verso un branch Keystone/goal/*: il
+   * branch dell'utente si raggiunge solo con il merge approvato (merge). Il commit di merge è di
+   * Keystone, senza firma: non usa la tua identità né le tue chiavi.
+   */
+  mergeIntoGoal(repoId: string, worktreeId: string, opts: { commitMessage: string; agentIdentity: { name: string; email: string }; keystoneIdentity: { name: string; email: string } }): Promise<MergeResult> {
+    return this.serial(repoId, async () => {
+      const r = this.require(repoId);
+      const w = this.requireWorktree(r.id, worktreeId);
+      if (w.status !== 'active') throw new RepoError(`il worktree ${w.id} è ${w.status}`, 'refused');
+      if (!isGoalBranch(w.base) || w.goalId || isGoalBranch(w.branch)) throw new RepoError(`${w.id} non va unito in un branch dell'obiettivo (base ${w.base}): serve la tua approvazione`, 'refused');
+      return this.mergeCore(r, w, { ...opts, approval: `Unito da Keystone nel branch dell'obiettivo dopo la review del lead${w.taskId ? ` (task ${w.taskId})` : ''}.`, userMerge: false });
+    });
+  }
+
+  private async mergeCore(
+    r: Repo,
+    w: Worktree,
+    opts: { commitMessage: string; agentIdentity: { name: string; email: string }; approval: string; userMerge: boolean; keystoneIdentity?: { name: string; email: string } },
+  ): Promise<MergeResult> {
+    // 1. il lavoro dell'agente è tutto committato sul suo branch. Nel worktree dell'obiettivo non si
+    // committa mai: ci lavora solo Keystone (test finali), e i loro file non vanno uniti
+    if (!w.goalId) await this.commitAll(r.id, w.id, opts.commitMessage, opts.agentIdentity);
     const baseSha = await gitOut(r.path, ['rev-parse', `refs/heads/${w.base}`]);
     const branchSha = await gitOut(r.path, ['rev-parse', `refs/heads/${w.branch}`]);
     if (Number(await gitOut(r.path, ['rev-list', '--count', `${baseSha}..${branchSha}`])) === 0) throw new RepoError(`${w.branch} non ha modifiche da unire`, 'empty');
@@ -446,10 +559,13 @@ export class RepoManager {
     const check = await this.canMerge(r.id, w.id);
     if (!check.ok) throw check.error;
 
-    // 3. commit di merge costruito fuori dal working tree, con l'identità dell'utente
-    const sign = this.opts.signMerges !== false && (await git(r.path, ['config', '--type=bool', '--get', 'commit.gpgsign'], { allowFail: true })).stdout.trim() === 'true';
-    const msg = `Merge ${w.branch} in ${w.base}\n\n${opts.commitMessage}\n\nApprovato in Keystone (decisione ${d.id}${w.taskId ? `, task ${w.taskId}` : ''}).`;
-    const ct = await git(r.path, ['commit-tree', ...(sign ? ['-S'] : []), check.tree, '-p', baseSha, '-p', branchSha, '-m', msg], { allowFail: true, timeoutMs: 120_000 });
+    // 3. commit di merge costruito fuori dal working tree: con l'identità dell'utente (e la sua
+    // firma, se la usa) solo per il merge che ha approvato; quelli nel branch dell'obiettivo sono di
+    // Keystone e mai firmati
+    const sign = opts.userMerge && this.opts.signMerges !== false && (await git(r.path, ['config', '--type=bool', '--get', 'commit.gpgsign'], { allowFail: true })).stdout.trim() === 'true';
+    const msg = `Merge ${w.branch} in ${w.base}\n\n${opts.commitMessage}\n\n${opts.approval}`;
+    const identity = !opts.userMerge && opts.keystoneIdentity ? { env: { ...withoutSecrets(process.env), ...identityEnv(opts.keystoneIdentity.name, opts.keystoneIdentity.email) } } : {};
+    const ct = await git(r.path, ['commit-tree', ...(sign ? ['-S'] : []), check.tree, '-p', baseSha, '-p', branchSha, '-m', msg], { allowFail: true, timeoutMs: 120_000, ...identity });
     if (ct.code !== 0) {
       const why = (ct.stderr || ct.stdout).trim().split('\n').slice(-2).join(' ');
       throw new RepoError(sign ? `la firma del commit di merge non è riuscita (commit.gpgsign=true): ${why}` : `impossibile creare il commit di merge: ${why}`, 'failed');
@@ -724,11 +840,26 @@ export class RepoManager {
   }
 
   /** Esegue i test nel worktree, con l'ambiente indicato (quello sicuro degli agenti). */
+  /** I file non tracciati e non ignorati del worktree (percorsi relativi, con "/"). */
+  private async untracked(dir: string): Promise<string[]> {
+    const r = await git(dir, ['ls-files', '--others', '--exclude-standard', '-z'], { allowFail: true });
+    return r.code === 0 ? r.stdout.split('\0').filter(Boolean) : [];
+  }
+
   async runTests(repoId: string, worktreeId: string, opts: { command?: string; env: NodeJS.ProcessEnv; timeoutMs: number }): Promise<TestResult | undefined> {
     const w = this.requireWorktree(repoId, worktreeId);
     const command = opts.command ?? this.detectTestCommand(w.path);
     if (!command) return undefined;
+    // i file nuovi lasciati dai test (risultati, coverage, file temporanei non ignorati) non devono
+    // finire nel commit dell'agente né nel merge: si tolgono quelli comparsi durante i test, mai
+    // quelli che c'erano già (il lavoro dell'agente non ancora committato)
+    const before = new Set(await this.untracked(w.path));
     const res = await runShell(command, { cwd: w.path, env: opts.env, timeoutMs: opts.timeoutMs });
+    for (const f of await this.untracked(w.path)) {
+      if (before.has(f)) continue;
+      const abs = path.resolve(w.path, f);
+      if (isInsideOrEqual(w.path, abs) && !samePath(w.path, abs) && !f.split('/').includes('.git')) fs.rmSync(abs, { force: true });
+    }
     const output = lastLines(res.output.trim(), 40) + (res.timedOut ? `\n(tempo scaduto dopo ${Math.round(opts.timeoutMs / 1000)} s: processi terminati)` : '');
     return { command, pass: res.code === 0 && !res.timedOut, code: res.code, timedOut: res.timedOut, output, durationMs: res.durationMs };
   }

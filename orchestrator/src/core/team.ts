@@ -13,7 +13,7 @@
 //
 // Gli eventi dei motori (EngineEvent) vengono tradotti qui, in un punto solo, in log, stato
 // dell'agente, costi e richieste di permesso.
-import { BUDGET_OPTIONS, PERMISSION_OPTIONS, REPO_SKILLS_DIR, type AgentState, type Decision, type EngineEvent, type Goal, type Repo, type Role, type SkillContext, type Task, type TurnEndStatus, type VisualCheck, type VisualReport } from '@keystone/shared';
+import { BUDGET_OPTIONS, PERMISSION_OPTIONS, REPO_SKILLS_DIR, type AgentState, type Decision, type EngineEvent, type Goal, type Repo, type Role, type SkillContext, type Task, type TurnEndStatus, type VisualCheck, type VisualReport, type Worktree } from '@keystone/shared';
 import type { EngineAdapter, EngineTurn, TeamToolResult, TurnSpec } from '../engines/types.js';
 import { git } from '../util/git.js';
 import { lastLines, truncate } from '../util/text.js';
@@ -246,6 +246,11 @@ export class Team {
     }
   }
 
+  /** Il lead ha un lavoro di pianificazione in coda o in corso per questo obiettivo? */
+  leadBusyWith(goalId: string): boolean {
+    return this.hasJob(this.lead.id, (j) => j.kind === 'plan' && j.goalId === goalId);
+  }
+
   private hasJob(agentId: string, pred: (j: Job) => boolean): boolean {
     const r = this.running.get(agentId);
     if (r && pred(r.job)) return true;
@@ -340,7 +345,14 @@ export class Team {
       startPoint = prev.branch;
       continuesFrom = prev.agentId;
     }
-    const wt = await this.o.repos.createWorktree(repoId, agentId, t, startPoint);
+    // merge per obiettivo (default): il worktree parte dal branch dell'obiettivo e lì verrà unito
+    let goalBranch: string | undefined;
+    if (!this.o.mergePerTask && repoId === goal.repoId) {
+      const gb = await this.o.repos.ensureGoalBranch(repoId, goal.id, goal.base);
+      if (goal.branch !== gb.branch || goal.base !== gb.base) this.o.setGoal(goal.id, { branch: gb.branch, base: gb.base });
+      goalBranch = gb.branch;
+    }
+    const wt = await this.o.repos.createWorktree(repoId, agentId, t, startPoint, goalBranch);
     this.o.tasks.update(t.id, { branch: wt.branch, worktree: wt.id });
     this.o.tasks.setStatus(t.id, 'doing');
     this.o.setAgent(agentId, { taskId: t.id, worktree: wt.id, state: 'thinking', activity: `inizia ${t.id}` });
@@ -865,6 +877,9 @@ export class Team {
           this.o.bus.feed('goal', `Nessun task pianificato: obiettivo chiuso (${truncate(goal.text, 80)})`, { agentId: this.lead.id });
         }
       }
+      // merge per obiettivo: finita una pianificazione (anche senza task nuovi) si ricontrolla se
+      // l'obiettivo è pronto per la decisione finale
+      if (job.kind === 'plan' && goal) void this.o.checkGoalReady(goal.id);
       if (job.kind === 'review' && job.taskId) {
         const t = this.o.tasks.get(job.taskId);
         const open = this.o.decisions.open().some((d) => d.kind === 'merge' && d.taskId === job.taskId);
@@ -967,7 +982,7 @@ export class Team {
           ...(images.length ? { images } : {}),
         });
       } else {
-        await this.o.openMergeDecision(t, t.summary ?? 'Lavoro completato.');
+        await this.o.submitForMerge(t, t.summary ?? 'Lavoro completato.');
       }
     } finally {
       this.reviewing.delete(taskId);
@@ -1135,6 +1150,55 @@ export class Team {
     return this.lastCi.get(taskId);
   }
 
+  /**
+   * Merge per obiettivo: i test sul branch dell'obiettivo, con tutto il lavoro unito, nel worktree
+   * dell'obiettivo. Li esegue Keystone (prova indipendente). Restituisce il testo per la decisione.
+   */
+  async runGoalCi(repoId: string, wt: Worktree): Promise<string> {
+    const command = this.opts.ciCommand ?? this.o.repos.detectTestCommand(wt.path);
+    if (!command) return ciReport(undefined);
+    this.o.repos.setCi(repoId, 'running');
+    const env = agentEnv(process.env, { agentId: 'ci', name: 'CI', cwd: wt.path }) as NodeJS.ProcessEnv;
+    const res = await this.o.repos.runTests(repoId, wt.id, { command, env, timeoutMs: this.opts.ciTimeoutMs ?? 10 * 60_000 });
+    if (res) {
+      this.o.repos.setCi(repoId, res.pass ? 'pass' : 'fail');
+      this.o.bus.feed('ci', `${wt.goalId ?? wt.id}: test sul lavoro completo dell'obiettivo ${res.pass ? 'superati' : 'falliti'} (${res.command})`);
+    }
+    return ciReport(res).replace('Test eseguiti da Keystone nel worktree dopo il turno del worker', "Test eseguiti da Keystone sul branch dell'obiettivo, con tutti i task uniti");
+  }
+
+  /** L'utente ha rivisto l'obiettivo e chiede modifiche: il lead crea i task necessari. */
+  requestGoalChanges(goal: Goal, feedback: string): void {
+    this.o.setGoal(goal.id, { status: 'active' });
+    const key = `${this.lead.id}:${goal.id}`;
+    this.o.setAgent(this.lead.id, { state: 'thinking', activity: `modifiche a ${goal.id}` });
+    this.enqueue({
+      kind: 'plan',
+      agentId: this.lead.id,
+      goalId: goal.id,
+      sessionKey: key,
+      prompt: `${this.o.userName} ha rivisto il lavoro completo dell'obiettivo ${goal.id} e chiede modifiche:\n${feedback || '(nessun dettaglio: chiedi con ask_user)'}\n\nCrea i task necessari con create_task (partono dal lavoro già unito nell'obiettivo). Alla fine ${this.o.userName} riceverà di nuovo un'unica decisione di merge.`,
+    });
+  }
+
+  /**
+   * Conflitto tra il lavoro dell'obiettivo e il branch dell'utente al merge finale: un task per
+   * unire il branch dell'utente nel lavoro dell'obiettivo e risolvere.
+   */
+  goalConflictTask(goal: Goal, files: string[]): void {
+    this.o.tasks.create({
+      title: `Unisci ${goal.base} e risolvi i conflitti`,
+      description:
+        `Nel frattempo ${goal.base} è cambiato e il lavoro dell'obiettivo è in conflitto in: ${files.join(', ') || '(vedi git status)'}.\n` +
+        `Nel tuo worktree esegui \`git merge ${goal.base}\`, risolvi ogni conflitto tenendo le modifiche di entrambe le parti, rilancia i test e committa il merge (git commit --no-edit). Non fare rebase, reset né checkout di altri branch.`,
+      goalId: goal.id,
+      ...(goal.repoId ? { repoId: goal.repoId } : {}),
+      createdBy: this.lead.id,
+    });
+    this.o.setGoal(goal.id, { status: 'active' });
+    this.tick();
+  }
+
   /** Esegue i test del repository target nel worktree del task. */
   private async runCi(t: Task) {
     if (!t.repoId || !t.worktree) return undefined;
@@ -1174,7 +1238,7 @@ export class Team {
     this.o.store.markDirty();
     this.sendBackToWorker(
       t.id,
-      `${this.o.userName} ha approvato il merge di ${t.id}, ma ${info.branch} ora è in conflitto con ${info.base} (nel frattempo è stato unito altro lavoro) in: ${info.files.join(', ') || '(vedi git status)'}.\n` +
+      `Il merge di ${t.id} non si può fare: ${info.branch} ora è in conflitto con ${info.base} (nel frattempo è stato unito altro lavoro) in: ${info.files.join(', ') || '(vedi git status)'}.\n` +
         `Nel tuo worktree esegui \`git merge ${info.base}\`, risolvi ogni conflitto tenendo le modifiche di entrambe le parti, rilancia i test e committa il merge (git commit --no-edit). ` +
         `Non fare rebase, reset né checkout di altri branch. Poi update_task("${t.id}", status "review", summary).`,
     );

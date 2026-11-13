@@ -219,6 +219,12 @@ export const Goal = z.object({
   activeMs: z.number().nonnegative().optional(),
   /** lo stato da ripristinare quando un obiettivo in pausa riprende */
   pausedFrom: GoalStatus.optional(),
+  /**
+   * merge per obiettivo (Fase 11): il branch Keystone/goal/<id> in cui si uniscono i task, e il
+   * branch dell'utente da cui parte e in cui verrà unito alla fine
+   */
+  branch: z.string().optional(),
+  base: z.string().optional(),
   createdAt: Ts,
 });
 export type Goal = z.infer<typeof Goal>;
@@ -238,6 +244,8 @@ export const Decision = z.object({
   /** perché è stata annullata (status "cancelled") */
   cancelReason: z.string().optional(),
   taskId: Id.optional(),
+  /** merge dell'intero obiettivo (Fase 11): niente taskId, il worktree è quello dell'obiettivo */
+  goalId: Id.optional(),
   repoId: Id.optional(),
   worktree: Id.optional(),
   /** permesso: il tool richiesto (Bash, Edit, ...) */
@@ -256,6 +264,8 @@ export const Worktree = z.object({
   repoId: Id,
   agentId: Id,
   taskId: Id.optional(),
+  /** worktree dell'obiettivo (Fase 11): il branch dell'obiettivo, per i test finali e il merge */
+  goalId: Id.optional(),
   branch: z.string(),
   /** branch di destinazione del merge */
   base: z.string(),

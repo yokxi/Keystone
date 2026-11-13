@@ -60,6 +60,8 @@ export const ConfigFile = z
     /** pausa tra i passi del motore sim */
     simDelayMs: z.number().int().min(0).max(60_000).optional(),
     keepBranches: z.boolean().optional(),
+    /** true: una decisione di merge per task invece di una per obiettivo */
+    mergePerTask: z.boolean().optional(),
     /** il tuo nome per gli agenti (la pagina Impostazioni ha la precedenza) */
     userName: z.string().trim().min(1).max(80).regex(/^[^\r\n\t]+$/, 'una riga sola').optional(),
     /** login personale di Claude Code / ChatGPT al posto della chiave API (solo uso personale) */
@@ -248,6 +250,7 @@ export function applySettings(cfg: OrchestratorConfig, s: Settings): string[] {
     cfg.goalLimits = { ...(explicitLimits.turns ? { turns: explicitLimits.turns } : {}), ...(explicitLimits.minutes ? { minutes: explicitLimits.minutes } : {}) };
   }
   if (s.keepBranches) cfg.keepMergedBranches = true;
+  if (s.mergePerTask) cfg.mergePerTask = true;
   if (s.userName?.trim()) cfg.userName = s.userName.trim();
   if (s.simDelayMs !== undefined) cfg.sim.stepDelayMs = s.simDelayMs;
   if (s.port !== undefined) {

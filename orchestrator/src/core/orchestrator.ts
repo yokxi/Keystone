@@ -4,14 +4,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MERGE_OPTIONS, type Agent, type ClientMessage, type Decision, type Goal, type LogKind, type NotifyLevel, type OrchestratorStatus, type Outbound, type Skill, type Task, type VisualReport } from '@keystone/shared';
+import { MERGE_OPTIONS, type Worktree, type Agent, type ClientMessage, type Decision, type Goal, type LogKind, type NotifyLevel, type OrchestratorStatus, type Outbound, type Skill, type Task, type VisualReport } from '@keystone/shared';
 import { readGitUserName } from '../util/git.js';
 import { truncate } from '../util/text.js';
 import { MessageBus } from './bus.js';
 import { consoleLogger, type Ctx, type Logger } from './context.js';
 import { DecisionError, DecisionQueue, type NewDecision } from './decisions.js';
 import { Memory, MemoryError } from './memory.js';
-import { RepoError, RepoManager, type RepoManagerOptions } from './repos.js';
+import { isGoalBranch, RepoError, RepoManager, type RepoManagerOptions } from './repos.js';
 import { SkillError, SkillManager } from './skills.js';
 import { DbManager } from './db/manager.js';
 import { DbError } from './db/types.js';
@@ -47,6 +47,8 @@ export interface OrchestratorOptions {
   repoFaults?: RepoManagerOptions['faults'];
   /** conserva il branch dell'agente dopo un merge riuscito */
   keepMergedBranches?: boolean;
+  /** una decisione di merge per task invece di una per obiettivo (Fase 11) */
+  mergePerTask?: boolean;
   /** limiti predefiniti per obiettivo in turni e minuti di lavoro (0 o assente = nessun limite) */
   defaultGoalLimits?: { turns?: number; minutes?: number };
   /** file di regole del guardiano git (default: <home>/git/agent-guard.gitconfig) */
@@ -110,6 +112,8 @@ export class Orchestrator {
   readonly now: () => number;
   readonly defaultBudgetUsd: number | undefined;
   readonly defaultGoalLimits: { turns?: number; minutes?: number };
+  /** merge per obiettivo (default) o per task */
+  readonly mergePerTask: boolean;
   status: OrchestratorStatus;
   readonly visual: VisualDeps;
   readonly skills: SkillManager;
@@ -130,6 +134,7 @@ export class Orchestrator {
     this.log = opts.logger ?? consoleLogger();
     this.now = opts.now ?? Date.now;
     this.defaultBudgetUsd = opts.defaultBudgetUsd && opts.defaultBudgetUsd > 0 ? opts.defaultBudgetUsd : undefined;
+    this.mergePerTask = !!opts.mergePerTask;
     this.defaultGoalLimits = {
       ...(opts.defaultGoalLimits?.turns && opts.defaultGoalLimits.turns > 0 ? { turns: Math.floor(opts.defaultGoalLimits.turns) } : {}),
       ...(opts.defaultGoalLimits?.minutes && opts.defaultGoalLimits.minutes > 0 ? { minutes: opts.defaultGoalLimits.minutes } : {}),
@@ -478,7 +483,10 @@ export class Orchestrator {
     if (!g) return;
     const progress = this.tasks.progress(goalId);
     let status = g.status;
-    if (this.tasks.goalComplete(goalId) && (status === 'active' || status === 'planning' || status === 'paused')) status = 'done';
+    // con il merge per obiettivo l'obiettivo si chiude solo con il merge finale approvato
+    const awaitingMerge = !this.mergePerTask && !!g.branch;
+    if (this.tasks.goalComplete(goalId) && !awaitingMerge && (status === 'active' || status === 'planning' || status === 'paused')) status = 'done';
+    if (awaitingMerge && this.tasks.goalComplete(goalId)) void this.checkGoalReady(goalId);
     else if (status === 'cancelled' && this.tasks.ofGoal(goalId).some((t) => t.status !== 'cancelled' && t.status !== 'done')) status = 'active';
     if (progress !== g.progress || status !== g.status) {
       g.progress = progress;
@@ -530,6 +538,125 @@ export class Orchestrator {
     return d;
   }
 
+  /**
+   * Il lead ha approvato un task (request_merge, o il task finito senza review del lead). Con il
+   * merge per task arriva all'utente una decisione per il task; con il merge per obiettivo (default)
+   * il task si unisce nel branch dell'obiettivo e l'utente decide una volta sola, alla fine.
+   * Restituisce il testo per il lead.
+   */
+  async submitForMerge(t: Task, summary: string): Promise<string> {
+    const goal = t.goalId ? this.goal(t.goalId) : undefined;
+    const wt = t.repoId && t.worktree ? this.repos.findWorktree(t.repoId, t.worktree) : undefined;
+    if (this.mergePerTask || !goal || !wt || !isGoalBranch(wt.base)) {
+      const d = await this.openMergeDecision(t, summary);
+      return d ? `Decisione di merge ${d.id} inviata a ${this.userName}.` : `${t.id} non ha modificato nessun file: chiuso come completato, niente da unire.`;
+    }
+    return this.mergeTaskIntoGoal(t, wt, goal, summary);
+  }
+
+  private async mergeTaskIntoGoal(t: Task, wt: Worktree, goal: Goal, summary: string): Promise<string> {
+    const agentId = wt.agentId;
+    const identity = { name: `Keystone ${this.nameOf(agentId)}`, email: `${agentId}@keystone.local` };
+    const finish = (text: string) => {
+      if (t.assignee && this.agent(t.assignee)?.taskId === t.id) this.setAgent(t.assignee, { state: 'idle', activity: text, taskId: undefined, worktree: undefined });
+      this.team.tick();
+    };
+    await this.repos.refresh(wt.repoId);
+    try {
+      const res = await this.repos.mergeIntoGoal(wt.repoId, wt.id, {
+        commitMessage: `${t.id}: ${t.title}\n\n${summary}`,
+        agentIdentity: identity,
+        keystoneIdentity: { name: 'Keystone', email: 'keystone@keystone.local' },
+      });
+      this.tasks.update(t.id, { summary });
+      this.tasks.setStatus(t.id, 'done', { merged: true });
+      this.bus.feed('merge', `${t.id} unito nel branch dell'obiettivo ${goal.id} (${res.sha}, ${res.files} file): il merge nel tuo branch lo approvi alla fine dell'obiettivo`);
+      finish(`${t.id} unito nell'obiettivo`);
+      void this.checkGoalReady(goal.id);
+      return `${t.id} unito nel branch dell'obiettivo. ${this.userName} approverà una sola volta il merge dell'intero obiettivo, quando tutti i task saranno fatti.`;
+    } catch (e) {
+      if (e instanceof RepoError && e.code === 'empty') {
+        if (wt.status === 'active') await this.repos.abandon(wt.repoId, wt.id, `${t.id}: nessuna modifica`, identity);
+        this.tasks.setStatus(t.id, 'done', { force: true, summary: t.summary ?? 'nessuna modifica' });
+        this.bus.feed('task', `${t.id} non ha modificato file: chiuso, niente da unire`, { agentId });
+        finish(`${t.id} completato`);
+        void this.checkGoalReady(goal.id);
+        return `${t.id} non ha modificato nessun file: chiuso come completato.`;
+      }
+      if (e instanceof RepoError && e.code === 'conflict' && this.team.onMergeConflict(t, { base: wt.base, branch: wt.branch, files: e.files })) {
+        this.bus.feed('merge', `${t.id} è in conflitto con il branch dell'obiettivo (${e.files.join(', ')}): ${this.nameOf(t.assignee!)} unisce e risolve`, { agentId: t.assignee! });
+        return `${t.id} è in conflitto con il lavoro già unito nell'obiettivo: rimandato a ${this.nameOf(t.assignee!)} per la risoluzione.`;
+      }
+      const reason = e instanceof RepoError ? e.message : `merge fallito: ${(e as Error).message}`;
+      this.tasks.setStatus(t.id, 'blocked', { force: true, reason: `merge nel branch dell'obiettivo non riuscito: ${truncate(reason, 200)}` });
+      this.notify('warn', `${t.id}: merge nel branch dell'obiettivo non riuscito: ${reason}`);
+      this.bus.feed('merge', `${t.id}: merge nel branch dell'obiettivo non riuscito: ${reason}`);
+      return `Merge di ${t.id} nel branch dell'obiettivo non riuscito: ${reason}`;
+    }
+  }
+
+  private readonly goalChecks = new Set<string>();
+
+  /**
+   * Merge per obiettivo: quando tutti i task sono fatti, Keystone estrae il branch dell'obiettivo
+   * in un suo worktree, ci esegue i test e manda all'utente l'unica decisione di merge.
+   */
+  async checkGoalReady(goalId: string): Promise<Decision | undefined> {
+    const g = this.goal(goalId);
+    if (this.mergePerTask || !g?.branch || !g.base || !g.repoId) return undefined;
+    if (g.status === 'done' || g.status === 'cancelled' || !this.tasks.goalComplete(goalId)) return undefined;
+    if (this.decisions.open().some((d) => d.kind === 'merge' && d.goalId === goalId)) return undefined;
+    if (this.goalChecks.has(goalId)) return undefined;
+    // il lead sta pianificando (modifiche chieste o conflitto): la decisione arriva dopo i suoi task
+    if (this.team.leadBusyWith(goalId)) return undefined;
+    this.goalChecks.add(goalId);
+    try {
+      if (!(await this.repos.hasChanges(g.repoId, g.base, g.branch))) {
+        this.setGoal(goalId, { status: 'done', progress: 1 });
+        this.bus.feed('goal', `Obiettivo completato senza modifiche da unire: ${truncate(g.text, 100)}`);
+        return undefined;
+      }
+      const wt = await this.repos.createGoalWorktree(g.repoId, goalId, this.leadId, g.base);
+      await this.repos.refresh(g.repoId);
+      this.setAgent(this.leadId, { state: 'testing', activity: `test finali di ${goalId}` });
+      let ciNote: string;
+      try {
+        ciNote = await this.team.runGoalCi(g.repoId, wt);
+      } finally {
+        // i file lasciati dai test non devono finire nella diff né nel merge
+        await this.repos.cleanGoalWorktree(g.repoId, wt.id);
+      }
+      const tasks = this.tasks.ofGoal(goalId).filter((t) => t.status === 'done');
+      const fresh = this.repos.findWorktree(g.repoId, wt.id) ?? wt;
+      const d = this.createDecision({
+        agentId: this.leadId,
+        kind: 'merge',
+        question: `Unire l'obiettivo ${goalId} "${truncate(g.text, 80)}" (${fresh.branch}) in ${g.base}?`,
+        options: MERGE_OPTIONS,
+        context: [
+          `Lavoro dell'obiettivo, rivisto dal lead task per task:`,
+          ...tasks.map((t) => `- ${t.id} ${t.title}${t.summary ? `: ${truncate(t.summary.replace(/\s+/g, ' '), 300)}` : ''}`),
+          '',
+          `${fresh.files} file, +${fresh.additions} -${fresh.deletions}`,
+          ciNote,
+          ...tasks.filter((t) => t.visual).map((t) => `${t.id}: ${visualSummary(t.visual!)}`),
+        ].join('\n'),
+        goalId,
+        repoId: g.repoId,
+        worktree: wt.id,
+      });
+      this.setAgent(this.leadId, { state: 'idle', activity: `aspetta la tua review dell'obiettivo ${goalId}` });
+      return d;
+    } catch (e) {
+      const reason = e instanceof RepoError ? e.message : (e as Error).message;
+      this.notify('warn', `Obiettivo ${goalId}: preparazione del merge finale non riuscita: ${reason}`);
+      this.bus.feed('merge', `Obiettivo ${goalId}: preparazione del merge finale non riuscita: ${reason}`);
+      return undefined;
+    } finally {
+      this.goalChecks.delete(goalId);
+    }
+  }
+
   async answerDecision(id: string, option?: string, text?: string): Promise<Decision> {
     const d = this.decisions.answer(id, option, text);
     this.bus.feed('decision', `${this.userName} ha risposto a ${d.id}: ${[d.answer?.option, d.answer?.text].filter(Boolean).join(' — ')}`);
@@ -543,7 +670,56 @@ export class Orchestrator {
     return d;
   }
 
+  /** La risposta alla decisione di merge dell'intero obiettivo (Fase 11). */
+  private async applyGoalMergeAnswer(d: Decision, g: Goal): Promise<void> {
+    const opt = d.answer?.option;
+    const lead = { name: `Keystone ${this.nameOf(this.leadId)}`, email: `${this.leadId}@keystone.local` };
+    if (opt === MERGE_OPTIONS[0]) {
+      const tasks = this.tasks.ofGoal(g.id).filter((t) => t.status === 'done');
+      try {
+        const res = await this.repos.merge(d, {
+          commitMessage: `Obiettivo ${g.id}: ${truncate(g.text, 200)}\n\n${tasks.map((t) => `- ${t.id}: ${t.title}`).join('\n')}`,
+          agentIdentity: lead,
+        });
+        this.setGoal(g.id, { status: 'done', progress: 1 });
+        void this.refreshSkills();
+        this.bus.feed('merge', `Obiettivo ${g.id} unito in ${res.base} (${res.sha}, ${res.files} file); branch dell'obiettivo ${res.branchDeleted ? 'eliminato' : `conservato: ${res.branchKeptReason ?? ''}`}`);
+        this.bus.feed('goal', `Obiettivo completato: ${truncate(g.text, 100)}`);
+        this.setAgent(this.leadId, { state: 'idle', activity: `obiettivo ${g.id} unito` });
+        this.team.tick();
+      } catch (e) {
+        if (e instanceof RepoError && e.code === 'empty') {
+          this.setGoal(g.id, { status: 'done', progress: 1 });
+          this.bus.feed('merge', `Obiettivo ${g.id}: niente da unire, completato`);
+          return;
+        }
+        if (e instanceof RepoError && e.code === 'conflict') {
+          // il branch dell'utente è cambiato: un worker unisce e risolve, poi arriva una nuova decisione
+          this.decisions.reopen(d.id);
+          this.decisions.cancel(d.id, `conflitto con ${g.base} in ${e.files.join(', ')}: un worker unisce ${g.base} nel lavoro dell'obiettivo e risolve`);
+          this.team.goalConflictTask(g, e.files);
+          this.bus.feed('merge', `Obiettivo ${g.id} in conflitto con ${g.base} (${e.files.join(', ')}): creato un task per unire e risolvere`);
+          return;
+        }
+        const reason = e instanceof RepoError ? e.message : `merge fallito: ${(e as Error).message}`;
+        this.decisions.reopen(d.id, `${d.context ?? ''}\n\nMerge non eseguito: ${reason}`.trim());
+        this.notify('warn', `Merge dell'obiettivo ${g.id} non eseguito: ${reason}`);
+        this.bus.feed('merge', `Merge dell'obiettivo ${g.id} non eseguito: ${reason}`);
+      }
+    } else if (opt === MERGE_OPTIONS[1]) {
+      this.team.requestGoalChanges(g, d.answer?.text ?? '');
+    } else if (opt === MERGE_OPTIONS[2]) {
+      const wt = d.repoId && d.worktree ? this.repos.findWorktree(d.repoId, d.worktree) : undefined;
+      if (wt?.status === 'active') await this.repos.abandon(wt.repoId, wt.id, `obiettivo ${g.id}: rifiutato`, lead);
+      this.setGoal(g.id, { status: 'cancelled' });
+      this.bus.feed('merge', `Obiettivo ${g.id} rifiutato: il suo branch ${g.branch ?? ''} resta per un eventuale recupero`);
+      this.setAgent(this.leadId, { state: 'idle', activity: `obiettivo ${g.id} rifiutato` });
+    }
+  }
+
   private async applyMergeAnswer(d: Decision): Promise<void> {
+    const goalOfDecision = d.goalId && !d.taskId ? this.goal(d.goalId) : undefined;
+    if (goalOfDecision) return this.applyGoalMergeAnswer(d, goalOfDecision);
     const t = d.taskId ? this.tasks.get(d.taskId) : undefined;
     const opt = d.answer?.option;
     if (opt === MERGE_OPTIONS[0]) {

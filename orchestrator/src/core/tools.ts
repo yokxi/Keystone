@@ -271,7 +271,7 @@ export function teamTools(o: Orchestrator, agentId: string, role: 'lead' | 'work
       ),
       tool(
         'request_merge',
-        `Dopo la review di un task in "review": manda a ${user} la decisione di merge. Decide ${user}; non aspetti.`,
+        `Dopo la review di un task in "review": approva il task. Con il merge per obiettivo (predefinito) Keystone lo unisce nel branch dell'obiettivo e ${user} decide una sola volta alla fine; altrimenti arriva a ${user} la decisione per il task. Non aspetti.`,
         { task_id: z.string().min(1), summary: z.string().min(1).describe(`2-4 righe per ${user}: cosa cambia, come è stato verificato, rischi`) },
         async ({ task_id, summary }) => {
           const t = o.tasks.get(task_id);
@@ -280,12 +280,9 @@ export function teamTools(o: Orchestrator, agentId: string, role: 'lead' | 'work
           if (!t.worktree || !t.repoId) return fail(`${t.id} non ha un worktree da unire`);
           const open = o.decisions.open().find((d) => d.kind === 'merge' && d.taskId === t.id);
           if (open) return reply(`La decisione di merge ${open.id} per ${t.id} aspetta già ${user}.`);
-          const d = await o.openMergeDecision(t, summary);
-          if (!d) {
-            hooks.onTasksChanged();
-            return reply(`${t.id} non ha modificato nessun file: chiuso come completato, niente da unire.`);
-          }
-          return reply(`Decisione di merge ${d.id} inviata a ${user}.`);
+          const text = await o.submitForMerge(t, summary);
+          hooks.onTasksChanged();
+          return reply(text);
         },
       ),
     );

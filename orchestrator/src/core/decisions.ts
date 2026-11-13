@@ -22,6 +22,8 @@ export interface NewDecision {
   options: readonly string[];
   context?: string;
   taskId?: string;
+  /** merge dell'intero obiettivo (Fase 11) */
+  goalId?: string;
   repoId?: string;
   worktree?: string;
   tool?: string;
@@ -82,6 +84,7 @@ export class DecisionQueue {
       createdAt: this.ctx.now(),
       ...(input.context ? { context: input.context } : {}),
       ...(input.taskId ? { taskId: input.taskId } : {}),
+      ...(input.goalId ? { goalId: input.goalId } : {}),
       ...(input.repoId ? { repoId: input.repoId } : {}),
       ...(input.worktree ? { worktree: input.worktree } : {}),
       ...(input.tool ? { tool: input.tool } : {}),

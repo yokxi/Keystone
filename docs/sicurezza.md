@@ -69,6 +69,35 @@ Il merge avviene **solo** quando rispondi `Merge` a una decisione di merge.
 Le operazioni che cambiano worktree e branch di un repository sono serializzate, cioè eseguite una
 alla volta.
 
+### Merge per obiettivo (Fase 11, predefinito)
+
+Arriva una sola decisione di merge per obiettivo, invece di una per task.
+
+- **Branch dell'obiettivo.** `Keystone/goal/<id>` parte dal tuo branch. I worktree dei task
+  partono da lì.
+- **Merge dei task, senza la tua decisione.** Dopo la review del lead (`request_merge`) il task si
+  unisce nel branch dell'obiettivo, con gli stessi passi 1-7 qui sopra. Il merge automatico va
+  **solo** verso un branch `Keystone/goal/*` (`mergeIntoGoal` rifiuta qualunque altra base) e mai
+  nel tuo checkout. Il commit di merge è di Keystone (`Keystone <keystone@keystone.local>`) e non
+  è mai firmato: non usa la tua identità né le tue chiavi.
+- **Merge finale.** Quando tutti i task sono fatti, Keystone estrae il branch dell'obiettivo in un
+  suo worktree (`goal-<id>`), ci esegue i test e ti manda l'unica decisione: diff completa, test sul
+  lavoro unito, riassunti dei task. Il merge nel tuo branch parte solo dal pulsante `Merge` ed è
+  quello di sopra, atomico, con la tua identità.
+- **Nel worktree dell'obiettivo Keystone non committa mai.** Dopo i test lo riporta allo stato del
+  branch (`reset --hard`, `clean -fd`), così i file lasciati dai test non finiscono nella diff né
+  nel tuo branch.
+- **File lasciati dai test.** Vale anche per i worktree dei task e per il merge per task: dopo ogni
+  esecuzione dei test, Keystone toglie i file non tracciati comparsi durante i test. Restano quelli
+  che c'erano prima, cioè il lavoro dell'agente non ancora committato. Prima un file creato dai test
+  veniva committato con il lavoro dell'agente.
+- **Le risposte alla decisione finale.**
+  - `Richiedi modifiche`: il lead crea i task necessari, che partono dal lavoro già unito.
+  - `Rifiuta`: l'obiettivo si chiude e il suo branch resta per un eventuale recupero.
+  - Conflitto con il tuo branch: un task chiede a un worker di unire il tuo branch nel lavoro
+    dell'obiettivo e di risolvere; poi arriva una nuova decisione.
+- **Merge per task.** Si ripristina con `"mergePerTask": true` in `config.json`.
+
 ## 3. Conflitti
 
 Se al momento del merge la base è cambiata e c'è un conflitto, il merge non viene fatto, la

@@ -13,7 +13,7 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
 6. Fase 9 — Motore reale dall'app e repository per obiettivo — fatta (13 novembre 2026), provata
    con l'abbonamento
 7. Fase 10 — Meno richieste di permesso — fatta
-8. Fase 11 — Un merge per obiettivo
+8. Fase 11 — Un merge per obiettivo — fatta
 
 ## Uso in team
 
@@ -39,7 +39,7 @@ consentiti e si istruiscono meglio gli agenti.
 
 Resoconto in `docs/resoconti/fase-10.md`.
 
-## Fase 11 — Un merge per obiettivo (da fare)
+## Fase 11 — Un merge per obiettivo (fatta, 13 novembre 2026)
 
 Scelta dell'utente: una sola richiesta di merge per obiettivo, non una per task.
 

@@ -52,6 +52,11 @@ export interface TestOrchestratorOptions {
   home?: string;
   workers?: number;
   leadReview?: boolean;
+  /**
+   * true: merge per obiettivo (il default dell'app, Fase 11). I test più vecchi verificano il flusso
+   * per task e lo dichiarano lasciando questa opzione spenta.
+   */
+  mergePerGoal?: boolean;
   script?: SimScript;
   engines?: Map<EngineId, EngineAdapter>;
   cfg?: Partial<OrchestratorConfig>;
@@ -68,6 +73,7 @@ export function testOrchestrator(opts: TestOrchestratorOptions = {}): { o: Orche
     profile: 'test',
     agents: defaultAgents('sim', opts.workers ?? 2),
     leadReview: opts.leadReview ?? true,
+    mergePerTask: !opts.mergePerGoal,
     userName: 'Aurora',
     ...opts.cfg,
   };

@@ -156,7 +156,7 @@ export function leadInstructions(env: PromptEnv, workers: Array<{ id: string; na
     `Worker disponibili: ${workers.map((w) => `${w.name} (id "${w.id}")`).join(', ') || 'nessuno'}.`,
     'Per pianificare: scrivi il piano in memoria condivisa (write_memory, titolo "Piano") e crea i task con create_task, con dipendenze (deps) solo quando servono davvero.',
     'Per rivedere: leggi diff ed esito dei test, poi request_merge se il lavoro è buono, altrimenti update_task con status "doing" e il feedback nel summary.',
-    'Il merge lo approva sempre e solo l\'utente.',
+    "Il merge nel branch dell'utente lo approva sempre e solo l'utente, una volta per obiettivo: request_merge unisce il task nel branch dell'obiettivo e, quando tutti i task sono fatti, Keystone esegue i test sul lavoro completo e chiede all'utente il merge finale.",
     'Crea task che cambiano il codice, il minimo necessario (anche uno solo se il lavoro è piccolo). Non creare task solo per provare, testare o fare schermate: Keystone esegue i test e la verifica visuale su ogni task.',
   ].join('\n');
 }
