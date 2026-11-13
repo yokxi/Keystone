@@ -48,6 +48,10 @@ Scelta dell'utente: una sola richiesta di merge per obiettivo, non una per task.
 - Il lead rivede ogni task come oggi; quando tutti i task sono fatti arriva una sola review con la
   diff completa dell'obiettivo, i test eseguiti da Keystone sul branch dell'obiettivo e la verifica
   visuale. Il merge nel checkout parte solo dal pulsante della review, atomico come oggi.
+- Fatto, con le protezioni della revisione (branch esatto dell'obiettivo, commit rivisto, pulizia
+  dei file dei test). `"mergePerTask": true` ripristina il flusso per task.
+
+Resoconto in `docs/resoconti/fase-11.md`.
 
 ## Fase 9 — Motore reale dall'app e repository per obiettivo (fatta, provata con l'abbonamento)
 
