@@ -211,13 +211,26 @@ e non può modificare file.
 Forme consentite dalla Fase 10 (13 novembre 2026), dopo la prima prova reale in cui ogni piccolo
 comando chiedeva. Restano verificabili:
 
-- le sostituzioni che producono solo testo scritto nel comando: `$(cat <<'EOF' … EOF)` (il modo in
-  cui gli agenti scrivono i messaggi di commit), `$(echo …)`, `$(printf …)` con parole fisse. Se
-  quel testo finisce in un percorso, il percorso resta non verificabile e chiede;
+- il messaggio di `git commit` scritto con una sostituzione di solo testo: `-m "$(cat <<'EOF' … EOF)"`
+  (il modo in cui gli agenti scrivono i commit), oppure `-m "$(echo …)"` o `-m "$(printf …)"`
+  con parole fisse. Solo come messaggio: in ogni altra posizione (`--file=$(…)`, un argomento di
+  npm, …) una sostituzione chiede come prima;
 - cicli e condizioni (`while … do … done`, `if … then … fi`, `{ …; }`): conta il comando dentro,
   classificato come gli altri. `for x in …` chiede se i valori vengono da un comando, e la
   variabile del ciclo usata come percorso chiede;
-- `read`, che non tocca file.
+- `read` e `for` solo verso variabili con nome minuscolo (non `*proxy*`). Le variabili che cambiano
+  il comportamento dei programmi (`PATH`, `IFS`, `BASH_ENV`, `LD_*`, `GIT_*`) sono maiuscole:
+  `read PATH < f` o `for PATH in .` chiedono sempre, come ogni modifica dell'ambiente.
+
+Corretti con la revisione della Fase 10:
+
+- i valori attaccati alle opzioni (`--file=x`, `-Fx`, `--template=x`, `--pathspec-from-file=x`,
+  `grep -fx`) passano dal controllo dei percorsi come la forma con il valore separato. Prima
+  `git commit -F/etc/passwd` o `grep -f/etc/passwd` erano consentiti;
+- `rg --pre` / `--pre-glob` (esegue un programma su ogni file) chiede sempre;
+- dentro `$(( … ))` "`<<`" è uno shift, non un here-doc: non nasconde i comandi che seguono.
+
+Ogni punto ha un test in `policy.test.ts` che fallisce togliendo la protezione.
 
 Il principio non cambia: un comando sconosciuto chiede ancora. Per il resto le istruzioni agli
 agenti (`WORK_WITHOUT_ASKING` in `prompts.ts`) chiedono di usare Edit/Write invece di script, di

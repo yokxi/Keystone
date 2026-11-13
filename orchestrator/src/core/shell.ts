@@ -48,6 +48,9 @@ function readBalanced(s: string, i: number, open: string, close: string): [strin
   // here-doc aperti sulla riga corrente: il loro corpo (dal prossimo a capo alla riga con il solo
   // delimitatore) è testo, apostrofi e parentesi compresi, come in bash
   const pending: Array<{ strip: boolean; delim: string }> = [];
+  // per ogni parentesi aperta: siamo in un'espressione aritmetica $(( … ))? Lì "<<" è uno shift,
+  // non un here-doc. Una $( … ) dentro l'aritmetica torna a essere un comando.
+  const arith: boolean[] = [false];
   while (j < s.length) {
     const c = s[j]!;
     if (c === '\\') {
@@ -72,7 +75,7 @@ function readBalanced(s: string, i: number, open: string, close: string): [strin
       j = k;
       continue;
     }
-    if (c === '<' && s[j + 1] === '<' && s[j + 2] !== '<') {
+    if (c === '<' && s[j + 1] === '<' && s[j + 2] !== '<' && s[j - 1] !== '<' && !arith[arith.length - 1]) {
       const hd = /^<<(-?)[ \t]*(['"]?)([A-Za-z0-9_.-]+)\2/.exec(s.slice(j));
       if (hd) {
         pending.push({ strip: hd[1] === '-', delim: hd[3]! });
@@ -92,8 +95,16 @@ function readBalanced(s: string, i: number, open: string, close: string): [strin
       j++;
       continue;
     }
-    if (c === open) depth++;
-    else if (c === close && --depth === 0) return [s.slice(i, j), j + 1];
+    if (c === open) {
+      depth++;
+      // "$((" (le due parentesi) è aritmetica; "$(" è un comando; "(" semplice eredita
+      const arithOpen = (s[j - 1] === '$' && s[j + 1] === '(') || (s[j - 1] === '(' && s[j - 2] === '$');
+      const cmdOpen = s[j - 1] === '$' && s[j + 1] !== '(';
+      arith.push(arithOpen ? true : cmdOpen ? false : arith[arith.length - 1]!);
+    } else if (c === close) {
+      if (--depth === 0) return [s.slice(i, j), j + 1];
+      arith.pop();
+    }
     j++;
   }
   return undefined;

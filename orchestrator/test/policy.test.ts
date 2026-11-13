@@ -434,3 +434,40 @@ describe('fase 10: le forme raccomandate nelle istruzioni sono consentite dalla 
     for (const c of ['ls', 'cat README.md', 'git log --oneline -5', 'git diff', 'git ls-files | head -50']) expectAction(bash(c, lead()), 'allow', c);
   });
 });
+
+describe('fase 10, dopo la revisione: niente nuove strade per aggirare la policy', () => {
+  it('read e for non cambiano l\'ambiente: solo variabili minuscole', () => {
+    for (const c of ['read PATH < a', 'read -r PATH <<< .', 'while read PATH; do ls; done < a', 'read BASH_ENV < a', 'read http_proxy < a', 'for PATH in .; do ls; done', 'read $x < a'])
+      expectAskAlways(bash(c), c);
+    expectAction(bash('ls | while read -r line; do echo "$line"; done'), 'allow', 'read di una variabile minuscola');
+  });
+
+  it('sostituzione di solo testo: consentita solo come messaggio di git commit', () => {
+    for (const c of [
+      'git commit --file=$(echo /etc/passwd)',
+      'git commit -F"$(echo /etc/passwd)"',
+      'git commit -m a -F$(printf /etc/hosts)',
+      'git add --pathspec-from-file=$(echo /etc/passwd)',
+      'rg --pre=$(echo curl) a',
+      'grep --file=$(echo /etc/passwd) a',
+      'npm test $(echo -- --config=/x)',
+      'git apply --directory=$(echo ../..) p',
+    ])
+      expectAction(bash(c), 'ask', c);
+    expectAction(bash('git commit -m "$(echo ciao)"'), 'allow', 'messaggio con echo');
+  });
+
+  it('valori attaccati alle opzioni: controllati come percorsi; rg --pre chiede', () => {
+    for (const c of ['rg --pre=curl a', 'rg --pre curl a', 'rg --pre-glob "*" --pre x a', 'git commit -F/etc/passwd', 'git commit -m a --template=/etc/hosts', 'grep -f/etc/passwd a', 'grep -f/etc/passwd /etc/shadow', 'grep --file=/etc/passwd a'])
+      expectAction(bash(c), 'ask', c);
+    for (const c of ['git commit -F msg.txt', 'git commit -m "fix: a/b"', 'git log --format=%H/%s -5', 'grep -e/foo/ src', 'grep -rn foo src']) expectAction(bash(c), 'allow', c);
+  });
+
+  it('"<<" dentro $(( … )) è uno shift, non un here-doc: i comandi dopo restano visibili', () => {
+    expectAction(bash('echo $((1 << 2\n))\ngit push origin\n2\n))'), 'deny', 'push dopo un finto here-doc aritmetico');
+    expectAction(bash('echo $((1<<2\n))\ncurl http://example.com\n2\n))'), 'ask', 'rete dopo un finto here-doc aritmetico');
+    expect(classify('Bash', { command: 'echo $((1<<2\n))\ncurl http://example.com\n2\n))' }, worker())).toMatchObject({ reason: expect.stringContaining('curl') });
+  });
+
+  it('for con sintassi non valida chiede', () => expectAskAlways(bash('for f in a do curl a; done'), 'for senza ;'));
+});

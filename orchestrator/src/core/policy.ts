@@ -166,6 +166,23 @@ function looksLikePath(t: string): boolean {
   return /[\\/]/.test(t) || t.startsWith('.') || t.startsWith('~') || /^[A-Za-z]:/.test(t);
 }
 
+/**
+ * Il valore attaccato a un'opzione (`--file=x`, `-Fx`) quando può essere un percorso: dinamico o
+ * con l'aspetto di un percorso. Così `git commit -F/etc/passwd` o `grep --file=$(…)` passano dal
+ * controllo dei percorsi come la forma con il valore separato. `skipShort`: lettere il cui valore
+ * attaccato non è un percorso (es. il pattern di grep -e).
+ */
+function attachedValue(w: Word, skipShort = ''): Word | undefined {
+  const long = /^--[A-Za-z0-9][\w-]*=([\s\S]*)$/.exec(w.text);
+  const short = !long && /^-([A-Za-z])([\s\S]+)$/.exec(w.text);
+  if (short && skipShort.includes(short[1]!)) return undefined;
+  const value = long ? long[1]! : short ? short[2]! : undefined;
+  if (value === undefined || !value) return undefined;
+  const dynamic = w.dynamic && value.includes('$');
+  if (!dynamic && !looksLikePath(value)) return undefined;
+  return { ...w, text: value, dynamic: w.dynamic };
+}
+
 // ---- programmi ------------------------------------------------------------------------------
 
 const READERS = new Set([
@@ -173,7 +190,7 @@ const READERS = new Set([
   'get-content', 'gc', 'get-childitem', 'gci', 'test-path', 'get-item', 'gi', 'resolve-path', 'get-filehash', 'measure-object',
 ]);
 const PATTERN_FIRST = new Set(['grep', 'egrep', 'fgrep', 'rg', 'findstr', 'select-string', 'sls', 'ag', 'ack']);
-const NO_PATHS = new Set(['read', 'echo', 'printf', 'true', 'false', 'pwd', 'date', 'whoami', 'hostname', 'uname', 'which', 'where', 'get-command', 'write-output', 'write-host', 'get-location', 'gl', 'sleep', 'start-sleep', 'clear', 'cls', 'exit', 'test', '[', 'seq', 'yes', 'expr']);
+const NO_PATHS = new Set(['echo', 'printf', 'true', 'false', 'pwd', 'date', 'whoami', 'hostname', 'uname', 'which', 'where', 'get-command', 'write-output', 'write-host', 'get-location', 'gl', 'sleep', 'start-sleep', 'clear', 'cls', 'exit', 'test', '[', 'seq', 'yes', 'expr']);
 const WRITERS = new Set(['mkdir', 'md', 'touch', 'cp', 'copy', 'mv', 'move', 'ren', 'rename', 'tee', 'chmod', 'ln', 'new-item', 'ni', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'copy-item', 'cpi', 'move-item', 'mi', 'rename-item', 'rni', 'mklink']);
 const DESTRUCTIVE = new Set(['rm', 'rmdir', 'rd', 'del', 'erase', 'unlink', 'shred', 'truncate', 'dd', 'mkfs', 'format', 'remove-item', 'ri', 'clear-content', 'wipe']);
 const NETWORK = new Set(['curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'nc', 'ncat', 'netcat', 'telnet', 'ftp', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm', 'start-bitstransfer', 'gh', 'glab', 'hub', 'aws', 'az', 'gcloud', 'kubectl', 'docker', 'podman', 'ping', 'nslookup', 'dig', 'certutil', 'bitsadmin']);
@@ -341,9 +358,12 @@ function classifyGit(scope: Scope, words: Word[], raw: string): Finding[] {
         continue;
       }
       if (w.text.startsWith('-')) {
-        const eq = w.text.indexOf('=');
-        if (eq > 0 && looksLikePath(w.text.slice(eq + 1)) && /^--(output|file|git-dir|work-tree)/.test(w.text)) {
-          const f = checkPath(scope, { ...w, text: w.text.slice(eq + 1) }, 'w', `git ${sub}`);
+        // valore attaccato (--file=x, -Fx, --pathspec-from-file=x, --template=x): è un percorso da
+        // controllare; il messaggio (-m…, --message=…) no
+        if (/^(-m|--message=)/.test(w.text)) continue;
+        const v = attachedValue(w);
+        if (v) {
+          const f = checkPath(scope, v, /^--(output|file|git-dir|work-tree)/.test(w.text) ? 'w' : 'r', `git ${sub}`);
           if (f) out.push(f);
         }
         continue;
@@ -463,7 +483,20 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
     return out;
   }
   if (SHELL_CLOSERS.has(first.text) && !rest.length) return out;
+  // read assegna variabili: consentito solo verso nomi minuscoli qualsiasi (le variabili d'ambiente
+  // che contano, PATH, IFS, BASH_ENV, LD_*, GIT_*, sono maiuscole) e non *_proxy. Altrimenti chiede
+  // sempre, come ogni modifica dell'ambiente: read PATH < f cambierebbe i programmi eseguiti dopo.
+  if (prog === 'read') {
+    const names = rest.filter((w) => w.text !== '-r');
+    const safe = names.every((w) => !w.dynamic && /^[a-z_][a-z0-9_]*$/.test(w.text) && !/proxy/.test(w.text));
+    if (!safe) out.push(ask(`read imposta variabili che possono cambiare l'ambiente: ${raw}`, exactKey('Bash', raw), false));
+    return out;
+  }
   if (first.text === 'for' && rest.length >= 1 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(rest[0]!.text) && (rest.length === 1 || rest[1]!.text === 'in')) {
+    // "for x in a do …" senza ";" è un errore di sintassi in bash: per prudenza chiede
+    if (rest.slice(2).some((w) => ['do', 'done', 'then', 'fi'].includes(w.text))) return [...out, ask(`for: sintassi non riconosciuta: ${raw}`, exactKey('Bash', raw), false)];
+    // la variabile del ciclo è un'assegnazione: come per read, solo nomi minuscoli
+    if (!/^[a-z_][a-z0-9_]*$/.test(rest[0]!.text) || /proxy/.test(rest[0]!.text)) return [...out, ask(`for imposta una variabile che può cambiare l'ambiente: ${rest[0]!.text}`, exactKey('Bash', raw), false)];
     for (const w of rest.slice(2)) if (w.dynamic) out.push(ask(`for: valori non verificabili "${w.text}"`, exactKey('Bash', raw)));
     return out;
   }
@@ -571,11 +604,24 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
     return out;
   }
   if (PATTERN_FIRST.has(prog)) {
-    const usesE = a.some((x) => x === '-e' || x === '-f' || x === '--regexp' || x === '-Pattern' || x === '-pattern');
+    // il pattern viene da -e/-f (anche con il valore attaccato): allora ogni argomento è un percorso
+    const usesE = a.some((x) => x === '-e' || x === '-f' || x === '--regexp' || x === '-Pattern' || x === '-pattern' || /^-[ef]./.test(x) || /^--(regexp|file)=/.test(x));
     let skipped = usesE;
     for (let k = 0; k < rest.length; k++) {
       const w = rest[k]!;
       if (w.text.startsWith('-')) {
+        // rg --pre/--pre-glob esegue un programma su ogni file
+        if (prog === 'rg' && /^--pre(-glob)?(=|$)/.test(w.text)) {
+          out.push(ask('rg --pre esegue un programma su ogni file letto', exactKey('Bash', raw), false));
+          continue;
+        }
+        // valore attaccato: --file=x, -fx (il pattern di -e no)
+        const v = attachedValue(w, 'eAmBCgt');
+        if (v) {
+          const f = checkPath(scope, v, 'r', prog);
+          if (f) out.push(f);
+          continue;
+        }
         if (['-e', '-f', '--regexp', '--file', '-pattern', '-path', '-literalpath', '-g', '--glob', '-t', '--type', '-m', '-A', '-B', '-C'].includes(w.text.toLowerCase())) {
           if (w.text === '-f' || w.text === '--file' || /^-(literal)?path$/i.test(w.text)) {
             const next = rest[k + 1];
@@ -790,9 +836,13 @@ function classifyText(scope: Scope, text: string, depth: number): Finding[] {
   const parsed = parseShell(text);
   const out: Finding[] = [];
   if (parsed.error) out.push(ask(`comando non analizzabile (${parsed.error})`, exactKey('Bash', text), false));
+  // la sostituzione di solo testo vale solo come messaggio di git commit (-m "$(…)"): in qualunque
+  // altra posizione (un percorso attaccato a un'opzione, un argomento di npm) chiede come prima
+  const isCommit = parsed.commands.some((c) => c.words[0] && programName(c.words[0].text) === 'git' && c.words.some((w) => w.text === 'commit'));
+  const commitMessage = (sub: string) => isCommit && literalSubstitution(sub) && [`-m "$(${sub})"`, `--message "$(${sub})"`].some((f) => text.includes(f));
   for (const sub of parsed.substitutions) {
     out.push(...classifyText({ ...scope }, sub, depth + 1));
-    if (!literalSubstitution(sub)) out.push(ask('il comando usa l\'output di un altro comando: il risultato non è verificabile in anticipo', exactKey('Bash', text)));
+    if (!commitMessage(sub)) out.push(ask('il comando usa l\'output di un altro comando: il risultato non è verificabile in anticipo', exactKey('Bash', text)));
   }
   for (const c of parsed.commands) out.push(...classifyCommand(scope, c, depth));
   return out;
