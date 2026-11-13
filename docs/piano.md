@@ -10,8 +10,10 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
    novembre 2026: NSIS usato direttamente, senza electron-builder)
 4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
 5. Fase 6c — Accesso al database in sola lettura: spostata dopo la pubblicazione
-6. Fase 9 — Motore reale dall'app e repository per obiettivo — fatta (13 novembre 2026), manca la
-   prova con l'abbonamento
+6. Fase 9 — Motore reale dall'app e repository per obiettivo — fatta (13 novembre 2026), provata
+   con l'abbonamento
+7. Fase 10 — Meno richieste di permesso — fatta
+8. Fase 11 — Un merge per obiettivo
 
 ## Uso in team
 
@@ -20,7 +22,31 @@ repository. Quello che si condivide (codice, skill del repository in `.keystone/
 git, con i normali push e pull fatti dalle persone. Nella prima versione non c'è un server
 condiviso: niente stato, chiavi o code di lavoro comuni tra PC diversi.
 
-## Fase 9 — Motore reale dall'app e repository per obiettivo (fatta, manca la prova reale)
+## Fase 10 — Meno richieste di permesso (fatta)
+
+Dopo la prima prova reale (13 novembre 2026): 9 richieste di permesso in un obiettivo piccolo.
+Scelta dell'utente: la regola "tutto ciò che non è consentito chiede" resta; si allargano i
+consentiti e si istruiscono meglio gli agenti.
+
+- Consentite le sostituzioni di solo testo (`$(cat <<'EOF' …)` per i commit), i cicli e le
+  condizioni della shell, `read`.
+- Istruzioni agli agenti: Edit/Write invece di script, niente `/tmp` o browser, niente task di
+  sola verifica (test e schermate li fa Keystone).
+- Trovati e corretti due modi di nascondere comandi alla policy nel corpo di un here-doc.
+
+Resoconto in `docs/resoconti/fase-10.md`.
+
+## Fase 11 — Un merge per obiettivo (da fare)
+
+Scelta dell'utente: una sola richiesta di merge per obiettivo, non una per task.
+
+- I task di un obiettivo si uniscono da soli in un branch dell'obiettivo (`Keystone/goal/<id>`),
+  mai nel checkout dell'utente; un conflitto torna al worker come oggi.
+- Il lead rivede ogni task come oggi; quando tutti i task sono fatti arriva una sola review con la
+  diff completa dell'obiettivo, i test eseguiti da Keystone sul branch dell'obiettivo e la verifica
+  visuale. Il merge nel checkout parte solo dal pulsante della review, atomico come oggi.
+
+## Fase 9 — Motore reale dall'app e repository per obiettivo (fatta, provata con l'abbonamento)
 
 Nata da un problema trovato nell'uso: dall'app partiva il motore sim (nessun `config.json`),
 quindi la diff conteneva solo `keystone-sim/<task>.md`, ogni obiettivo produceva due merge
@@ -31,7 +57,7 @@ quindi la diff conteneva solo `keystone-sim/<task>.md`, ogni obiettivo produceva
 - Impostazioni → Motore degli agenti: abbonamento Claude (token di `claude setup-token`) o chiave
   API, cifrati con `safeStorage`. L'app avvia l'orchestratore solo con un motore reale.
 - Corretto un difetto di sicurezza: i test del repository ricevevano le credenziali dei motori.
-- Da fare con l'utente: la prova reale con l'abbonamento (consuma i limiti del piano).
+- Prova reale con l'abbonamento fatta dall'utente il 13 novembre 2026: funziona; troppe richieste di permesso (Fase 10) e un merge per task (Fase 11).
 
 Resoconto in `docs/resoconti/fase-9.md`.
 

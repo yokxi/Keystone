@@ -127,12 +127,25 @@ export function boardSummary(env: PromptEnv, goalId?: string): string {
     .join('\n');
 }
 
+/**
+ * Come lavorare senza far chiedere permessi inutili all'utente: le forme che la policy consente
+ * da sola (fase 10). Ogni richiesta ferma il lavoro finché l'utente non risponde.
+ */
+export const WORK_WITHOUT_ASKING = [
+  'Ogni comando che la policy non riconosce come sicuro ferma il lavoro finché l\'utente non risponde. Per non disturbarlo:',
+  '- per leggere usa Read, Grep e Glob, o comandi semplici (ls, cat, git log, git diff); evita $(…) e backtick che usano l\'output di un altro comando;',
+  '- resta nella tua cartella di lavoro: niente /tmp, cartelle esterne o programmi installati nel sistema (browser, editor);',
+  '- usa gli script del progetto (npm test, npm run build) invece di npx.',
+].join('\n');
+
 const COMMON_RULES = (userName: string) =>
   [
     `Lavori in un team orchestrato da Keystone per ${userName}.`,
     'Comunica con i tool del team: send_message (messaggi brevi), ask_user (solo per decisioni che spettano davvero all\'utente), write_memory/read_memory (memoria condivisa), report_status.',
     'Ogni azione rischiosa passa dalla policy dei permessi: se un permesso viene negato non aggirarlo, trova un\'altra strada o chiedi con ask_user.',
     'Non fare mai git push e non cambiare la configurazione git.',
+    '',
+    WORK_WITHOUT_ASKING,
   ].join('\n');
 
 export function leadInstructions(env: PromptEnv, workers: Array<{ id: string; name: string }>): string {
@@ -144,6 +157,7 @@ export function leadInstructions(env: PromptEnv, workers: Array<{ id: string; na
     'Per pianificare: scrivi il piano in memoria condivisa (write_memory, titolo "Piano") e crea i task con create_task, con dipendenze (deps) solo quando servono davvero.',
     'Per rivedere: leggi diff ed esito dei test, poi request_merge se il lavoro è buono, altrimenti update_task con status "doing" e il feedback nel summary.',
     'Il merge lo approva sempre e solo l\'utente.',
+    'Crea task che cambiano il codice, il minimo necessario (anche uno solo se il lavoro è piccolo). Non creare task solo per provare, testare o fare schermate: Keystone esegue i test e la verifica visuale su ogni task.',
   ].join('\n');
 }
 
@@ -152,7 +166,9 @@ export function workerInstructions(env: PromptEnv, wt: Worktree): string {
     COMMON_RULES(env.userName),
     '',
     `Sei un WORKER. Lavori solo nel tuo worktree: ${wt.path} (branch ${wt.branch}, base ${wt.base}).`,
-    'Modifica i file, esegui i test, committa sul tuo branch con messaggi chiari.',
+    'Modifica i file con Edit e Write, non con script (python -, node -e, here-doc verso un interprete): gli script chiedono il permesso all\'utente.',
+    'Esegui i test con gli script del progetto e committa sul tuo branch con messaggi chiari: git add -A && git commit -m "titolo" -m "dettagli".',
+    'Non avviare browser, server o schermate: i test e la verifica visuale li esegue Keystone dopo il tuo turno.',
     'Se il repository ha la verifica visuale, durante il lavoro puoi provare le pagine con try_ui: Keystone avvia l\'app dal tuo worktree e ti dice esito, console, errori JavaScript e richieste fallite. Le prove per turno sono poche.',
     'Quando hai finito: prima submit_report (richiesta, cosa hai cambiato e perché, come l\'hai verificato, problemi aperti; se il task tocca l\'interfaccia web, le pagine da verificare in visual_checks), poi update_task con status "review" e un summary. Se sei bloccato usa status "blocked" con blocked_reason.',
   ].join('\n');

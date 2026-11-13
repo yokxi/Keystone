@@ -173,7 +173,7 @@ const READERS = new Set([
   'get-content', 'gc', 'get-childitem', 'gci', 'test-path', 'get-item', 'gi', 'resolve-path', 'get-filehash', 'measure-object',
 ]);
 const PATTERN_FIRST = new Set(['grep', 'egrep', 'fgrep', 'rg', 'findstr', 'select-string', 'sls', 'ag', 'ack']);
-const NO_PATHS = new Set(['echo', 'printf', 'true', 'false', 'pwd', 'date', 'whoami', 'hostname', 'uname', 'which', 'where', 'get-command', 'write-output', 'write-host', 'get-location', 'gl', 'sleep', 'start-sleep', 'clear', 'cls', 'exit', 'test', '[', 'seq', 'yes', 'expr']);
+const NO_PATHS = new Set(['read', 'echo', 'printf', 'true', 'false', 'pwd', 'date', 'whoami', 'hostname', 'uname', 'which', 'where', 'get-command', 'write-output', 'write-host', 'get-location', 'gl', 'sleep', 'start-sleep', 'clear', 'cls', 'exit', 'test', '[', 'seq', 'yes', 'expr']);
 const WRITERS = new Set(['mkdir', 'md', 'touch', 'cp', 'copy', 'mv', 'move', 'ren', 'rename', 'tee', 'chmod', 'ln', 'new-item', 'ni', 'set-content', 'sc', 'add-content', 'ac', 'out-file', 'copy-item', 'cpi', 'move-item', 'mi', 'rename-item', 'rni', 'mklink']);
 const DESTRUCTIVE = new Set(['rm', 'rmdir', 'rd', 'del', 'erase', 'unlink', 'shred', 'truncate', 'dd', 'mkfs', 'format', 'remove-item', 'ri', 'clear-content', 'wipe']);
 const NETWORK = new Set(['curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'nc', 'ncat', 'netcat', 'telnet', 'ftp', 'invoke-webrequest', 'iwr', 'invoke-restmethod', 'irm', 'start-bitstransfer', 'gh', 'glab', 'hub', 'aws', 'az', 'gcloud', 'kubectl', 'docker', 'podman', 'ping', 'nslookup', 'dig', 'certutil', 'bitsadmin']);
@@ -181,6 +181,9 @@ const SYSTEM = new Set(['sudo', 'su', 'doas', 'runas', 'taskkill', 'kill', 'pkil
 const ENV_PROGRAMS = new Set(['export', 'set', 'setx', 'unset', 'setenv', 'unsetenv', 'set-item', 'si', 'set-variable', 'sv', 'remove-variable', 'declare', 'typeset', 'local', 'readonly', 'source', '.']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'cmd', 'powershell', 'pwsh']);
 const WRAPPERS = new Set(['timeout', 'nice', 'nohup', 'time', 'command', 'exec', 'builtin', 'stdbuf', 'ionice']);
+/** parole chiave seguite da un comando: while read l; do echo "$l"; done */
+const SHELL_KEYWORDS = new Set(['while', 'until', 'if', 'elif', 'then', 'else', 'do', '!', '{']);
+const SHELL_CLOSERS = new Set(['done', 'fi', '}']);
 const INTERPRETERS = new Set(['node', 'python', 'python3', 'py', 'ruby', 'perl', 'php', 'deno', 'bun', 'tsx', 'ts-node']);
 const DEV_TOOLS = new Set(['tsc', 'vitest', 'jest', 'mocha', 'eslint', 'prettier', 'biome', 'pytest', 'ruff', 'black', 'mypy', 'flake8', 'cargo', 'go', 'dotnet', 'mvn', 'gradle', 'gradlew']);
 
@@ -451,6 +454,19 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
   }
 
   const recurse = (inner: string) => out.push(...classifyText(scope, inner, depth + 1));
+
+  // parole chiave della shell (cicli e condizioni): conta il comando che segue, classificato come
+  // gli altri; "done", "fi" e simili da sole non fanno nulla. "for x in …" assegna solo la
+  // variabile del ciclo, il cui valore poi non è verificabile.
+  if (SHELL_KEYWORDS.has(first.text)) {
+    if (rest.length) out.push(...classifyCommand(scope, { ...cmd, assignments: [], words: rest }, depth + 1));
+    return out;
+  }
+  if (SHELL_CLOSERS.has(first.text) && !rest.length) return out;
+  if (first.text === 'for' && rest.length >= 1 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(rest[0]!.text) && (rest.length === 1 || rest[1]!.text === 'in')) {
+    for (const w of rest.slice(2)) if (w.dynamic) out.push(ask(`for: valori non verificabili "${w.text}"`, exactKey('Bash', raw)));
+    return out;
+  }
 
   // il lead è in sola lettura nel checkout dell'utente: solo programmi che leggono
   if (scope.role === 'lead' && !LEAD_PROGRAMS.has(prog)) {
@@ -753,6 +769,22 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
   return [...out, ask(`programma non riconosciuto dalla policy: ${prog}`, exactKey('Bash', raw))];
 }
 
+/**
+ * Una sostituzione che produce solo testo scritto nel comando stesso: `cat <<'EOF' … EOF` (il modo
+ * in cui gli agenti scrivono i messaggi di commit), oppure echo/printf di parole fisse. Il valore
+ * resta comunque "dinamico" per la policy: se finisce in un percorso, il percorso non è verificabile.
+ */
+function literalSubstitution(sub: string): boolean {
+  const p = parseShell(sub);
+  if (p.error || p.substitutions.length || p.commands.length !== 1) return false;
+  const c = p.commands[0]!;
+  if (c.assignments.length || !c.words.length || c.words.some((w) => w.dynamic || w.glob)) return false;
+  const prog = programName(c.words[0]!.text);
+  if (prog === 'cat') return c.words.length === 1 && c.redirects.length > 0 && c.redirects.every((r) => r.op === '<<' || r.op === '<<-');
+  if (prog === 'echo' || prog === 'printf') return c.redirects.length === 0;
+  return false;
+}
+
 function classifyText(scope: Scope, text: string, depth: number): Finding[] {
   if (depth > 6) return [ask('comando annidato troppo in profondità', exactKey('Bash', text), false)];
   const parsed = parseShell(text);
@@ -760,7 +792,7 @@ function classifyText(scope: Scope, text: string, depth: number): Finding[] {
   if (parsed.error) out.push(ask(`comando non analizzabile (${parsed.error})`, exactKey('Bash', text), false));
   for (const sub of parsed.substitutions) {
     out.push(...classifyText({ ...scope }, sub, depth + 1));
-    out.push(ask('il comando usa l\'output di un altro comando: il risultato non è verificabile in anticipo', exactKey('Bash', text)));
+    if (!literalSubstitution(sub)) out.push(ask('il comando usa l\'output di un altro comando: il risultato non è verificabile in anticipo', exactKey('Bash', text)));
   }
   for (const c of parsed.commands) out.push(...classifyCommand(scope, c, depth));
   return out;

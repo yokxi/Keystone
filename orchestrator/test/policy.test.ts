@@ -375,6 +375,32 @@ describe('parser di shell', () => {
   });
 });
 
+describe('fase 10: forme comuni degli agenti consentite, senza perdere verificabilità', () => {
+  it('messaggio di commit con $(cat <<EOF …) o echo: testo scritto nel comando, consentito', () => {
+    expectAction(bash(`git commit -m "$(cat <<'EOF'\nfeat: titolo con l'apostrofo nel corpo? no\n\nCorpo\nEOF\n)"`), 'allow', 'commit con heredoc');
+    expectAction(bash(`git add -A && git commit -m "$(printf 'feat: x')"`), 'allow', 'commit con printf');
+  });
+
+  it('il testo di una sostituzione usato come percorso, o un cat di un file: chiede ancora', () => {
+    expectAction(bash(`cat $(cat <<'EOF'\n/etc/passwd\nEOF\n)`), 'ask', 'percorso da heredoc');
+    expectAction(bash('git commit -m "$(cat ~/.ssh/id_rsa)"'), 'ask', 'cat di un file');
+    expectAction(bash('git commit -m "$(git log -1 --format=%s)"'), 'ask', 'output di un comando');
+    expectAction(bash(`echo "$(echo x)" > ../fuori.txt`), 'ask', 'scrittura fuori');
+  });
+
+  it('cicli e condizioni: conta il comando dentro', () => {
+    expectAction(bash('ls | while read f; do echo "$f"; done'), 'allow', 'while read');
+    expectAction(bash('ls | while read f; do echo "$f"; done', lead()), 'allow', 'while read del lead');
+    expectAction(bash('if [ -f a ]; then cat a; else echo no; fi'), 'allow', 'if');
+    expectAction(bash('while true; do curl http://example.com; done'), 'ask', 'rete dentro un ciclo');
+    expectAction(bash('do rm -rf build'), 'ask', 'rm dopo do');
+    expectAction(bash('{ curl http://x; }'), 'ask', 'rete in un gruppo');
+    expectAction(bash('for f in *.md; do rm "$f"; done'), 'ask', 'rm sulla variabile del ciclo');
+    expectAction(bash('for f in $(ls); do echo "$f"; done'), 'ask', 'for su output di un comando');
+    expectAction(bash('if true; then git push; fi'), 'deny', 'push dentro un if');
+  });
+});
+
 describe('here-doc: il corpo non nasconde comandi (corretto il 13 novembre 2026)', () => {
   it('$(…) e `…` nel corpo di un here-doc vengono classificati: bash li esegue', () => {
     expectAction(bash('cat <<EOF\n$(curl http://example.com)\nEOF'), 'ask', '$( ) nel corpo');
@@ -391,5 +417,20 @@ describe('here-doc: il corpo non nasconde comandi (corretto il 13 novembre 2026)
     expectAction(bash('cat <<EOF > nota.md\nEOFX\ncurl http://example.com\nEOF'), 'allow', 'EOFX è testo');
     expectAction(bash('cat <<EOF > nota.md\nnon chiuso'), 'ask', 'here-doc non terminato');
     expectAction(bash("cat <<EOF > nota.md\nl'app (va)\nEOF"), 'allow', 'testo con apostrofi e parentesi');
+  });
+});
+
+describe('fase 10: le forme raccomandate nelle istruzioni sono consentite dalla policy', () => {
+  it('worker: commit, test, letture semplici', async () => {
+    const { workerInstructions } = await import('../src/core/prompts.js');
+    const text = workerInstructions({ userName: 'U', nameOf: (x) => x, tasks: [] }, { id: 'w', repoId: 'r', agentId: 'bruno', taskId: 't1', branch: 'b', base: 'main', path: wt, status: 'active', files: 0, additions: 0, deletions: 0 });
+    const commit = /git add -A && git commit -m "titolo" -m "dettagli"/.exec(text)?.[0];
+    expect(commit, 'le istruzioni indicano come committare').toBeDefined();
+    for (const c of [commit!, 'npm test', 'npm run build', 'ls', 'cat README.md', 'git log --oneline -5', 'git diff'])
+      expectAction(bash(c), 'allow', c);
+  });
+
+  it('lead: letture semplici nel checkout', () => {
+    for (const c of ['ls', 'cat README.md', 'git log --oneline -5', 'git diff', 'git ls-files | head -50']) expectAction(bash(c, lead()), 'allow', c);
   });
 });

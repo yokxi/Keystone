@@ -208,6 +208,22 @@ Principio: **tutto ciò che non è esplicitamente consentito diventa una richies
 Il lead lavora in sola lettura nel tuo checkout: legge e usa git in lettura, tutto il resto chiede,
 e non può modificare file.
 
+Forme consentite dalla Fase 10 (13 novembre 2026), dopo la prima prova reale in cui ogni piccolo
+comando chiedeva. Restano verificabili:
+
+- le sostituzioni che producono solo testo scritto nel comando: `$(cat <<'EOF' … EOF)` (il modo in
+  cui gli agenti scrivono i messaggi di commit), `$(echo …)`, `$(printf …)` con parole fisse. Se
+  quel testo finisce in un percorso, il percorso resta non verificabile e chiede;
+- cicli e condizioni (`while … do … done`, `if … then … fi`, `{ …; }`): conta il comando dentro,
+  classificato come gli altri. `for x in …` chiede se i valori vengono da un comando, e la
+  variabile del ciclo usata come percorso chiede;
+- `read`, che non tocca file.
+
+Il principio non cambia: un comando sconosciuto chiede ancora. Per il resto le istruzioni agli
+agenti (`WORK_WITHOUT_ASKING` in `prompts.ts`) chiedono di usare Edit/Write invece di script, di
+restare nel worktree e di lasciare test e schermate a Keystone. Un test verifica che le forme
+raccomandate siano davvero consentite.
+
 **Chiede sempre**, senza la possibilità di "Consenti sempre" (la decisione offre solo
 `Consenti una volta` / `Nega`):
 
