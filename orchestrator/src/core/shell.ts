@@ -14,6 +14,8 @@ export interface Word {
   dynamic: boolean;
   /** contiene caratteri glob (* ? [) fuori dalle virgolette */
   glob: boolean;
+  /** il testo delle sostituzioni $(…) / `…` contenute nella parola (sono anche in Parsed.substitutions) */
+  subs?: string[];
 }
 
 export interface Redirect {
@@ -42,7 +44,7 @@ export interface Parsed {
 const OPERATORS = ['&&', '||', ';;', '|&', ';', '|', '&', '\n', '(', ')'];
 
 /** Legge il contenuto di una sostituzione a partire da `i` (dopo l'apertura). Restituisce [testo, indice dopo la chiusura]. */
-function readBalanced(s: string, i: number, open: string, close: string): [string, number] | undefined {
+function readBalanced(s: string, i: number, open: string, close: string, startArith = false): [string, number] | undefined {
   let depth = 1;
   let j = i;
   // here-doc aperti sulla riga corrente: il loro corpo (dal prossimo a capo alla riga con il solo
@@ -50,7 +52,7 @@ function readBalanced(s: string, i: number, open: string, close: string): [strin
   const pending: Array<{ strip: boolean; delim: string }> = [];
   // per ogni parentesi aperta: siamo in un'espressione aritmetica $(( … ))? Lì "<<" è uno shift,
   // non un here-doc. Una $( … ) dentro l'aritmetica torna a essere un comando.
-  const arith: boolean[] = [false];
+  const arith: boolean[] = [startArith];
   while (j < s.length) {
     const c = s[j]!;
     if (c === '\\') {
@@ -231,6 +233,15 @@ export function parseShell(input: string): Parsed {
       pendingRedirect = op;
       continue;
     }
+    // (( … )) all'inizio di un comando: espressione aritmetica, dove "<<" è uno shift e non un
+    // here-doc. Non la si analizza: chiede, e i comandi che seguono si classificano normalmente
+    if (s[i] === '(' && s[i + 1] === '(' && !cur.words.length && !cur.assignments.length && !pendingRedirect) {
+      const inner = readBalanced(s, i + 1, '(', ')', true);
+      if (!inner) return { commands, substitutions, error: 'espressione (( )) non chiusa' };
+      error ??= 'espressione aritmetica (( )) non verificabile';
+      i = inner[1];
+      continue;
+    }
     const opMatch = OPERATORS.find((o) => s.startsWith(o, i));
     if (opMatch) {
       flush();
@@ -242,6 +253,7 @@ export function parseShell(input: string): Parsed {
     let dynamic = false;
     let glob = false;
     const startWord = i;
+    const subStart = substitutions.length;
     while (i < s.length) {
       const ch = s[i]!;
       if (ch === ' ' || ch === '\t' || ch === '\n') break;
@@ -342,7 +354,8 @@ export function parseShell(input: string): Parsed {
       i++;
       continue;
     }
-    pushWord({ text, dynamic, glob });
+    const subs = substitutions.slice(subStart);
+    pushWord({ text, dynamic, glob, ...(subs.length ? { subs } : {}) });
   }
   flush();
   if (heredocs.length) error ??= 'here-doc senza corpo';

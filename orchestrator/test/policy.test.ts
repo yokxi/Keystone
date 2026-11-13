@@ -471,3 +471,34 @@ describe('fase 10, dopo la revisione: niente nuove strade per aggirare la policy
 
   it('for con sintassi non valida chiede', () => expectAskAlways(bash('for f in a do curl a; done'), 'for senza ;'));
 });
+
+describe('fase 10, secondo giro di revisione', () => {
+  it('(( … )) all\'inizio di un comando non nasconde i comandi che seguono', () => {
+    expectAction(bash('((ls<<2\n))\ngit push origin\n2'), 'deny', 'push dopo (( ))');
+    expectAction(bash('((ls<<2\n))\ncurl http://example.com\n2'), 'ask', 'rete dopo (( ))');
+    expect(classify('Bash', { command: '((ls<<2\n))\ncurl http://example.com\n2' }, worker())).toMatchObject({ reason: expect.stringContaining('curl') });
+  });
+
+  it('opzioni brevi raggruppate: il valore dopo la lettera che lo prende è un percorso', () => {
+    for (const c of ['git commit -aF/etc/passwd', 'git commit -sF/etc/passwd', 'git commit -m a -nF/etc/passwd', 'grep -nf/etc/passwd a', 'grep -rf/etc/passwd a', 'rg -if/etc/passwd a'])
+      expectAction(bash(c), 'ask', c);
+    for (const c of ['git commit -am "x"', 'grep -A3 foo src', 'grep -e/foo/ src']) expectAction(bash(c), 'allow', c);
+  });
+
+  it('il messaggio di commit con $(…) vale solo come parola dopo -m di "git commit", non in altri comandi della catena', () => {
+    for (const c of [
+      'git log commit -m "$(echo --output=../x)"',
+      'git show commit -m "$(echo --ext-diff)"',
+      'git commit -m a && npm test -m "$(echo ../x)"',
+      'git commit -m a; git log -m "$(echo ../x)"',
+      'git add commit -m "$(echo ../x)"',
+      'git commit -m "$(echo x)" --author "$(echo y)"',
+    ])
+      expectAction(bash(c), 'ask', c);
+  });
+
+  it('printf -v, ${VAR:=…} e nomi che su Windows sono variabili d\'ambiente: chiedono sempre', () => {
+    for (const c of ['printf -v PATH . ; ls', 'echo ${PATH:=.}', 'read path < a', 'read home < a', 'for home in .; do ls; done', 'read git_dir < a'])
+      expectAskAlways(bash(c), c);
+  });
+});

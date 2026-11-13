@@ -172,12 +172,28 @@ function looksLikePath(t: string): boolean {
  * controllo dei percorsi come la forma con il valore separato. `skipShort`: lettere il cui valore
  * attaccato non è un percorso (es. il pattern di grep -e).
  */
-function attachedValue(w: Word, skipShort = ''): Word | undefined {
+function attachedValue(w: Word, valueLetters: string, stopLetters = ''): Word | undefined {
+  let value: string | undefined;
   const long = /^--[A-Za-z0-9][\w-]*=([\s\S]*)$/.exec(w.text);
-  const short = !long && /^-([A-Za-z])([\s\S]+)$/.exec(w.text);
-  if (short && skipShort.includes(short[1]!)) return undefined;
-  const value = long ? long[1]! : short ? short[2]! : undefined;
-  if (value === undefined || !value) return undefined;
+  if (long) value = long[1]!;
+  else if (/^-[^-]/.test(w.text)) {
+    // opzioni brevi, anche raggruppate (-aF/x, -nf/x): alla prima lettera che prende un valore, il
+    // resto della parola è il valore; una lettera di "stop" (il pattern di grep -e) chiude lì
+    for (let k = 1; k < w.text.length; k++) {
+      const ch = w.text[k]!;
+      if (stopLetters.includes(ch)) return undefined;
+      if (valueLetters.includes(ch)) {
+        value = w.text.slice(k + 1);
+        break;
+      }
+      if (!/[A-Za-z0-9]/.test(ch)) {
+        // qualcosa che non è un'opzione: se è dinamico o ha l'aspetto di un percorso, si controlla
+        value = w.text.slice(k);
+        break;
+      }
+    }
+  }
+  if (!value) return undefined;
   const dynamic = w.dynamic && value.includes('$');
   if (!dynamic && !looksLikePath(value)) return undefined;
   return { ...w, text: value, dynamic: w.dynamic };
@@ -198,6 +214,16 @@ const SYSTEM = new Set(['sudo', 'su', 'doas', 'runas', 'taskkill', 'kill', 'pkil
 const ENV_PROGRAMS = new Set(['export', 'set', 'setx', 'unset', 'setenv', 'unsetenv', 'set-item', 'si', 'set-variable', 'sv', 'remove-variable', 'declare', 'typeset', 'local', 'readonly', 'source', '.']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'cmd', 'powershell', 'pwsh']);
 const WRAPPERS = new Set(['timeout', 'nice', 'nohup', 'time', 'command', 'exec', 'builtin', 'stdbuf', 'ionice']);
+/**
+ * Nomi di variabile che read/for possono assegnare: minuscoli, e non quelli che su Windows (dove
+ * le variabili d'ambiente non distinguono maiuscole e minuscole) o in bash cambiano il
+ * comportamento dei programmi.
+ */
+const ENV_LIKE = /^(path|pathext|home|comspec|temp|tmp|tmpdir|userprofile|systemroot|windir|appdata|localappdata|programdata|psmodulepath|ifs|ps4|bash_env|env|shellopts|bashopts|cdpath|globignore|histfile|prompt_command|editor|visual|pager|shell)$|^(ld_|git_|node_|npm_|python|dyld_|ssh_|gpg)|proxy/i;
+function safeVarName(name: string): boolean {
+  return /^[a-z_][a-z0-9_]*$/.test(name) && !ENV_LIKE.test(name);
+}
+
 /** parole chiave seguite da un comando: while read l; do echo "$l"; done */
 const SHELL_KEYWORDS = new Set(['while', 'until', 'if', 'elif', 'then', 'else', 'do', '!', '{']);
 const SHELL_CLOSERS = new Set(['done', 'fi', '}']);
@@ -361,7 +387,7 @@ function classifyGit(scope: Scope, words: Word[], raw: string): Finding[] {
         // valore attaccato (--file=x, -Fx, --pathspec-from-file=x, --template=x): è un percorso da
         // controllare; il messaggio (-m…, --message=…) no
         if (/^(-m|--message=)/.test(w.text)) continue;
-        const v = attachedValue(w);
+        const v = attachedValue(w, 'FtCc');
         if (v) {
           const f = checkPath(scope, v, /^--(output|file|git-dir|work-tree)/.test(w.text) ? 'w' : 'r', `git ${sub}`);
           if (f) out.push(f);
@@ -459,6 +485,8 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
   }
   if (!cmd.words.length) return out;
 
+  // ${VAR:=x} / ${VAR=x} assegnano una variabile dentro una parola qualsiasi
+  if (cmd.words.some((w) => /\$\{[^}]*?:?=/.test(w.text))) out.push(ask(`assegna una variabile con \${VAR=…}: ${raw}`, exactKey('Bash', raw), false));
   const first = cmd.words[0]!;
   if (first.dynamic) return [...out, ask(`programma non verificabile: ${first.text}`, exactKey('Bash', raw), false)];
   if (/^\$env:/i.test(first.text) || /^\[(system\.)?environment\]::/i.test(first.text)) return [...out, ask(`modifica variabili d'ambiente: ${raw}`, exactKey('Bash', raw), false)];
@@ -486,9 +514,11 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
   // read assegna variabili: consentito solo verso nomi minuscoli qualsiasi (le variabili d'ambiente
   // che contano, PATH, IFS, BASH_ENV, LD_*, GIT_*, sono maiuscole) e non *_proxy. Altrimenti chiede
   // sempre, come ogni modifica dell'ambiente: read PATH < f cambierebbe i programmi eseguiti dopo.
+  // printf -v NOME assegna una variabile come read
+  if (prog === 'printf' && rest.some((w) => /^-v/.test(w.text))) return [...out, ask(`printf -v imposta una variabile: ${raw}`, exactKey('Bash', raw), false)];
   if (prog === 'read') {
     const names = rest.filter((w) => w.text !== '-r');
-    const safe = names.every((w) => !w.dynamic && /^[a-z_][a-z0-9_]*$/.test(w.text) && !/proxy/.test(w.text));
+    const safe = names.every((w) => !w.dynamic && safeVarName(w.text));
     if (!safe) out.push(ask(`read imposta variabili che possono cambiare l'ambiente: ${raw}`, exactKey('Bash', raw), false));
     return out;
   }
@@ -496,7 +526,7 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
     // "for x in a do …" senza ";" è un errore di sintassi in bash: per prudenza chiede
     if (rest.slice(2).some((w) => ['do', 'done', 'then', 'fi'].includes(w.text))) return [...out, ask(`for: sintassi non riconosciuta: ${raw}`, exactKey('Bash', raw), false)];
     // la variabile del ciclo è un'assegnazione: come per read, solo nomi minuscoli
-    if (!/^[a-z_][a-z0-9_]*$/.test(rest[0]!.text) || /proxy/.test(rest[0]!.text)) return [...out, ask(`for imposta una variabile che può cambiare l'ambiente: ${rest[0]!.text}`, exactKey('Bash', raw), false)];
+    if (!safeVarName(rest[0]!.text)) return [...out, ask(`for imposta una variabile che può cambiare l'ambiente: ${rest[0]!.text}`, exactKey('Bash', raw), false)];
     for (const w of rest.slice(2)) if (w.dynamic) out.push(ask(`for: valori non verificabili "${w.text}"`, exactKey('Bash', raw)));
     return out;
   }
@@ -616,7 +646,7 @@ function classifyCommand(scope: Scope, cmd: SimpleCommand, depth: number): Findi
           continue;
         }
         // valore attaccato: --file=x, -fx (il pattern di -e no)
-        const v = attachedValue(w, 'eAmBCgt');
+        const v = attachedValue(w, 'fABCmgt', 'e');
         if (v) {
           const f = checkPath(scope, v, 'r', prog);
           if (f) out.push(f);
@@ -836,13 +866,26 @@ function classifyText(scope: Scope, text: string, depth: number): Finding[] {
   const parsed = parseShell(text);
   const out: Finding[] = [];
   if (parsed.error) out.push(ask(`comando non analizzabile (${parsed.error})`, exactKey('Bash', text), false));
-  // la sostituzione di solo testo vale solo come messaggio di git commit (-m "$(…)"): in qualunque
-  // altra posizione (un percorso attaccato a un'opzione, un argomento di npm) chiede come prima
-  const isCommit = parsed.commands.some((c) => c.words[0] && programName(c.words[0].text) === 'git' && c.words.some((w) => w.text === 'commit'));
-  const commitMessage = (sub: string) => isCommit && literalSubstitution(sub) && [`-m "$(${sub})"`, `--message "$(${sub})"`].some((f) => text.includes(f));
+  // la sostituzione di solo testo vale solo come messaggio di git commit: la parola intera subito
+  // dopo -m/--message di un comando "git commit …". In qualunque altra posizione (un percorso, un
+  // argomento di un altro comando, un altro sottocomando git) chiede come prima.
+  const exempt = new Map<string, number>();
+  for (const c of parsed.commands) {
+    const w = c.words;
+    if (!w[0] || programName(w[0].text) !== 'git' || w[1]?.text !== 'commit') continue;
+    for (let k = 2; k < w.length; k++) {
+      const sub = w[k]!.subs?.length === 1 ? w[k]!.subs![0]! : undefined;
+      if (sub !== undefined && w[k]!.text === '$(…)' && (w[k - 1]!.text === '-m' || w[k - 1]!.text === '--message') && literalSubstitution(sub)) exempt.set(sub, (exempt.get(sub) ?? 0) + 1);
+    }
+  }
   for (const sub of parsed.substitutions) {
     out.push(...classifyText({ ...scope }, sub, depth + 1));
-    if (!commitMessage(sub)) out.push(ask('il comando usa l\'output di un altro comando: il risultato non è verificabile in anticipo', exactKey('Bash', text)));
+    const n = exempt.get(sub) ?? 0;
+    if (n > 0) {
+      exempt.set(sub, n - 1);
+      continue;
+    }
+    out.push(ask('il comando usa l\'output di un altro comando: il risultato non è verificabile in anticipo', exactKey('Bash', text)));
   }
   for (const c of parsed.commands) out.push(...classifyCommand(scope, c, depth));
   return out;

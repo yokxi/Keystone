@@ -228,7 +228,14 @@ Corretti con la revisione della Fase 10:
   `grep -fx`) passano dal controllo dei percorsi come la forma con il valore separato. Prima
   `git commit -F/etc/passwd` o `grep -f/etc/passwd` erano consentiti;
 - `rg --pre` / `--pre-glob` (esegue un programma su ogni file) chiede sempre;
-- dentro `$(( … ))` "`<<`" è uno shift, non un here-doc: non nasconde i comandi che seguono.
+- dentro `$(( … ))` "`<<`" è uno shift, non un here-doc: non nasconde i comandi che seguono;
+- secondo giro: `(( … ))` all'inizio di un comando chiede (senza nascondere i comandi dopo); le
+  opzioni brevi raggruppate (`-aF/x`, `grep -nf/x`) si leggono fino alla lettera che prende il
+  valore; il messaggio di commit con `$(…)` si riconosce per comando e posizione (la parola dopo
+  `-m` di `git commit`), non cercando nel testo; `printf -v` e `${VAR:=…}` chiedono sempre; `read`
+  e `for` non possono assegnare nomi che su Windows (dove le variabili non distinguono maiuscole e
+  minuscole) o in bash cambiano il comportamento dei programmi (`path`, `home`, `comspec`,
+  `git_*`, `node_*`, …).
 
 Ogni punto ha un test in `policy.test.ts` che fallisce togliendo la protezione.
 
