@@ -200,10 +200,13 @@ export function App() {
                 <button
                   className="btn small"
                   data-testid="start-orchestrator"
-                  title="Avvia l'orchestratore su questa porta con le impostazioni di ~/.keystone/config.json (senza file: motore sim)."
+                  title="Avvia l'orchestratore su questa porta con il motore scelto in Impostazioni (e le altre impostazioni di ~/.keystone/config.json)."
                   onClick={() => void window.keystone.startOrchestrator(startProfile || conn.profile).then((a) => !a.ok && toast('warn', a.error ?? 'avvio non riuscito'))}
                 >
                   Avvia orchestratore · profilo {startProfile || conn.profile}
+                </button>
+                <button className="btn small" data-testid="open-engine-settings" onClick={() => setView('settings')}>
+                  Motore e credenziale
                 </button>
               </>
             )}

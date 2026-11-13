@@ -397,6 +397,25 @@ può mandare qualunque client locale già collegato, come gli altri comandi; non
 (chi è collegato può già fermare obiettivi e agenti) e la connessione resta solo da localhost,
 senza `Origin` di browser.
 
+## 6sexies-bis. Motore e credenziale scelti dall'app
+
+Codice: `app/src/main/engine-auth.ts`, test `app/test/engine-auth.test.ts`.
+
+- La credenziale (token di `claude setup-token` o chiave API) si salva **solo cifrata** con
+  `safeStorage` (DPAPI) in `~/.keystone/engine-credentials.json`. Senza cifratura del sistema resta
+  in memoria finché l'app è aperta, mai in chiaro su disco. Il file deve essere un file normale.
+- Il renderer la manda una volta e non la rilegge: vede solo quali credenziali sono salvate.
+- L'orchestratore avviato dall'app riceve **solo** la credenziale della modalità scelta,
+  nell'ambiente del suo processo; `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` e
+  `CLAUDE_CODE_OAUTH_TOKEN` ereditati dall'ambiente dell'app vengono tolti. Gli argomenti
+  (`--engine claude`, `--use-claude-login`) non contengono segreti.
+- Dall'orchestratore la credenziale va solo alla CLI di Claude (`TurnSpec.credentials`, §7).
+- Dall'app non parte il motore sim: senza una scelta l'orchestratore non si avvia.
+- **Limite**, lo stesso delle password dei database: DPAPI protegge dagli altri utenti e dagli
+  altri PC, non dai processi dello stesso utente. Un comando che decifra il file passa dalla
+  policy, quindi chiede la tua approvazione, ma Keystone non è una sandbox (§4bis).
+- Il login con l'abbonamento è per uso personale (termini di Anthropic): l'interfaccia lo dice.
+
 ## 6sexies. Database in sola lettura
 
 Dettagli in `docs/database.md`. In sintesi:

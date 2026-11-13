@@ -2,9 +2,11 @@
 // Electron arriva al renderer, che vede soltanto queste funzioni.
 import type { DiffFile, NotifyLevel, RepoPreview, ViewState } from '@keystone/shared';
 import type { ValidatedCommand } from './ipc-validate.js';
+import type { CredentialKind, EngineAuthStatus, EngineChoice } from './engine-auth.js';
 import type { UpdateStatus } from './updates.js';
 
 export type { UpdateStatus } from './updates.js';
+export type { CredentialKind, EngineAuthStatus, EngineChoice } from './engine-auth.js';
 
 export interface Ack {
   ok: boolean;
@@ -37,8 +39,17 @@ export interface KeystoneApi {
   previewRepo(path: string): Promise<{ ok: true; preview: RepoPreview } | { ok: false; error: string }>;
   pickFolder(): Promise<string | undefined>;
   connection(): Promise<ConnectionInfo>;
-  /** avvia l'orchestratore (motore sim) con il profilo dell'app, o con quello indicato */
+  /** avvia l'orchestratore con il motore scelto in Impostazioni, con il profilo dell'app o quello indicato */
   startOrchestrator(profile?: string): Promise<Ack>;
+  /** ferma l'orchestratore collegato e lo riavvia con il motore scelto (profilo dell'app) */
+  restartOrchestrator(): Promise<Ack>;
+  /** motore scelto e quali credenziali sono salvate (mai i valori) */
+  engineStatus(): Promise<EngineAuthStatus>;
+  /**
+   * Sceglie il motore e/o salva una credenziale (null = toglila). Il main la cifra con safeStorage;
+   * il renderer non la rilegge mai.
+   */
+  setEngine(choice: EngineChoice | null, kind?: CredentialKind | null, value?: string | null): Promise<Ack>;
   /**
    * Password di una connessione a database: il main la cifra con safeStorage e la passa
    * all'orchestratore (null = toglila). Il renderer non la rilegge mai.
@@ -77,4 +88,7 @@ export const CHANNELS = {
   updateCheck: 'ks:update-check',
   updateSet: 'ks:update-set',
   openRelease: 'ks:open-release',
+  engineStatus: 'ks:engine-status',
+  engineSet: 'ks:engine-set',
+  restart: 'ks:restart-orchestrator',
 } as const;

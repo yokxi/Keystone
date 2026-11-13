@@ -32,9 +32,12 @@ export function findOrchestrator(o: { packaged: boolean; resourcesPath: string; 
   return fs.existsSync(main) && fs.existsSync(path.join(root, 'node_modules', 'tsx')) ? { cwd: root, main, bundled: false } : undefined;
 }
 
-/** Argomenti per avviare l'orchestratore con il profilo indicato, sulla porta a cui l'app è collegata. */
-export function orchestratorArgs(entry: Pick<OrchestratorEntry, 'main' | 'bundled'>, port: number, profile: string): string[] {
-  return [...(entry.bundled ? [] : ['--import', 'tsx']), entry.main, '--port', String(port), '--profile', profile];
+/**
+ * Argomenti per avviare l'orchestratore con il profilo indicato, sulla porta a cui l'app è
+ * collegata; `engine`: gli argomenti del motore scelto in Impostazioni (engine-auth.ts).
+ */
+export function orchestratorArgs(entry: Pick<OrchestratorEntry, 'main' | 'bundled'>, port: number, profile: string, engine: string[] = []): string[] {
+  return [...(entry.bundled ? [] : ['--import', 'tsx']), entry.main, '--port', String(port), '--profile', profile, ...engine];
 }
 
 /** Il file in cui finisce l'uscita dell'orchestratore avviato dall'app (in ~/.keystone, mai nel repository). */

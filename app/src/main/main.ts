@@ -12,6 +12,7 @@ import { app, BrowserWindow, dialog, ipcMain, net, Notification, safeStorage, se
 import { dbDestination, type DiffFile, type ServerMessage, type ViewState } from '@keystone/shared';
 import { CHANNELS, type Ack, type ConnectionInfo, type UiEvent } from './api.js';
 import { DbSecrets } from './db-secrets.js';
+import { EngineAuth, type CredentialKind, type EngineChoice, ENGINE_CHOICES } from './engine-auth.js';
 import { isTrustedSender, validateCommand } from './ipc-validate.js';
 import { earlyExit, findOrchestrator, openStartLog, orchestratorArgs, startLogFile, tailLines } from './orchestrator-launch.js';
 import { listProfiles, resolveStartProfile } from './profiles.js';
@@ -40,6 +41,12 @@ const rendererHtml = path.join(__dirname, '..', 'renderer', 'index.html');
 const smokeDir = process.env.KEYSTONE_SMOKE_DIR;
 /** password dei database: cifrate con safeStorage nel profilo dell'app, mai in chiaro */
 const dbSecrets = new DbSecrets(path.join(home, profile, 'db-secrets.json'), {
+  available: () => safeStorage.isEncryptionAvailable(),
+  encrypt: (s) => safeStorage.encryptString(s),
+  decrypt: (b) => safeStorage.decryptString(b),
+});
+/** motore degli agenti e sua credenziale: cifrata con safeStorage, mai in chiaro, mai al renderer */
+const engineAuth = new EngineAuth(path.join(home, 'engine-credentials.json'), {
   available: () => safeStorage.isEncryptionAvailable(),
   encrypt: (s) => safeStorage.encryptString(s),
   decrypt: (b) => safeStorage.decryptString(b),
@@ -228,6 +235,43 @@ function registerIpc(): void {
     await shell.openExternal(target);
     return true;
   });
+  ipcMain.handle(CHANNELS.engineStatus, (e) => {
+    guard(e);
+    return engineAuth.status();
+  });
+  ipcMain.handle(CHANNELS.engineSet, (e, choice: unknown, kind: unknown, value: unknown): Ack => {
+    guard(e);
+    try {
+      if (choice !== undefined && choice !== null) {
+        if (typeof choice !== 'string' || !ENGINE_CHOICES.includes(choice as EngineChoice)) return { ok: false, error: 'motore non disponibile' };
+        engineAuth.setChoice(choice as EngineChoice);
+      }
+      let stored: string | undefined;
+      if (kind !== undefined && kind !== null) {
+        if (kind !== 'claudeLoginToken' && kind !== 'anthropicApiKey') return { ok: false, error: 'credenziale non valida' };
+        if (value !== null && typeof value !== 'string') return { ok: false, error: 'valore non valido' };
+        stored = engineAuth.setCredential(kind as CredentialKind, value as string | null);
+      }
+      // la credenziale non torna mai al renderer
+      return { ok: true, result: { ...(stored ? { stored } : {}), status: engineAuth.status() } };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  });
+  ipcMain.handle(CHANNELS.restart, async (e): Promise<Ack> => {
+    guard(e);
+    // ferma l'orchestratore collegato (salva lo stato) e lo riavvia con il motore scelto
+    if (client.state.connected) {
+      const stop = await client.request({ type: 'orchestrator.shutdown' });
+      if (!stop.ok) return stop;
+      const start = Date.now();
+      while (client.state.connected && Date.now() - start < 20_000) await new Promise((r) => setTimeout(r, 200));
+      if (client.state.connected) return { ok: false, error: "l'orchestratore non si è fermato in 20 secondi" };
+      // il tempo di liberare la porta
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return startOrchestrator(profile);
+  });
   ipcMain.handle(CHANNELS.start, async (e, requested: unknown): Promise<Ack> => {
     guard(e);
     const r = resolveStartProfile(profile, requested, home);
@@ -244,6 +288,9 @@ function orchestratorEntry() {
 async function startOrchestrator(startProfile: string): Promise<Ack> {
   const entry = orchestratorEntry();
   if (!entry) return { ok: false, error: 'orchestratore non trovato: avvialo con "npm run orchestrator"' };
+  // il motore scelto in Impostazioni, con la sua sola credenziale: dall'app niente motore sim
+  const engine = engineAuth.launch(process.env);
+  if (!engine.ok) return { ok: false, error: engine.error };
   // l'uscita dell'orchestratore va in ~/.keystone/<profilo>/orchestrator-avvio.log: serve a spiegare
   // un avvio fallito (per esempio un config.json non valido)
   const log = startLogFile(home, startProfile);
@@ -253,9 +300,9 @@ async function startOrchestrator(startProfile: string): Promise<Ack> {
     fd = openStartLog(log, new Date());
     // l'eseguibile di Electron funziona anche come Node con ELECTRON_RUN_AS_NODE; la porta è quella
     // a cui l'app è collegata, il profilo quello dell'app o quello scelto esplicitamente
-    child = spawn(process.execPath, orchestratorArgs(entry, port, startProfile), {
+    child = spawn(process.execPath, orchestratorArgs(entry, port, startProfile, engine.args), {
       cwd: entry.cwd,
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', KEYSTONE_HOME: home },
+      env: { ...engine.env, ELECTRON_RUN_AS_NODE: '1', KEYSTONE_HOME: home },
       detached: true,
       stdio: ['ignore', fd, fd],
       windowsHide: true,

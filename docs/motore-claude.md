@@ -24,6 +24,25 @@ Gli identificativi dei modelli sono quelli della documentazione aggiornata (6 ot
 `claude-opus-5-5` e `claude-sonnet-5-5`, esatti, senza suffissi di data. Nell'interfaccia compaiono
 come "Opus 5.5" e "Sonnet 5.5" accanto a ogni agente.
 
+## Dall'app
+
+In **Impostazioni → Motore degli agenti** scegli:
+
+- **Abbonamento Claude (Pro o Max)**: in un terminale esegui `claude setup-token`, accedi con il tuo
+  account e incolla il token che stampa (`sk-ant-oat…`). L'app avvia l'orchestratore con
+  `--engine claude --use-claude-login` e il token in `CLAUDE_CODE_OAUTH_TOKEN`. Non si paga a
+  consumo: valgono i limiti di utilizzo del piano (più bassi con Pro), e ogni obiettivo ha il
+  limite di 30 turni e 60 minuti descritto sotto. Solo per uso personale.
+- **Chiave API Anthropic**: l'app avvia l'orchestratore con `--engine claude` e la chiave in
+  `ANTHROPIC_API_KEY`.
+
+Poi "Riavvia orchestratore con questo motore". La credenziale è cifrata con `safeStorage`
+(`docs/sicurezza.md` §6sexies-bis). Senza una scelta l'app non avvia l'orchestratore: il motore
+sim resta solo per i test e per la riga di comando. Modelli ed effort si scelgono ancora in
+`~/.keystone/config.json` (`leadModel`, `workerModel`, …): se il piano non comprende il modello del
+lead (`claude-opus-5-5`), il turno finisce in errore e si può mettere `"leadModel":
+"claude-sonnet-5-5"`.
+
 ## Autenticazione
 
 - **Predefinita: API.** `ANTHROPIC_API_KEY`, oppure un provider cloud supportato dall'SDK con le sue

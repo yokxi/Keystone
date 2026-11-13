@@ -10,6 +10,8 @@ Le fasi precedenti sono nel codice e nei documenti di `docs/`. Qui ci sono le fa
    novembre 2026: NSIS usato direttamente, senza electron-builder)
 4. Pubblicazione (le prove elencate in "Pubblicazione — da fare prima")
 5. Fase 6c — Accesso al database in sola lettura: spostata dopo la pubblicazione
+6. Fase 9 — Motore reale dall'app e repository per obiettivo — fatta (13 novembre 2026), manca la
+   prova con l'abbonamento
 
 ## Uso in team
 
@@ -17,6 +19,21 @@ Ogni persona installa Keystone sul proprio PC, con le proprie chiavi e il propri
 repository. Quello che si condivide (codice, skill del repository in `.keystone/skills/`) passa da
 git, con i normali push e pull fatti dalle persone. Nella prima versione non c'è un server
 condiviso: niente stato, chiavi o code di lavoro comuni tra PC diversi.
+
+## Fase 9 — Motore reale dall'app e repository per obiettivo (fatta, manca la prova reale)
+
+Nata da un problema trovato nell'uso: dall'app partiva il motore sim (nessun `config.json`),
+quindi la diff conteneva solo `keystone-sim/<task>.md`, ogni obiettivo produceva due merge
+("Prepara" e "Completa") e tutti gli obiettivi finivano nel primo repository registrato.
+
+- `#repository` nella console indica dove lavora l'obiettivo; con più repository è obbligatorio
+  (anche l'orchestratore rifiuta un obiettivo senza repository).
+- Impostazioni → Motore degli agenti: abbonamento Claude (token di `claude setup-token`) o chiave
+  API, cifrati con `safeStorage`. L'app avvia l'orchestratore solo con un motore reale.
+- Corretto un difetto di sicurezza: i test del repository ricevevano le credenziali dei motori.
+- Da fare con l'utente: la prova reale con l'abbonamento (consuma i limiti del piano).
+
+Resoconto in `docs/resoconti/fase-9.md`.
 
 ## Fase Skill — Regole per gli agenti (fatta)
 
