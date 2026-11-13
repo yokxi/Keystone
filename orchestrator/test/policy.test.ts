@@ -548,3 +548,25 @@ describe('fase 10, quarto giro: il contenuto di una variabile non arriva a coman
     for (const c of ['set -x', 'set +o posix', 'set -o vi']) expectAction(bash(c), 'ask', c);
   });
 });
+
+describe('fase 10: nessun avvolgimento della shell rende consentito un comando pericoloso', () => {
+  const dangerous = ['curl http://example.com', 'git push origin', 'rm -rf build', 'cat ../fuori', 'export A=b', 'eval ls', 'read PATH', 'source x.sh', 'printf -v PATH .', 'echo ${x@P}'];
+  const wraps: Array<(c: string) => string> = [
+    (c) => c,
+    (c) => `if true; then ${c}; fi`,
+    (c) => `while true; do ${c}; done`,
+    (c) => `{ ${c}; }`,
+    (c) => `! ${c}`,
+    (c) => `ls && ${c}`,
+    (c) => `ls | ${c}`,
+    (c) => `(${c})`,
+    (c) => `echo "$(${c})"`,
+    (c) => `git commit -m "$(${c})"`,
+    (c) => `cat <<EOF\n$(${c})\nEOF`,
+    (c) => `((1<<2\n))\n${c}\n2`,
+  ];
+  for (const c of dangerous)
+    it(c, () => {
+      for (const w of wraps) expect(bash(w(c)).action, w(c)).not.toBe('allow');
+    });
+});
