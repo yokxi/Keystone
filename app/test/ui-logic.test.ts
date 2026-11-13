@@ -49,6 +49,7 @@ describe('console', () => {
     expect(completeRepo('lavora su #gra', 14, repos)).toMatchObject({ value: 'lavora su #grandmas-cookbook ', options: ['grandmas-cookbook'] });
     expect(completeRepo('#', 1, repos)?.options).toEqual(['multiplayer-card-game', 'grandmas-cookbook']);
     expect(completeRepo('niente tag', 10, repos)).toBeUndefined();
+    expect(completeRepo('fix #gra altro', 8, repos)?.value).toBe('fix #grandmas-cookbook altro');
   });
 
   it('comandi per agenti, task e decisioni', () => {

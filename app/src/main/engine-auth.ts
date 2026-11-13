@@ -55,6 +55,30 @@ export function checkCredential(kind: CredentialKind, value: string): string | u
   return undefined;
 }
 
+export type EngineSetInput = { choice?: EngineChoice; credential?: { kind: CredentialKind; value: string | null } };
+
+/**
+ * Valida la richiesta del renderer (non affidabile). Una credenziale va indicata con il suo valore,
+ * oppure con null esplicito per toglierla: un valore mancante non cancella nulla.
+ */
+export function parseEngineSet(choice: unknown, kind: unknown, value: unknown): { ok: true; input: EngineSetInput } | { ok: false; error: string } {
+  const input: EngineSetInput = {};
+  if (choice !== undefined && choice !== null) {
+    if (typeof choice !== 'string' || !ENGINE_CHOICES.includes(choice as EngineChoice)) return { ok: false, error: 'motore non disponibile' };
+    input.choice = choice as EngineChoice;
+  }
+  if (kind !== undefined && kind !== null) {
+    if (typeof kind !== 'string' || !KINDS.includes(kind as CredentialKind)) return { ok: false, error: 'credenziale non valida' };
+    if (value === undefined) return { ok: false, error: 'manca il valore della credenziale' };
+    if (value !== null && (typeof value !== 'string' || value.length > 1000)) return { ok: false, error: 'valore non valido' };
+    input.credential = { kind: kind as CredentialKind, value };
+  } else if (value !== undefined && value !== null) {
+    return { ok: false, error: 'valore senza credenziale' };
+  }
+  if (!input.choice && !input.credential) return { ok: false, error: 'niente da salvare' };
+  return { ok: true, input };
+}
+
 export class EngineAuth {
   private readonly volatile = new Map<CredentialKind, string>();
   private volatileChoice: EngineChoice | undefined;
@@ -101,6 +125,13 @@ export class EngineAuth {
     const d = this.read();
     this.volatileChoice = undefined;
     this.write({ ...d, choice });
+  }
+
+  /** Applica una richiesta validata: prima la credenziale (se è rifiutata il motore non cambia), poi la scelta. */
+  apply(input: EngineSetInput): { stored?: 'salvata' | 'solo-memoria' | 'tolta'; status: EngineAuthStatus } {
+    const stored = input.credential ? this.setCredential(input.credential.kind, input.credential.value) : undefined;
+    if (input.choice) this.setChoice(input.choice);
+    return { ...(stored ? { stored } : {}), status: this.status() };
   }
 
   /** Salva (o toglie, con null) una credenziale. "salvata": cifrata su disco; "solo-memoria": cifratura non disponibile. */

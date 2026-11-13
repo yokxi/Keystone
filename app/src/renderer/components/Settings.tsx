@@ -179,7 +179,7 @@ function EngineCard({ state, toast }: { state: ViewState; toast: (level: string,
   const apply = async (cred: string | null | undefined) => {
     setBusy(true);
     try {
-      const a = await window.keystone.setEngine(choice, cred === undefined ? null : opt.kind, cred ?? null);
+      const a = cred === undefined ? await window.keystone.setEngine(choice) : await window.keystone.setEngine(choice, opt.kind, cred);
       if (!a.ok) {
         toast('warn', a.error ?? 'non salvato');
         return false;

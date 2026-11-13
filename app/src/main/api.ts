@@ -46,8 +46,8 @@ export interface KeystoneApi {
   /** motore scelto e quali credenziali sono salvate (mai i valori) */
   engineStatus(): Promise<EngineAuthStatus>;
   /**
-   * Sceglie il motore e/o salva una credenziale (null = toglila). Il main la cifra con safeStorage;
-   * il renderer non la rilegge mai.
+   * Sceglie il motore e/o salva una credenziale (`value` null = toglila; senza `value` non cambia
+   * nulla). Il main la cifra con safeStorage; il renderer non la rilegge mai.
    */
   setEngine(choice: EngineChoice | null, kind?: CredentialKind | null, value?: string | null): Promise<Ack>;
   /**

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { checkCredential, EngineAuth } from '../src/main/engine-auth.js';
+import { checkCredential, EngineAuth, parseEngineSet } from '../src/main/engine-auth.js';
 import { orchestratorArgs } from '../src/main/orchestrator-launch.js';
 
 const TOKEN = 'sk-ant-oat01-' + 'a'.repeat(40);
@@ -128,5 +128,26 @@ describe('motore e credenziale dall\'app', () => {
       return; // senza permesso di creare link (Windows senza modalità sviluppatore): niente da provare
     }
     expect(new EngineAuth(link, cipher()).status().choice).toBeUndefined();
+  });
+
+  it('richiesta dal renderer validata: tipi sbagliati rifiutati, un valore mancante non cancella nulla', () => {
+    expect(parseEngineSet('claude-login', undefined, undefined)).toEqual({ ok: true, input: { choice: 'claude-login' } });
+    expect(parseEngineSet(null, 'claudeLoginToken', null)).toEqual({ ok: true, input: { credential: { kind: 'claudeLoginToken', value: null } } });
+    expect(parseEngineSet('codex', undefined, undefined)).toMatchObject({ ok: false, error: 'motore non disponibile' });
+    expect(parseEngineSet('sim', undefined, undefined)).toMatchObject({ ok: false });
+    expect(parseEngineSet({ choice: 'claude-api' }, undefined, undefined)).toMatchObject({ ok: false });
+    expect(parseEngineSet(undefined, 'GITHUB_TOKEN', TOKEN)).toMatchObject({ ok: false, error: 'credenziale non valida' });
+    expect(parseEngineSet(undefined, 'claudeLoginToken', undefined)).toMatchObject({ ok: false, error: 'manca il valore della credenziale' });
+    expect(parseEngineSet(undefined, 'claudeLoginToken', 42)).toMatchObject({ ok: false });
+    expect(parseEngineSet(undefined, 'claudeLoginToken', 'x'.repeat(5000))).toMatchObject({ ok: false });
+    expect(parseEngineSet(undefined, undefined, TOKEN)).toMatchObject({ ok: false });
+    expect(parseEngineSet(undefined, undefined, undefined)).toMatchObject({ ok: false });
+  });
+
+  it('una credenziale rifiutata non cambia il motore', () => {
+    const a = new EngineAuth(path.join(tmp(), 'f.json'), cipher());
+    a.apply({ choice: 'claude-login', credential: { kind: 'claudeLoginToken', value: TOKEN } });
+    expect(() => a.apply({ choice: 'claude-api', credential: { kind: 'anthropicApiKey', value: TOKEN } })).toThrow(/token di login/);
+    expect(a.status()).toMatchObject({ choice: 'claude-login', saved: { claudeLoginToken: true, anthropicApiKey: false } });
   });
 });

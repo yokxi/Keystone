@@ -12,7 +12,7 @@ import { app, BrowserWindow, dialog, ipcMain, net, Notification, safeStorage, se
 import { dbDestination, type DiffFile, type ServerMessage, type ViewState } from '@keystone/shared';
 import { CHANNELS, type Ack, type ConnectionInfo, type UiEvent } from './api.js';
 import { DbSecrets } from './db-secrets.js';
-import { EngineAuth, type CredentialKind, type EngineChoice, ENGINE_CHOICES } from './engine-auth.js';
+import { EngineAuth, parseEngineSet } from './engine-auth.js';
 import { isTrustedSender, validateCommand } from './ipc-validate.js';
 import { earlyExit, findOrchestrator, openStartLog, orchestratorArgs, startLogFile, tailLines } from './orchestrator-launch.js';
 import { listProfiles, resolveStartProfile } from './profiles.js';
@@ -53,6 +53,7 @@ const engineAuth = new EngineAuth(path.join(home, 'engine-credentials.json'), {
 });
 let win: BrowserWindow | undefined;
 let appUrl = '';
+let restarting = false;
 
 // aggiornamenti: solo un controllo su GitHub, mai uno scaricamento (updates.ts). Spento anche con
 // KEYSTONE_NO_UPDATE_CHECK e nella modalità di verifica delle schermate
@@ -241,36 +242,37 @@ function registerIpc(): void {
   });
   ipcMain.handle(CHANNELS.engineSet, (e, choice: unknown, kind: unknown, value: unknown): Ack => {
     guard(e);
+    const p = parseEngineSet(choice, kind, value);
+    if (!p.ok) return { ok: false, error: p.error };
     try {
-      if (choice !== undefined && choice !== null) {
-        if (typeof choice !== 'string' || !ENGINE_CHOICES.includes(choice as EngineChoice)) return { ok: false, error: 'motore non disponibile' };
-        engineAuth.setChoice(choice as EngineChoice);
-      }
-      let stored: string | undefined;
-      if (kind !== undefined && kind !== null) {
-        if (kind !== 'claudeLoginToken' && kind !== 'anthropicApiKey') return { ok: false, error: 'credenziale non valida' };
-        if (value !== null && typeof value !== 'string') return { ok: false, error: 'valore non valido' };
-        stored = engineAuth.setCredential(kind as CredentialKind, value as string | null);
-      }
-      // la credenziale non torna mai al renderer
-      return { ok: true, result: { ...(stored ? { stored } : {}), status: engineAuth.status() } };
+      // la credenziale non torna mai al renderer: solo dove è finita e lo stato
+      return { ok: true, result: engineAuth.apply(p.input) };
     } catch (err) {
       return { ok: false, error: (err as Error).message };
     }
   });
   ipcMain.handle(CHANNELS.restart, async (e): Promise<Ack> => {
     guard(e);
-    // ferma l'orchestratore collegato (salva lo stato) e lo riavvia con il motore scelto
-    if (client.state.connected) {
-      const stop = await client.request({ type: 'orchestrator.shutdown' });
-      if (!stop.ok) return stop;
-      const start = Date.now();
-      while (client.state.connected && Date.now() - start < 20_000) await new Promise((r) => setTimeout(r, 200));
-      if (client.state.connected) return { ok: false, error: "l'orchestratore non si è fermato in 20 secondi" };
-      // il tempo di liberare la porta
-      await new Promise((r) => setTimeout(r, 500));
+    if (restarting) return { ok: false, error: 'riavvio già in corso' };
+    // prima di fermare qualcosa: il motore scelto deve poter partire
+    const check = engineAuth.launch(process.env);
+    if (!check.ok) return { ok: false, error: check.error };
+    restarting = true;
+    try {
+      // ferma l'orchestratore collegato (salva lo stato), anche se avviato dal terminale: l'interfaccia chiede conferma
+      if (client.state.connected) {
+        const stop = await client.request({ type: 'orchestrator.shutdown' });
+        if (!stop.ok) return stop;
+        const start = Date.now();
+        while (client.state.connected && Date.now() - start < 20_000) await new Promise((r) => setTimeout(r, 200));
+        if (client.state.connected) return { ok: false, error: "l'orchestratore non si è fermato in 20 secondi" };
+        // il tempo di liberare la porta
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return await startOrchestrator(profile);
+    } finally {
+      restarting = false;
     }
-    return startOrchestrator(profile);
   });
   ipcMain.handle(CHANNELS.start, async (e, requested: unknown): Promise<Ack> => {
     guard(e);

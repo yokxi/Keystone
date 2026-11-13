@@ -156,7 +156,9 @@ export function completeRepo(input: string, caret: number, repos: RepoRef[]): { 
   if (!options.length) return undefined;
   const chosen = options[0]!;
   const start = before.length - prefix.length;
-  const value = `${input.slice(0, start)}${chosen} ${input.slice(caret)}`;
+  const rest = input.slice(caret);
+  // niente doppio spazio se dopo il cursore c'è già uno spazio
+  const value = `${input.slice(0, start)}${chosen}${rest.startsWith(' ') ? '' : ' '}${rest}`;
   return { value, caret: start + chosen.length + 1, options };
 }
 
